@@ -1,0 +1,27 @@
+database:
+  file: tower-defense.db
+
+combat:
+  radius: 80
+  spawn-inner: 56
+  spawn-outer: 80
+  minimum-core-distance: 192
+  core-gap: 32
+  max-participants: 8
+  countdown-seconds: 10
+  preparation-seconds: 10
+  intermission-seconds: 8
+  absence-grace-seconds: 5
+
+core:
+  max-health: 1000
+  damage-per-enemy: 20
+
+enemies:
+  max-alive: 120
+  spawn-per-tick: 8
+  base-per-wave: 4
+  added-per-wave: 2
+  boss-health-multiplier: 4.0
+  move-speed: 1.0
+

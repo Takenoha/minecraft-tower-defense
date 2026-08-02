@@ -1,0 +1,16 @@
+name: MinecraftTowerDefense
+version: '${version}'
+main: io.github.takenoha.towerdefense.TowerDefensePlugin
+api-version: '26.2'
+description: Cooperative survival-world tower defense for Paper
+authors: [Takenoha]
+commands:
+  td:
+    description: Minecraft Tower Defense command
+    usage: /td admin <core|simulate|status|abort>
+    permission: towerdefense.admin
+permissions:
+  towerdefense.admin:
+    description: Manage and simulate tower-defense encounters
+    default: op
+

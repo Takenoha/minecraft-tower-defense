@@ -1,0 +1,45 @@
+# Minecraft Tower Defense
+
+A Paper server plugin that adds cooperative tower-defense encounters to a normal survival world.
+
+## Platform
+
+- Minecraft Java Edition / Paper 26.2
+- Paper build 87 stable
+- Java 25
+- Vanilla clients; no required resource pack
+
+The version is intentionally fixed for the first release. See the official [Paper project setup](https://docs.papermc.io/paper/dev/project-setup/) and [Java requirements](https://docs.papermc.io/paper/getting-started/).
+
+## Current milestone
+
+The first PR is a safe, administrator-only walking skeleton:
+
+- one persisted core per solo test team;
+- one globally active defense session, enforced by SQLite;
+- countdown, preparation, active wave, intermission, victory, defeat, and recovery phases;
+- a playable five-wave level-one simulation with a final boss;
+- fixed participants, core HP, absence defeat, spawn throttling, and idempotent cleanup;
+- startup recovery that never resumes a half-finished encounter;
+- no terrain mutation, custom rewards, start-item consumption, or towers until their rollback boundaries exist.
+
+This is deliberately not advertised as the complete game described by the product requirements.
+
+## Build
+
+```text
+./gradlew clean test build
+```
+
+The plugin JAR is written to `build/libs/minecraft-tower-defense-0.1.0-SNAPSHOT.jar`.
+
+## Administrator test flow
+
+1. Build the plugin and install the JAR on Paper 26.2 running Java 25.
+2. Look at the solid block that should act as the temporary test core.
+3. Run `/td admin core`.
+4. Stay within the configured combat radius and run `/td admin simulate 1`.
+5. Inspect the encounter with `/td admin status` or stop it safely with `/td admin abort`.
+
+All current commands require `towerdefense.admin` (operator by default).
+
