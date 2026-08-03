@@ -78,9 +78,29 @@ enemy block changes. Tile NBT, block-drop escrow, hopper/container/death protect
 protected-region validation, and role-specific AI remain future work. See
 `docs/ENEMY_TERRAIN_ACTION_SCOPE.md`.
 
+## PR #6 normal terminal terrain settlement boundary
+
+PR #6 adds the normal terminal terrain lifecycle without enabling enemy mutation in production:
+
+- schema v6 records `SETTLED` event-destruction rows and migrates the v5 ledger;
+- `EVENT_BLOCK` rows remain destroyed after normal victory, defeat, or abort, and are settled only
+  after their physical apply acknowledgement;
+- `TEMPORARY_BLOCK` rows are removed in reverse generation order through the existing conflict-safe
+  rollback planner;
+- Paper terminal handling completes terrain settlement before asynchronous event-lock release and
+  retries while retaining the lock if settlement fails.
+
+Technical recovery still rolls back every unresolved row. Physical block-drop escrow and its
+display/pickup/container/death lifecycle remain disabled and are the next safety boundary. See
+`docs/TERRAIN_SETTLEMENT_SCOPE.md`.
+
 ## Safety boundary
 
-Until normal-end terrain settlement and the block-drop escrow boundary exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled. PR5 has the guarded action path, but its production policy remains disabled.
+Until the block-drop escrow boundary exists, event enemies cannot break or place blocks and the
+simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued.
+Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI
+team management remain disabled. PR6 has the normal terrain settlement path, but PR5's production
+policy remains disabled.
 
 ## Acceptance mapping
 

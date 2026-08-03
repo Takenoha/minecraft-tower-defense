@@ -275,27 +275,7 @@ public final class BlockChangeRepository {
     /** Loads all ledger rows in reverse generation order for safe rollback. */
     public List<StoredBlockChange> loadChanges(UUID eventId) {
         Objects.requireNonNull(eventId, "eventId");
-        return read("load block changes", connection -> {
-            List<StoredBlockChange> changes = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    SELECT change_id, event_id, world_id, block_x, block_y, block_z,
-                           change_kind, generation, before_block_data, before_block_state,
-                           expected_after_block_data, expected_after_block_state, status,
-                           prepare_operation_id, apply_operation_id, rollback_operation_id,
-                           prepared_at, applied_at, resolved_at
-                    FROM event_block_changes
-                    WHERE event_id = ?
-                    ORDER BY generation DESC, change_id DESC
-                    """)) {
-                statement.setString(1, eventId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    while (resultSet.next()) {
-                        changes.add(blockChangeFromRow(resultSet));
-                    }
-                }
-            }
-            return List.copyOf(changes);
-        });
+        return read("load block changes", connection -> loadChanges(connection, eventId));
     }
 
     /** Loads only rows which still need a recovery decision. */
@@ -337,6 +317,90 @@ public final class BlockChangeRepository {
                 return resultSet.next();
             }
         }
+    }
+
+    /**
+     * Settles applied event-destruction rows in the same transaction as the normal terminal event.
+     * Temporary rows must already have been physically removed by the Paper adapter. Keeping this
+     * operation inside the terminal transaction means a crash before lock release still exposes
+     * the destruction rows to technical recovery.
+     */
+    static void settleAppliedEventBlocks(
+            Connection connection,
+            UUID eventId,
+            UUID terminalOperationId,
+            Instant settledAt) throws SQLException {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(terminalOperationId, "terminalOperationId");
+        Objects.requireNonNull(settledAt, "settledAt");
+        requireActiveEvent(connection, eventId);
+        for (StoredBlockChange change : loadChanges(connection, eventId)) {
+            if (change.status() == BlockChangeStatus.PREPARED) {
+                throw new PersistenceConflictException(
+                        "A block change is still prepared during normal terrain settlement");
+            }
+            if (change.status() != BlockChangeStatus.APPLIED) {
+                continue;
+            }
+            if (change.change().kind() != BlockChangeKind.EVENT_BLOCK) {
+                throw new PersistenceConflictException(
+                        "A temporary block remained unresolved during normal terrain settlement");
+            }
+            UUID operationId = deterministicOperation(
+                    terminalOperationId,
+                    "BLOCK_SETTLE",
+                    change.change().changeId());
+            ensureResourceOperationApplied(
+                    connection,
+                    operationId,
+                    eventId,
+                    "BLOCK_SETTLE",
+                    change.change().changeId(),
+                    settlementFingerprint(change.change()),
+                    settledAt);
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    UPDATE event_block_changes
+                    SET status = 'SETTLED', rollback_operation_id = ?, resolved_at = ?
+                    WHERE change_id = ? AND status = 'APPLIED'
+                    """)) {
+                statement.setString(1, operationId.toString());
+                statement.setString(2, settledAt.toString());
+                statement.setString(3, change.change().changeId().toString());
+                if (statement.executeUpdate() != 1) {
+                    throw new PersistenceConflictException(
+                            "The event block changed while terminal settlement was running");
+                }
+            }
+        }
+        if (hasUnresolved(connection, eventId)) {
+            throw new PersistenceConflictException(
+                    "Unresolved block changes remain after normal terrain settlement");
+        }
+    }
+
+    private static List<StoredBlockChange> loadChanges(
+            Connection connection,
+            UUID eventId) throws SQLException {
+        List<StoredBlockChange> changes = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT change_id, event_id, world_id, block_x, block_y, block_z,
+                       change_kind, generation, before_block_data, before_block_state,
+                       expected_after_block_data, expected_after_block_state, status,
+                       prepare_operation_id, apply_operation_id, rollback_operation_id,
+                       prepared_at, applied_at, resolved_at
+                FROM event_block_changes
+                WHERE event_id = ?
+                ORDER BY generation DESC, change_id DESC
+                """)) {
+            statement.setString(1, eventId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    changes.add(blockChangeFromRow(resultSet));
+                }
+            }
+        }
+        return List.copyOf(changes);
     }
 
     private OperationOutcome prepareResourceOperation(
@@ -396,6 +460,38 @@ public final class BlockChangeRepository {
             }
             throw failure("prepare a block resource operation", exception);
         }
+    }
+
+    private static void ensureResourceOperationApplied(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            String kind,
+            UUID targetId,
+            String fingerprint,
+            Instant timestamp) throws SQLException {
+        Optional<ResourceOperation> existing = loadResourceOperation(
+                connection, eventId, kind, targetId);
+        if (existing.isPresent()) {
+            requireMatchingResourceOperation(
+                    existing.orElseThrow(), operationId, eventId, kind, targetId, fingerprint);
+            if (existing.orElseThrow().state() == ResourceOperationState.PREPARED) {
+                markResourceOperationApplied(connection, operationId, timestamp);
+            }
+            return;
+        }
+        Optional<ResourceOperation> sameOperation = loadResourceOperation(connection, operationId);
+        if (sameOperation.isPresent()) {
+            requireMatchingResourceOperation(
+                    sameOperation.orElseThrow(), operationId, eventId, kind, targetId, fingerprint);
+            if (sameOperation.orElseThrow().state() == ResourceOperationState.PREPARED) {
+                markResourceOperationApplied(connection, operationId, timestamp);
+            }
+            return;
+        }
+        insertResourceOperation(
+                connection, operationId, eventId, kind, targetId, fingerprint, null, timestamp);
+        markResourceOperationApplied(connection, operationId, timestamp);
     }
 
     private static ResourceOperation requireResourceOperation(
@@ -636,6 +732,15 @@ public final class BlockChangeRepository {
             UUID eventId, UUID changeId, BlockRollbackDecision decision) {
         String changeFingerprint = loadFingerprint(eventId, changeId);
         return sha256(changeFingerprint + "|" + decision.name());
+    }
+
+    private static String settlementFingerprint(BlockChange change) {
+        return sha256(fingerprint(change) + "|BLOCK_SETTLE");
+    }
+
+    private static UUID deterministicOperation(UUID base, String namespace, UUID value) {
+        return UUID.nameUUIDFromBytes((base + "|" + namespace + "|" + value)
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     private static String sha256(String value) {

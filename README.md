@@ -46,6 +46,12 @@ and durable per-coordinate generation sequencing. The handler is wired into the 
 listener but is constructed disabled because normal-end terrain settlement, tile NBT, and escrow
 drop protection are not complete. See [the PR #5 scope](docs/ENEMY_TERRAIN_ACTION_SCOPE.md).
 
+The sixth milestone connects normal `VICTORY`, `DEFEAT`, and `ABORTED` termination to the terrain
+ledger: enemy destruction is settled in place, temporary enemy blocks are removed in reverse
+generation order, and player edits become durable conflicts rather than being overwritten. The
+production enemy mutation policy remains disabled until physical block-drop escrow and its item
+protection lifecycle are complete. See [the PR #6 scope](docs/TERRAIN_SETTLEMENT_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build

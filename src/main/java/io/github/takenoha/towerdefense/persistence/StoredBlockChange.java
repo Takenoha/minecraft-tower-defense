@@ -28,7 +28,9 @@ public record StoredBlockChange(
             throw new IllegalArgumentException(
                     "only an applied or resolved block change may have appliedAt");
         }
-        if ((status == BlockChangeStatus.ROLLED_BACK || status == BlockChangeStatus.CONFLICT)
+        if ((status == BlockChangeStatus.SETTLED
+                        || status == BlockChangeStatus.ROLLED_BACK
+                        || status == BlockChangeStatus.CONFLICT)
                 != resolvedAt.isPresent()) {
             throw new IllegalArgumentException(
                     "resolvedAt must match the terminal block ledger status");

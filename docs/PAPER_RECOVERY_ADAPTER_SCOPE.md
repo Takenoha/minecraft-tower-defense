@@ -27,3 +27,7 @@ operator inspection rather than claiming recovery succeeded.
 PR5 adds the narrowly scoped action and mandatory protection policy in
 `docs/ENEMY_TERRAIN_ACTION_SCOPE.md`; its production policy remains disabled until normal-end
 terrain settlement and block-drop escrow are connected.
+
+PR6 adds normal terminal settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`: destruction rows are
+kept in place, temporary rows are removed through the conflict-safe planner, and the event lock is
+not released when settlement fails. Physical block-drop escrow remains the next activation gate.

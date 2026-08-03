@@ -37,4 +37,5 @@ so a stop between physical restore and database acknowledgement can resume safel
 mutation and physical escrow delivery remain disabled; tagged escrow entity protection in hopper,
 container, death, and cross-world paths is still future work. PR5 adds the guarded single-block
 enemy action path and mandatory material policy, but leaves the production policy disabled until
-normal-end terrain settlement and block-drop escrow are connected.
+normal-end terrain settlement and block-drop escrow are connected. PR6 supplies the normal terrain
+settlement half; physical block-drop escrow remains outstanding.

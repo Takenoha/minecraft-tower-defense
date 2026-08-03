@@ -67,7 +67,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
         databaseExecutor = new DatabaseExecutor("tower-defense-db-");
         AsyncDefensePersistenceSink persistence = new AsyncDefensePersistenceSink(
                 repository, databaseExecutor);
-        sessions = new DefenseSessionManager(this, settings, tagger, persistence);
+        sessions = new DefenseSessionManager(this, settings, tagger, persistence, blockMutations);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);

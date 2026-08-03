@@ -1373,6 +1373,11 @@ public final class DefenseRepository {
                     return OperationOutcome.STATE_MISMATCH;
                 }
 
+                BlockChangeRepository.settleAppliedEventBlocks(
+                        connection,
+                        terminalSnapshot.eventId(),
+                        operationId,
+                        occurredAt);
                 if (!persistSnapshot(
                         connection,
                         current.coreId(),

@@ -28,3 +28,7 @@ therefore continues to cancel tagged enemy actions.
 Tile-container NBT, block drops, escrow display entities, hopper/container/death protection,
 protected-region validation, role-specific pathing, and normal-end terrain settlement remain future
 work. A future activation must keep the mandatory policy and add those lifecycle boundaries first.
+
+PR6 adds normal terminal terrain settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`. The action
+policy remains disabled until block-drop escrow and its physical-item protection lifecycle are also
+connected.

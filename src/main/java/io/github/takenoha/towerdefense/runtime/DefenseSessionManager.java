@@ -6,6 +6,7 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
+import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
@@ -67,6 +68,7 @@ public final class DefenseSessionManager
     private final CombatArea combatArea;
     private final EventEnemyTagger tagger;
     private final DefensePersistenceSink persistence;
+    private final PaperBlockMutationAdapter blockMutations;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -76,11 +78,13 @@ public final class DefenseSessionManager
             JavaPlugin plugin,
             PluginSettings settings,
             EventEnemyTagger tagger,
-            DefensePersistenceSink persistence) {
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
         this.persistence = Objects.requireNonNull(persistence, "persistence");
+        this.blockMutations = Objects.requireNonNull(blockMutations, "blockMutations");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -680,6 +684,9 @@ public final class DefenseSessionManager
         if (active != defense || !defense.ending || defense.finishInFlight) {
             return;
         }
+        if (!prepareTerrainSettlement(defense)) {
+            return;
+        }
         defense.finishInFlight = true;
         defense.finishAttempts++;
         CompletionStage<Void> completion = persistence.finish(
@@ -702,6 +709,31 @@ public final class DefenseSessionManager
             }
             active = null;
         }));
+    }
+
+    private boolean prepareTerrainSettlement(ActiveDefense defense) {
+        if (defense.terrainSettlementComplete
+                || defense.finishSnapshot == null
+                || defense.finishSnapshot.phase() == DefensePhase.RECOVERY) {
+            return true;
+        }
+        try {
+            blockMutations.settleEvent(
+                    defense.finishSnapshot.eventId(),
+                    defense.finishSnapshot.phase(),
+                    Instant.now());
+            defense.terrainSettlementComplete = true;
+            return true;
+        } catch (RuntimeException settlementFailure) {
+            defense.persistenceFailure = rootMessage(settlementFailure);
+            defense.finishRetryTick = currentTick + finishRetryDelay(defense.finishAttempts + 1);
+            plugin.getLogger().severe(
+                    "Could not settle Paper terrain for defense event "
+                            + defense.session.eventId()
+                            + "; it will retry automatically: "
+                            + defense.persistenceFailure);
+            return false;
+        }
     }
 
     private static long finishRetryDelay(int attempts) {
@@ -976,6 +1008,7 @@ public final class DefenseSessionManager
         private long finishRetryTick;
         private UUID finishOperationId;
         private DefenseSessionSnapshot finishSnapshot;
+        private boolean terrainSettlementComplete;
         private String persistenceFailure;
 
         private ActiveDefense(

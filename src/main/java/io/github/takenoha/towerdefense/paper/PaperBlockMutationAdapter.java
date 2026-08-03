@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.persistence.BlockChange;
 import io.github.takenoha.towerdefense.persistence.BlockChangeKind;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
@@ -165,6 +166,40 @@ public final class PaperBlockMutationAdapter {
         for (StoredBlockChange change : changes) {
             rollbackOne(eventId, change, recoveredAt);
         }
+    }
+
+    /**
+     * Settles a normal terminal event without restoring enemy destruction. Temporary blocks are
+     * removed in reverse generation order, while event-owned destruction rows are only marked
+     * settled after their physical apply acknowledgement exists.
+     */
+    public void settleEvent(UUID eventId, DefensePhase terminalPhase, Instant settledAt) {
+        requireMainThread();
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(terminalPhase, "terminalPhase");
+        Objects.requireNonNull(settledAt, "settledAt");
+        if (terminalPhase != DefensePhase.VICTORY
+                && terminalPhase != DefensePhase.DEFEAT
+                && terminalPhase != DefensePhase.ABORTED) {
+            throw new IllegalArgumentException("settleEvent requires a normal terminal phase");
+        }
+        for (StoredBlockChange change : ledger.loadUnresolvedChanges(eventId)) {
+            if (change.change().kind() == BlockChangeKind.TEMPORARY_BLOCK) {
+                rollbackOne(eventId, change, settledAt);
+            } else {
+                validateEventBlock(change);
+            }
+        }
+    }
+
+    private static void validateEventBlock(StoredBlockChange change) {
+        if (change.status() != BlockChangeStatus.APPLIED) {
+            throw new PersistenceConflictException(
+                    "An event-owned destruction has not reached the applied ledger state: "
+                            + change.change().changeId());
+        }
+        // The SETTLED row is committed atomically with DefenseRepository.finishEvent. Until then,
+        // a crash must leave this APPLIED row visible to technical recovery.
     }
 
     private void rollbackOne(

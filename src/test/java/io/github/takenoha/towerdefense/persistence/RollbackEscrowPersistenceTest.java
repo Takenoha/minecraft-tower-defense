@@ -264,6 +264,106 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void normalSettlementKeepsEventDestructionAndIsIdempotent() {
+        Fixture fixture = activeFixture("settlement.sqlite");
+        BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());
+        BlockChange change = new BlockChange(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                2,
+                64,
+                2,
+                BlockChangeKind.EVENT_BLOCK,
+                1L,
+                "minecraft:stone",
+                "minecraft:stone",
+                "minecraft:air",
+                "minecraft:air");
+        UUID prepareOperation = UUID.randomUUID();
+        UUID applyOperation = UUID.randomUUID();
+        assertEquals(OperationOutcome.APPLIED, ledger.prepare(change, prepareOperation, START));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                ledger.prepareApply(fixture.eventId(), change.changeId(), applyOperation, START));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                ledger.apply(
+                        fixture.eventId(),
+                        change.changeId(),
+                        applyOperation,
+                        START.plusSeconds(1L)));
+
+        assertTrue(fixture.session().abort());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                fixture.repository().finishEvent(
+                        fixture.session().snapshot(),
+                        1L,
+                        UUID.randomUUID(),
+                        START.plusSeconds(2L)));
+        assertEquals(
+                BlockChangeStatus.SETTLED,
+                ledger.loadChanges(fixture.eventId()).getFirst().status());
+        assertTrue(ledger.loadUnresolvedChanges(fixture.eventId()).isEmpty());
+        assertEquals(
+                OperationOutcome.ALREADY_TERMINAL,
+                fixture.repository().finishEvent(
+                        fixture.session().snapshot(),
+                        1L,
+                        UUID.randomUUID(),
+                        START.plusSeconds(3L)));
+    }
+
+    @Test
+    void normalSettlementRejectsUnresolvedTemporaryAndLeavesEventRecoverable() {
+        Fixture fixture = activeFixture("settlement-recovery.sqlite");
+        BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());
+        BlockChange change = new BlockChange(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                3,
+                64,
+                3,
+                BlockChangeKind.TEMPORARY_BLOCK,
+                1L,
+                "minecraft:stone",
+                "minecraft:stone",
+                "minecraft:glass",
+                "minecraft:glass");
+        UUID applyOperation = UUID.randomUUID();
+        assertEquals(OperationOutcome.APPLIED, ledger.prepare(change, UUID.randomUUID(), START));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                ledger.prepareApply(fixture.eventId(), change.changeId(), applyOperation, START));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                ledger.apply(
+                        fixture.eventId(),
+                        change.changeId(),
+                        applyOperation,
+                        START.plusSeconds(1L)));
+        assertTrue(fixture.session().abort());
+
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> fixture.repository().finishEvent(
+                        fixture.session().snapshot(),
+                        1L,
+                        UUID.randomUUID(),
+                        START.plusSeconds(2L)));
+        // The terminal transaction must roll back completely when physical temporary cleanup was
+        // not acknowledged. Technical recovery can still see and resolve the APPLIED row.
+        assertEquals(BlockChangeStatus.APPLIED, ledger.loadChanges(fixture.eventId()).getFirst().status());
+        assertEquals(1, ledger.loadUnresolvedChanges(fixture.eventId()).size());
+        assertEquals(
+                DefensePhase.PREPARATION,
+                fixture.repository().findEvent(fixture.eventId()).orElseThrow().session().phase());
+        assertEquals(fixture.eventId(), fixture.repository().activeEventId().orElseThrow());
+    }
+
+    @Test
     void escrowClaimsOnlyRegisteredParticipantsAndNormalAbortSettlesWithoutDuplication() {
         Fixture fixture = activeFixture("escrow-abort.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());

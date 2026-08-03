@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 5;
+    public static final int CURRENT_VERSION = 6;
 
     private SchemaMigrator() {
     }
@@ -43,6 +43,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 5) {
                     applyVersionFive(connection);
                     recordMigration(connection, 5);
+                }
+                if (installedVersion < 6) {
+                    applyVersionSix(connection);
+                    recordMigration(connection, 6);
                 }
                 return null;
             });
@@ -446,6 +450,107 @@ public final class SchemaMigrator {
                             'RESTORE', 'SKIP_ALREADY_BEFORE', 'CONFLICT'
                         )
                     )
+                    """);
+        }
+    }
+
+    private static void applyVersionSix(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS event_mutation_operations_event_idx");
+            statement.executeUpdate(
+                    "ALTER TABLE event_mutation_operations RENAME TO event_mutation_operations_v5");
+            statement.executeUpdate("""
+                    CREATE TABLE event_mutation_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+                            'BLOCK_APPLY', 'BLOCK_ROLLBACK', 'BLOCK_SETTLE', 'DROP_CLAIM', 'DROP_SETTLE',
+                            'DROP_VOID', 'REWARD_ISSUE'
+                        )),
+                        target_id TEXT NOT NULL,
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (state IN ('PREPARED', 'APPLIED')),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rollback_decision TEXT CHECK (
+                            rollback_decision IS NULL OR rollback_decision IN (
+                                'RESTORE', 'SKIP_ALREADY_BEFORE', 'CONFLICT'
+                            )
+                        ),
+                        UNIQUE (event_id, operation_kind, target_id),
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO event_mutation_operations(
+                        operation_id, event_id, operation_kind, target_id,
+                        payload_fingerprint, state, prepared_at, applied_at, rollback_decision
+                    )
+                    SELECT operation_id, event_id, operation_kind, target_id,
+                           payload_fingerprint, state, prepared_at, applied_at, rollback_decision
+                    FROM event_mutation_operations_v5
+                    """);
+            statement.executeUpdate("DROP TABLE event_mutation_operations_v5");
+            statement.executeUpdate("""
+                    CREATE INDEX event_mutation_operations_event_idx
+                    ON event_mutation_operations(event_id, operation_kind, state)
+                    """);
+            statement.executeUpdate("DROP INDEX IF EXISTS event_block_changes_recovery_idx");
+            statement.executeUpdate(
+                    "ALTER TABLE event_block_changes RENAME TO event_block_changes_v5");
+            statement.executeUpdate("""
+                    CREATE TABLE event_block_changes (
+                        change_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        change_kind TEXT NOT NULL CHECK (
+                            change_kind IN ('EVENT_BLOCK', 'TEMPORARY_BLOCK')
+                        ),
+                        generation INTEGER NOT NULL CHECK (generation > 0),
+                        before_block_data TEXT NOT NULL,
+                        before_block_state TEXT NOT NULL,
+                        expected_after_block_data TEXT NOT NULL,
+                        expected_after_block_state TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (
+                            status IN ('PREPARED', 'APPLIED', 'SETTLED', 'ROLLED_BACK', 'CONFLICT')
+                        ),
+                        prepare_operation_id TEXT NOT NULL UNIQUE,
+                        apply_operation_id TEXT UNIQUE,
+                        rollback_operation_id TEXT UNIQUE,
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        resolved_at TEXT,
+                        UNIQUE (event_id, world_id, block_x, block_y, block_z, generation),
+                        CHECK ((status = 'PREPARED' AND applied_at IS NULL)
+                               OR (status <> 'PREPARED' AND applied_at IS NOT NULL)),
+                        CHECK ((status IN ('SETTLED', 'ROLLED_BACK', 'CONFLICT')
+                                    AND resolved_at IS NOT NULL)
+                               OR (status IN ('PREPARED', 'APPLIED') AND resolved_at IS NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO event_block_changes(
+                        change_id, event_id, world_id, block_x, block_y, block_z,
+                        change_kind, generation, before_block_data, before_block_state,
+                        expected_after_block_data, expected_after_block_state, status,
+                        prepare_operation_id, apply_operation_id, rollback_operation_id,
+                        prepared_at, applied_at, resolved_at
+                    )
+                    SELECT change_id, event_id, world_id, block_x, block_y, block_z,
+                           change_kind, generation, before_block_data, before_block_state,
+                           expected_after_block_data, expected_after_block_state, status,
+                           prepare_operation_id, apply_operation_id, rollback_operation_id,
+                           prepared_at, applied_at, resolved_at
+                    FROM event_block_changes_v5
+                    """);
+            statement.executeUpdate("DROP TABLE event_block_changes_v5");
+            statement.executeUpdate("""
+                    CREATE INDEX event_block_changes_recovery_idx
+                    ON event_block_changes(event_id, status, generation DESC)
                     """);
         }
     }

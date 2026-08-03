@@ -4,6 +4,7 @@ package io.github.takenoha.towerdefense.persistence;
 public enum BlockChangeStatus {
     PREPARED,
     APPLIED,
+    SETTLED,
     ROLLED_BACK,
     CONFLICT
 }
