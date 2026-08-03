@@ -4,6 +4,7 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /** Immutable input to the atomic session-create and global-lock operation. */
@@ -12,12 +13,24 @@ public record StartRequest(
         UUID coreId,
         String configSnapshot,
         int configVersion,
-        Instant startedAt) {
+        Instant startedAt,
+        Optional<UUID> raidSealId) {
+    /** Backwards-compatible administrator/test start which deliberately consumes no seal. */
+    public StartRequest(
+            DefenseSessionSnapshot session,
+            UUID coreId,
+            String configSnapshot,
+            int configVersion,
+            Instant startedAt) {
+        this(session, coreId, configSnapshot, configVersion, startedAt, Optional.empty());
+    }
+
     public StartRequest {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(configSnapshot, "configSnapshot");
         Objects.requireNonNull(startedAt, "startedAt");
+        raidSealId = Objects.requireNonNull(raidSealId, "raidSealId");
         if (session.phase() != DefensePhase.COUNTDOWN) {
             throw new IllegalArgumentException("A new session must begin in COUNTDOWN");
         }

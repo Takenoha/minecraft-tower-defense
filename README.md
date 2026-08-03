@@ -23,6 +23,12 @@ The first PR is a safe, administrator-only walking skeleton:
 - startup recovery that never resumes a half-finished encounter;
 - no terrain mutation, custom rewards, start-item consumption, or towers until their rollback boundaries exist.
 
+The second milestone adds those rollback boundaries as a persistence-only foundation. It records
+write-ahead block changes, protects later player edits during recovery, keeps event drops in a
+virtual escrow, and makes raid-seal refunds issue a new UUID. The Paper simulation still does not
+enable terrain mutation, physical escrow items, or rewards; the main-thread adapters remain the
+next milestone. See [the PR #2 scope](docs/ROLLBACK_ESCROW_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build
@@ -42,4 +48,3 @@ The plugin JAR is written to `build/libs/minecraft-tower-defense-0.1.0-SNAPSHOT.
 5. Inspect the encounter with `/td admin status` or stop it safely with `/td admin abort`.
 
 All current commands require `towerdefense.admin` (operator by default).
-

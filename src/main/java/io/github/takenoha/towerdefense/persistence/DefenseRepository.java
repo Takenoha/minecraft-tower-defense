@@ -207,6 +207,7 @@ public final class DefenseRepository {
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
                 }
+                RaidSealRepository.consumeForStart(connection, request);
                 return StartOutcome.STARTED;
             });
         } catch (SQLException exception) {
@@ -476,6 +477,10 @@ public final class DefenseRepository {
                             "Cannot recover an event while another event owns the global lock",
                             null);
                 }
+                if (BlockChangeRepository.hasUnresolved(connection, eventId)) {
+                    throw new PersistenceConflictException(
+                            "Block changes must be rolled back or marked as conflicts before event recovery");
+                }
 
                 if (!persistSnapshot(
                         connection,
@@ -487,6 +492,10 @@ public final class DefenseRepository {
                 }
                 replaceParticipants(connection, recovery, occurredAt);
                 markEnemiesRecoveryRemoved(connection, eventId, occurredAt);
+                EscrowRepository.voidForRecovery(
+                        connection, eventId, operationId, occurredAt);
+                RaidSealRepository.refundIfPresent(
+                        connection, eventId, operationId, occurredAt);
                 markTerminal(connection, eventId, operationId, occurredAt);
                 insertOperation(
                         connection,
@@ -708,6 +717,12 @@ public final class DefenseRepository {
                     return OperationOutcome.STATE_MISMATCH;
                 }
                 replaceParticipants(connection, terminalSnapshot, occurredAt);
+                EscrowRepository.settleForTerminal(
+                        connection,
+                        terminalSnapshot.eventId(),
+                        operationId,
+                        terminalSnapshot.phase(),
+                        occurredAt);
                 markEnemiesDespawned(
                         connection, terminalSnapshot.eventId(), occurredAt);
                 markTerminal(
@@ -1000,15 +1015,14 @@ public final class DefenseRepository {
             Connection connection,
             DefenseSessionSnapshot snapshot,
             Instant changedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM event_participants WHERE event_id = ?")) {
-            statement.setString(1, snapshot.eventId().toString());
-            statement.executeUpdate();
-        }
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO event_participants(
                     event_id, player_id, registered, effective, joined_at
                 ) VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(event_id, player_id) DO UPDATE SET
+                    registered = excluded.registered,
+                    effective = 1,
+                    joined_at = excluded.joined_at
                 """)) {
             for (UUID playerId : snapshot.effectiveParticipants()) {
                 statement.setString(1, snapshot.eventId().toString());
