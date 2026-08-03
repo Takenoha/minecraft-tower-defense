@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 6;
+    public static final int CURRENT_VERSION = 8;
 
     private SchemaMigrator() {
     }
@@ -47,6 +47,14 @@ public final class SchemaMigrator {
                 if (installedVersion < 6) {
                     applyVersionSix(connection);
                     recordMigration(connection, 6);
+                }
+                if (installedVersion < 7) {
+                    applyVersionSeven(connection);
+                    recordMigration(connection, 7);
+                }
+                if (installedVersion < 8) {
+                    applyVersionEight(connection);
+                    recordMigration(connection, 8);
                 }
                 return null;
             });
@@ -551,6 +559,68 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX event_block_changes_recovery_idx
                     ON event_block_changes(event_id, status, generation DESC)
+                    """);
+        }
+    }
+
+    private static void applyVersionSeven(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE event_reward_delivery_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        queue_id TEXT NOT NULL UNIQUE REFERENCES event_reward_queue(queue_id)
+                            ON DELETE RESTRICT,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id)
+                            ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_reward_delivery_operations_event_idx
+                    ON event_reward_delivery_operations(event_id, player_id)
+                    """);
+        }
+    }
+
+    private static void applyVersionEight(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS event_reward_delivery_operations_event_idx");
+            statement.executeUpdate(
+                    "ALTER TABLE event_reward_delivery_operations RENAME TO "
+                            + "event_reward_delivery_operations_v7");
+            statement.executeUpdate("""
+                    CREATE TABLE event_reward_delivery_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        queue_id TEXT NOT NULL UNIQUE REFERENCES event_reward_queue(queue_id)
+                            ON DELETE RESTRICT,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id)
+                            ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (state IN ('PREPARED', 'APPLIED')),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO event_reward_delivery_operations(
+                        operation_id, queue_id, event_id, player_id, quantity,
+                        payload_fingerprint, state, prepared_at, applied_at
+                    )
+                    SELECT operation_id, queue_id, event_id, player_id, quantity,
+                           payload_fingerprint, 'APPLIED', applied_at, applied_at
+                    FROM event_reward_delivery_operations_v7
+                    """);
+            statement.executeUpdate("DROP TABLE event_reward_delivery_operations_v7");
+            statement.executeUpdate("""
+                    CREATE INDEX event_reward_delivery_operations_event_idx
+                    ON event_reward_delivery_operations(event_id, player_id, state)
                     """);
         }
     }

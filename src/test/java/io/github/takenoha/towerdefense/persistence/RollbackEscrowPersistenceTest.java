@@ -10,6 +10,7 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -447,6 +448,76 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void personalRewardDeliveryIsRecipientBoundAndIdempotent() {
+        Fixture fixture = activeFixture("reward-delivery.sqlite");
+        EscrowRepository escrow = new EscrowRepository(fixture.database());
+        EscrowDrop drop = new EscrowDrop(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                DropSourceKind.ENEMY,
+                UUID.randomUUID(),
+                "minecraft:iron_ingot",
+                "{schema: 1}",
+                2,
+                Optional.empty());
+        escrow.prepare(drop, UUID.randomUUID(), START);
+        UUID claimOperation = UUID.randomUUID();
+        escrow.claim(
+                fixture.eventId(),
+                drop.dropId(),
+                fixture.ownerId(),
+                2,
+                claimOperation,
+                START.plusSeconds(1L));
+
+        assertTrue(fixture.session().abort());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                fixture.repository().finishEvent(
+                        fixture.session().snapshot(),
+                        1L,
+                        UUID.randomUUID(),
+                        START.plusSeconds(2L)));
+
+        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).getFirst();
+        assertEquals(
+                List.of(queue),
+                escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()));
+        UUID deliveryOperation = UUID.randomUUID();
+        assertEquals(
+                RewardDeliveryOutcome.ACQUIRED,
+                escrow.prepareRewardDelivery(
+                        queue.queueId(),
+                        fixture.ownerId(),
+                        deliveryOperation,
+                        START.plusSeconds(3L)));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                escrow.markRewardDelivered(
+                        queue.queueId(),
+                        fixture.ownerId(),
+                        deliveryOperation,
+                        START.plusSeconds(3L)));
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                escrow.markRewardDelivered(
+                        queue.queueId(),
+                        fixture.ownerId(),
+                        deliveryOperation,
+                        START.plusSeconds(4L)));
+        assertTrue(escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).isEmpty());
+        assertEquals(RewardQueueStatus.DELIVERED, escrow.findRewardQueue(queue.queueId())
+                .orElseThrow().status());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> escrow.markRewardDelivered(
+                        queue.queueId(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        START.plusSeconds(5L)));
+    }
+
+    @Test
     void victoryMovesUnclaimedEscrowToOneTeamQueue() {
         Fixture fixture = activeFixture("escrow-victory.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());
@@ -507,6 +578,24 @@ final class RollbackEscrowPersistenceTest {
         assertEquals(RewardQueueScope.TEAM, queue.scope());
         assertEquals(fixture.teamId(), queue.recipientId());
         assertEquals(3, queue.quantity());
+        assertEquals(1, escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).size());
+        UUID deliveryOperation = UUID.randomUUID();
+        assertEquals(
+                RewardDeliveryOutcome.ACQUIRED,
+                escrow.prepareRewardDelivery(
+                        queue.queueId(),
+                        fixture.ownerId(),
+                        deliveryOperation,
+                        START.plusSeconds(revision + 1L)));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                escrow.markRewardDelivered(
+                        queue.queueId(),
+                        fixture.ownerId(),
+                        deliveryOperation,
+                        START.plusSeconds(revision + 2L)));
+        assertEquals(RewardQueueStatus.DELIVERED, escrow.findRewardQueue(queue.queueId())
+                .orElseThrow().status());
     }
 
     @Test

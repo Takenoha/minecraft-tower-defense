@@ -11,6 +11,9 @@ import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
+import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
+import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
+import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
 import io.github.takenoha.towerdefense.persistence.Database;
@@ -39,6 +42,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
     private DefenseSessionManager sessions;
     private PaperBlockMutationAdapter blockMutations;
     private PaperEscrowDropManager escrowDrops;
+    private RewardQueueDeliveryManager rewardQueues;
 
     @Override
     public void onEnable() {
@@ -65,11 +69,17 @@ public final class TowerDefensePlugin extends JavaPlugin {
         DefenseRepository repository = new DefenseRepository(database);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
         databaseExecutor = new DatabaseExecutor("tower-defense-db-");
+        EscrowRepository escrowRepository = new EscrowRepository(database);
         escrowDrops = new PaperEscrowDropManager(
                 this,
-                new EscrowRepository(database),
+                escrowRepository,
                 databaseExecutor,
                 new EscrowDropTagger(this));
+        rewardQueues = new RewardQueueDeliveryManager(
+                this,
+                escrowRepository,
+                databaseExecutor,
+                new RewardQueueReceiptTagger(this));
         escrowDrops.removeAllTaggedDisplays();
         EventEnemyTagger tagger = new EventEnemyTagger(this);
         recoverInterruptedEvents(repository, tagger, blockMutations, escrowDrops);
@@ -79,7 +89,13 @@ public final class TowerDefensePlugin extends JavaPlugin {
         AsyncDefensePersistenceSink persistence = new AsyncDefensePersistenceSink(
                 repository, databaseExecutor);
         sessions = new DefenseSessionManager(
-                this, settings, tagger, persistence, blockMutations, escrowDrops);
+                this,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
@@ -96,6 +112,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                                 sessions)),
                 this);
         getServer().getPluginManager().registerEvents(new EscrowDropListener(escrowDrops), this);
+        getServer().getPluginManager().registerEvents(
+                new RewardQueueDeliveryListener(rewardQueues), this);
 
         TowerDefenseCommand commandHandler = new TowerDefenseCommand(
                 this,
@@ -112,11 +130,15 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
         getLogger().info(
                 "Minecraft Tower Defense foundation enabled for Paper 26.2 build 87; "
-                        + "terrain mutation and rewards remain disabled.");
+                        + "terrain mutation remains disabled; persisted reward queues are retried.");
     }
 
     @Override
     public void onDisable() {
+        if (rewardQueues != null) {
+            rewardQueues.close();
+            rewardQueues = null;
+        }
         if (sessions != null) {
             if (sessions.hasActiveSession()) {
                 if (blockMutations != null) {

@@ -484,24 +484,214 @@ public final class EscrowRepository {
                 statement.setString(1, eventId.toString());
                 try (ResultSet resultSet = statement.executeQuery()) {
                     while (resultSet.next()) {
-                        entries.add(new RewardQueueEntry(
-                                uuid(resultSet.getString("queue_id")),
-                                uuid(resultSet.getString("event_id")),
-                                RewardQueueScope.valueOf(resultSet.getString("scope")),
-                                uuid(resultSet.getString("recipient_id")),
-                                resultSet.getString("item_id"),
-                                resultSet.getString("item_payload"),
-                                resultSet.getInt("quantity"),
-                                uuid(resultSet.getString("source_drop_id")),
-                                RewardQueueStatus.valueOf(resultSet.getString("status")),
-                                uuid(resultSet.getString("issued_operation_id")),
-                                instant(resultSet.getString("created_at")),
-                                instant(resultSet.getString("updated_at"))));
+                        entries.add(rewardQueueFromRow(resultSet));
                     }
                 }
             }
             return List.copyOf(entries);
         });
+    }
+
+    /** Loads pending rows which a currently registered player is allowed to receive. */
+    public List<RewardQueueEntry> loadPendingRewardQueueForPlayer(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load pending rewards for a player", connection -> {
+            List<RewardQueueEntry> entries = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT q.queue_id, q.event_id, q.scope, q.recipient_id, q.item_id,
+                           q.item_payload, q.quantity, q.source_drop_id, q.status,
+                           q.issued_operation_id, q.created_at, q.updated_at
+                    FROM event_reward_queue q
+                    JOIN defense_events e ON e.event_id = q.event_id
+                    WHERE q.status = 'PENDING'
+                      AND (
+                          (q.scope = 'PLAYER' AND q.recipient_id = ?)
+                          OR (
+                              q.scope = 'TEAM'
+                              AND q.recipient_id = e.team_id
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM event_participants p
+                                  JOIN team_members m
+                                    ON m.team_id = e.team_id AND m.player_id = p.player_id
+                                  WHERE p.event_id = q.event_id
+                                    AND p.player_id = ?
+                                    AND p.registered = 1
+                              )
+                          )
+                      )
+                    ORDER BY q.created_at, q.queue_id
+                    """)) {
+                statement.setString(1, playerId.toString());
+                statement.setString(2, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        entries.add(rewardQueueFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(entries);
+        });
+    }
+
+    /** Loads one queue row for reconciliation after a Paper-side delivery retry. */
+    public Optional<RewardQueueEntry> findRewardQueue(UUID queueId) {
+        Objects.requireNonNull(queueId, "queueId");
+        return read("load a reward queue row", connection -> loadRewardQueue(connection, queueId));
+    }
+
+    /**
+     * Commits one physical inventory delivery after Paper has accepted the item stack.
+     *
+     * <p>The operation and the queue transition are one SQLite transaction. The Paper caller
+     * uses a queue UUID receipt on the accepted ItemStack, so a stop between inventory mutation
+     * and this method is recoverable without issuing a second queue row.</p>
+     */
+    public RewardDeliveryOutcome prepareRewardDelivery(
+            UUID queueId,
+            UUID playerId,
+            UUID operationId,
+            Instant preparedAt) {
+        Objects.requireNonNull(queueId, "queueId");
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(preparedAt, "preparedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                RewardQueueEntry entry = loadRewardQueue(connection, queueId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Unknown reward queue row " + queueId));
+                requireAuthorizedRewardRecipient(connection, entry, playerId);
+                if (entry.status() == RewardQueueStatus.DELIVERED) {
+                    return RewardDeliveryOutcome.ALREADY_DELIVERED;
+                }
+                if (entry.status() == RewardQueueStatus.VOIDED) {
+                    return RewardDeliveryOutcome.VOIDED;
+                }
+
+                String fingerprint = rewardDeliveryFingerprint(entry, playerId);
+                Optional<RewardDeliveryOperation> existing =
+                        loadRewardDeliveryOperationForQueue(connection, queueId);
+                if (existing.isPresent()) {
+                    RewardDeliveryOperation operation = existing.orElseThrow();
+                    if (!operation.playerId().equals(playerId)) {
+                        return RewardDeliveryOutcome.HELD_BY_OTHER;
+                    }
+                    requireMatchingRewardDelivery(
+                            operation, operation.operationId(), entry, playerId, fingerprint);
+                    if (!operation.operationId().equals(operationId)) {
+                        throw new PersistenceConflictException(
+                                "The reward queue is already reserved by this player"
+                                        + " with another operation UUID");
+                    }
+                    return operation.state() == RewardDeliveryState.APPLIED
+                            ? RewardDeliveryOutcome.ALREADY_DELIVERED
+                            : RewardDeliveryOutcome.ALREADY_ACQUIRED;
+                }
+                if (loadRewardDeliveryOperation(connection, operationId).isPresent()) {
+                    throw new PersistenceConflictException(
+                            "The reward delivery operation UUID is already in use");
+                }
+
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO event_reward_delivery_operations(
+                            operation_id, queue_id, event_id, player_id, quantity,
+                            payload_fingerprint, state, prepared_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                        """)) {
+                    statement.setString(1, operationId.toString());
+                    statement.setString(2, queueId.toString());
+                    statement.setString(3, entry.eventId().toString());
+                    statement.setString(4, playerId.toString());
+                    statement.setInt(5, entry.quantity());
+                    statement.setString(6, fingerprint);
+                    statement.setString(7, preparedAt.toString());
+                    statement.executeUpdate();
+                }
+                return RewardDeliveryOutcome.ACQUIRED;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The reward delivery reservation conflicts with persisted data", exception);
+            }
+            throw failure("reserve a reward delivery", exception);
+        }
+    }
+
+    /**
+     * Commits one physical inventory delivery after Paper has accepted the item stack.
+     *
+     * <p>The operation and the queue transition are one SQLite transaction. The Paper caller
+     * uses a queue UUID receipt on the accepted ItemStack, so a stop between inventory mutation
+     * and this method is recoverable without issuing a second queue row.</p>
+     */
+    public OperationOutcome markRewardDelivered(
+            UUID queueId,
+            UUID playerId,
+            UUID operationId,
+            Instant deliveredAt) {
+        Objects.requireNonNull(queueId, "queueId");
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(deliveredAt, "deliveredAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                RewardQueueEntry entry = loadRewardQueue(connection, queueId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Unknown reward queue row " + queueId));
+                requireAuthorizedRewardRecipient(connection, entry, playerId);
+                if (entry.status() == RewardQueueStatus.DELIVERED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (entry.status() == RewardQueueStatus.VOIDED) {
+                    throw new PersistenceConflictException(
+                            "A voided reward queue row cannot be delivered");
+                }
+
+                String fingerprint = rewardDeliveryFingerprint(entry, playerId);
+                RewardDeliveryOperation operation = loadRewardDeliveryOperationForQueue(
+                        connection, queueId).orElseThrow(
+                                () -> new PersistenceConflictException(
+                                        "The reward delivery was not reserved first"));
+                requireMatchingRewardDelivery(
+                        operation, operationId, entry, playerId, fingerprint);
+                if (operation.state() == RewardDeliveryState.APPLIED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE event_reward_delivery_operations
+                        SET state = 'APPLIED', applied_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, deliveredAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The reward delivery reservation was concurrently resolved");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE event_reward_queue
+                        SET status = 'DELIVERED', updated_at = ?
+                        WHERE queue_id = ? AND status = 'PENDING'
+                        """)) {
+                    statement.setString(1, deliveredAt.toString());
+                    statement.setString(2, queueId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The reward queue row was concurrently resolved");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The reward delivery operation conflicts with persisted data", exception);
+            }
+            throw failure("mark a reward as delivered", exception);
+        }
     }
 
     /** Package-private hook used by the event terminal transaction. */
@@ -697,6 +887,143 @@ public final class EscrowRepository {
             }
         }
         return claims;
+    }
+
+    private static Optional<RewardQueueEntry> loadRewardQueue(
+            Connection connection, UUID queueId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT queue_id, event_id, scope, recipient_id, item_id, item_payload,
+                       quantity, source_drop_id, status, issued_operation_id,
+                       created_at, updated_at
+                FROM event_reward_queue WHERE queue_id = ?
+                """)) {
+            statement.setString(1, queueId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(rewardQueueFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static RewardQueueEntry rewardQueueFromRow(ResultSet resultSet)
+            throws SQLException {
+        return new RewardQueueEntry(
+                uuid(resultSet.getString("queue_id")),
+                uuid(resultSet.getString("event_id")),
+                RewardQueueScope.valueOf(resultSet.getString("scope")),
+                uuid(resultSet.getString("recipient_id")),
+                resultSet.getString("item_id"),
+                resultSet.getString("item_payload"),
+                resultSet.getInt("quantity"),
+                uuid(resultSet.getString("source_drop_id")),
+                RewardQueueStatus.valueOf(resultSet.getString("status")),
+                uuid(resultSet.getString("issued_operation_id")),
+                instant(resultSet.getString("created_at")),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static void requireAuthorizedRewardRecipient(
+            Connection connection,
+            RewardQueueEntry entry,
+            UUID playerId) throws SQLException {
+        if (entry.scope() == RewardQueueScope.PLAYER) {
+            if (!entry.recipientId().equals(playerId)) {
+                throw new PersistenceConflictException(
+                        "Only the personal reward recipient may receive this queue row");
+            }
+            return;
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1
+                FROM defense_events e
+                JOIN team_members m ON m.team_id = e.team_id AND m.player_id = ?
+                JOIN event_participants p
+                  ON p.event_id = e.event_id AND p.player_id = m.player_id
+                WHERE e.event_id = ?
+                  AND e.team_id = ?
+                  AND p.registered = 1
+                """)) {
+            statement.setString(1, playerId.toString());
+            statement.setString(2, entry.eventId().toString());
+            statement.setString(3, entry.recipientId().toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "Only a registered member of the reward team may receive this queue row");
+                }
+            }
+        }
+    }
+
+    private static String rewardDeliveryFingerprint(RewardQueueEntry entry, UUID playerId) {
+        return sha256(entry.queueId() + "|" + entry.eventId() + "|" + playerId + "|"
+                + entry.itemId() + "|" + entry.quantity());
+    }
+
+    private static Optional<RewardDeliveryOperation> loadRewardDeliveryOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, queue_id, event_id, player_id, quantity,
+                       payload_fingerprint, state, prepared_at, applied_at
+                FROM event_reward_delivery_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(rewardDeliveryOperationFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<RewardDeliveryOperation> loadRewardDeliveryOperationForQueue(
+            Connection connection, UUID queueId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, queue_id, event_id, player_id, quantity,
+                       payload_fingerprint, state, prepared_at, applied_at
+                FROM event_reward_delivery_operations WHERE queue_id = ?
+                """)) {
+            statement.setString(1, queueId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(rewardDeliveryOperationFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static RewardDeliveryOperation rewardDeliveryOperationFromRow(
+            ResultSet resultSet) throws SQLException {
+        return new RewardDeliveryOperation(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("queue_id")),
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("player_id")),
+                resultSet.getInt("quantity"),
+                resultSet.getString("payload_fingerprint"),
+                RewardDeliveryState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                resultSet.getString("applied_at") == null
+                        ? Optional.empty()
+                        : Optional.of(instant(resultSet.getString("applied_at"))));
+    }
+
+    private static void requireMatchingRewardDelivery(
+            RewardDeliveryOperation operation,
+            UUID operationId,
+            RewardQueueEntry entry,
+            UUID playerId,
+            String fingerprint) {
+        if (!operation.operationId().equals(operationId)
+                || !operation.queueId().equals(entry.queueId())
+                || !operation.eventId().equals(entry.eventId())
+                || !operation.playerId().equals(playerId)
+                || operation.quantity() != entry.quantity()
+                || !operation.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The reward delivery operation UUID is already assigned to another payload");
+        }
     }
 
     private static StoredEscrowDrop dropFromRow(ResultSet resultSet) throws SQLException {
@@ -1091,6 +1418,23 @@ public final class EscrowRepository {
     }
 
     private enum ResourceOperationState {
+        PREPARED,
+        APPLIED
+    }
+
+    private record RewardDeliveryOperation(
+            UUID operationId,
+            UUID queueId,
+            UUID eventId,
+            UUID playerId,
+            int quantity,
+            String payloadFingerprint,
+            RewardDeliveryState state,
+            Instant preparedAt,
+            Optional<Instant> appliedAt) {
+    }
+
+    private enum RewardDeliveryState {
         PREPARED,
         APPLIED
     }

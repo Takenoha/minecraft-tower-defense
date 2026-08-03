@@ -8,6 +8,7 @@ import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
+import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
@@ -48,7 +49,8 @@ import org.bukkit.scheduler.BukkitTask;
 
 /**
  * Main-thread walking-skeleton runtime for a single globally locked defense event.
- * It deliberately has no terrain mutation or reward code.
+ * Terrain mutation remains disabled by policy; terminal reward rows are delivered through the
+ * database-owned queue bridge after the terminal transaction commits.
  */
 public final class DefenseSessionManager
         implements EnemyLifecycleSink, EnemyAccessPolicy, AutoCloseable {
@@ -71,6 +73,7 @@ public final class DefenseSessionManager
     private final DefensePersistenceSink persistence;
     private final PaperBlockMutationAdapter blockMutations;
     private final PaperEscrowDropManager escrowDrops;
+    private final RewardQueueDeliveryManager rewardQueues;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -82,13 +85,15 @@ public final class DefenseSessionManager
             EventEnemyTagger tagger,
             DefensePersistenceSink persistence,
             PaperBlockMutationAdapter blockMutations,
-            PaperEscrowDropManager escrowDrops) {
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
         this.persistence = Objects.requireNonNull(persistence, "persistence");
         this.blockMutations = Objects.requireNonNull(blockMutations, "blockMutations");
         this.escrowDrops = Objects.requireNonNull(escrowDrops, "escrowDrops");
+        this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -712,6 +717,9 @@ public final class DefenseSessionManager
                 return;
             }
             escrowDrops.removeEventDisplays(defense.session.eventId());
+            if (defense.finishSnapshot.phase() != DefensePhase.RECOVERY) {
+                rewardQueues.onEventSettled(defense.session.eventId());
+            }
             active = null;
         }));
     }

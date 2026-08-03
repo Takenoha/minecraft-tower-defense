@@ -111,11 +111,29 @@ the production terrain policy disabled:
 Reward queue delivery, Tile NBT, protected-region validation, and role-specific terrain AI remain
 future work. See `docs/BLOCK_DROP_ESCROW_SCOPE.md`.
 
+## PR #8 reward queue delivery boundary
+
+PR #8 connects terminal queue rows to Paper inventory delivery while keeping terrain mutation
+disabled:
+
+- schema v8 records a prepared/applied, idempotent delivery operation per queue row;
+- original personal recipients and registered current team members are the only eligible readers;
+- a shared TEAM row is durably reserved for one eligible player during its inventory handoff;
+- online players are retried after normal terminal persistence and at login;
+- the Paper main-thread inventory handoff uses a queue/operation receipt, and full inventories or
+  failures leave the row pending for a later retry.
+
+Technical recovery still voids the queue atomically and does not schedule delivery. Custom reward
+catalogs, research progression, team-queue retention fallback, Tile NBT, protected-region checks,
+role-specific terrain AI, and production terrain activation remain future work. See
+`docs/REWARD_QUEUE_DELIVERY_SCOPE.md`.
+
 ## Safety boundary
 
 Until the remaining activation gates exist, event enemies cannot break or place blocks and the
-simulation creates no custom or vanilla rewards. PR #7 supplies only database-owned block-drop
-capture and a non-usable physical display; no temporary substitute rewards are issued.
+simulation creates no custom or vanilla rewards. PR #7 supplies database-owned block-drop capture
+and a non-usable physical display; PR #8 only delivers rows that already exist in the durable
+queue and does not create new reward sources.
 Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI
 team management remain disabled. PR6 has the normal terrain settlement path, but PR5's production
 policy remains disabled.
