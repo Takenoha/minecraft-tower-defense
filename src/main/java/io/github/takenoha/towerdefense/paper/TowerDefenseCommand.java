@@ -45,6 +45,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
     private final DatabaseExecutor databaseExecutor;
     private final DefenseSessionManager sessions;
     private final CoreRegistry cores;
+    private final ThirdPartyRegionProtectionAdapter regionProtection;
     private boolean startInFlight;
     private boolean startCancellationRequested;
     private boolean startRecoveryInFlight;
@@ -57,12 +58,31 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             DatabaseExecutor databaseExecutor,
             DefenseSessionManager sessions,
             CoreRegistry cores) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                ThirdPartyRegionProtectionAdapter.none());
+    }
+
+    public TowerDefenseCommand(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            ThirdPartyRegionProtectionAdapter regionProtection) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.cores = Objects.requireNonNull(cores, "cores");
+        this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -121,7 +141,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 target.getX() + 0.5d,
                 target.getZ() + 0.5d,
                 combatArea,
-                settings.protection());
+                settings.protection(),
+                regionProtection);
         if (!safetyViolations.isEmpty()) {
             sender.sendMessage(Component.text(
                     "コア周辺が防衛戦の保護境界を満たしません: "
@@ -237,7 +258,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 core.blockX() + 0.5d,
                 core.blockZ() + 0.5d,
                 combatArea,
-                settings.protection());
+                settings.protection(),
+                regionProtection);
         if (!safetyViolations.isEmpty()) {
             completeStartOperation();
             player.sendMessage(Component.text(

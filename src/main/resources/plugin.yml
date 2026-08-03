@@ -4,6 +4,7 @@ main: io.github.takenoha.towerdefense.TowerDefensePlugin
 api-version: '26.2'
 description: Cooperative survival-world tower defense for Paper
 authors: [Takenoha]
+softdepend: [WorldGuard]
 commands:
   td:
     description: Minecraft Tower Defense command
@@ -13,4 +14,3 @@ permissions:
   towerdefense.admin:
     description: Manage and simulate tower-defense encounters
     default: op
-

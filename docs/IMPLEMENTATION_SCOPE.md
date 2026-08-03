@@ -169,6 +169,15 @@ persisted retention deadline. Legacy rows without a deadline remain participant-
 delivery reservations, PDC receipts, and technical-recovery voiding are unchanged. See
 `docs/TEAM_REWARD_FALLBACK_SCOPE.md`.
 
+## PR #12 third-party region protection boundary
+
+PR #12 adds an optional reflection-based WorldGuard adapter with `softdepend` ordering. Before
+core placement and defense start, it rejects combat circles that conservatively overlap any
+non-global WorldGuard region; an installed but unavailable integration fails closed. Servers
+without WorldGuard retain the explicit forbidden-world, forbidden-rectangle, and WorldBorder
+checks. The domain validator exposes a Paper-independent probe so other claim systems can be
+integrated later. See `docs/THIRD_PARTY_REGION_SCOPE.md`.
+
 ## Acceptance mapping
 
 The first implementation targets these requirement checks directly:

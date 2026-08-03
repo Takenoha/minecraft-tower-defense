@@ -55,4 +55,19 @@ class CombatAreaSafetyValidatorTest {
         assertTrue(new WorldBorderSnapshot(0.0d, 0.0d, 160.0d).containsCircle(0.0d, 0.0d, 80.0d));
         assertFalse(new WorldBorderSnapshot(0.0d, 0.0d, 159.999d).containsCircle(0.0d, 0.0d, 80.0d));
     }
+
+    @Test
+    void appendsThirdPartyRegionViolationsToTheExplicitSafetyChecks() {
+        List<String> violations = CombatAreaSafetyValidator.violations(
+                "world",
+                0.0d,
+                0.0d,
+                AREA,
+                ProtectionSettings.empty(),
+                new WorldBorderSnapshot(0.0d, 0.0d, 1_000.0d),
+                (worldName, centerX, centerZ, radius) ->
+                        List.of("protection.third-party: claim overlap"));
+
+        assertEquals(List.of("protection.third-party: claim overlap"), violations);
+    }
 }

@@ -16,6 +16,8 @@ import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
+import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
+import io.github.takenoha.towerdefense.paper.WorldGuardRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
 import io.github.takenoha.towerdefense.persistence.Database;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
@@ -70,6 +72,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
         DefenseRepository repository = new DefenseRepository(
                 database,
                 settings.rewards().teamQueueRetention());
+        ThirdPartyRegionProtectionAdapter regionProtection =
+                WorldGuardRegionProtectionAdapter.discover(this);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
         databaseExecutor = new DatabaseExecutor("tower-defense-db-");
         EscrowRepository escrowRepository = new EscrowRepository(database);
@@ -98,7 +102,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 persistence,
                 blockMutations,
                 escrowDrops,
-                rewardQueues);
+                rewardQueues,
+                regionProtection);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
@@ -126,7 +131,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 repository,
                 databaseExecutor,
                 sessions,
-                coreRegistry);
+                coreRegistry,
+                regionProtection);
         PluginCommand command = Objects.requireNonNull(
                 getCommand("td"), "the td command is missing from plugin.yml");
         command.setExecutor(commandHandler);

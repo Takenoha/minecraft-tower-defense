@@ -10,6 +10,7 @@ import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
+import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
@@ -75,6 +76,7 @@ public final class DefenseSessionManager
     private final PaperBlockMutationAdapter blockMutations;
     private final PaperEscrowDropManager escrowDrops;
     private final RewardQueueDeliveryManager rewardQueues;
+    private final ThirdPartyRegionProtectionAdapter regionProtection;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -88,6 +90,26 @@ public final class DefenseSessionManager
             PaperBlockMutationAdapter blockMutations,
             PaperEscrowDropManager escrowDrops,
             RewardQueueDeliveryManager rewardQueues) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                ThirdPartyRegionProtectionAdapter.none());
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            ThirdPartyRegionProtectionAdapter regionProtection) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -95,6 +117,7 @@ public final class DefenseSessionManager
         this.blockMutations = Objects.requireNonNull(blockMutations, "blockMutations");
         this.escrowDrops = Objects.requireNonNull(escrowDrops, "escrowDrops");
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
+        this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -139,7 +162,8 @@ public final class DefenseSessionManager
                 core.blockX() + 0.5d,
                 core.blockZ() + 0.5d,
                 combatArea,
-                settings.protection());
+                settings.protection(),
+                regionProtection);
         if (!safetyViolations.isEmpty()) {
             throw new IllegalStateException(
                     "combat area violates a protection boundary: "

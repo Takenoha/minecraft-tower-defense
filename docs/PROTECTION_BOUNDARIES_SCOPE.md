@@ -13,11 +13,18 @@ loaded world's WorldBorder.
   and corner contact.
 - A combat circle is rejected unless its four axis-aligned extents fit inside the square
   WorldBorder.
+- When WorldGuard is installed, the plugin uses a reflection-based soft-dependency adapter to
+  reject circles whose conservative bounds intersect a non-global WorldGuard region. The global
+  region is intentionally ignored because explicit `forbidden-worlds` and `forbidden-regions`
+  remain the configuration-owned deny-list.
+- If the installed WorldGuard API cannot be queried, the adapter fails closed and rejects the
+  placement/start check rather than allowing an uncertain region boundary.
 - Core registration performs the same check as event start. The command performs it before the
   asynchronous `tryStart` call, and the Paper session manager repeats it defensively before
   activating an already locked session.
 - The safety calculation is Paper-independent and covered by deterministic unit tests; the Paper
-  adapter only projects the loaded world's border center and size.
+  adapter projects the loaded world's border and delegates the optional region query on the main
+  thread.
 
 ## Configuration
 
@@ -43,11 +50,11 @@ protection:
 
 ## Deliberate boundary
 
-This milestone does not integrate third-party region plugins or infer protected areas from
-WorldGuard/claims. It also does not perform public core crafting, physical core replacement,
-role-specific pathing, load testing, or production activation of enemy terrain mutation. The
-configured rectangles are an explicit deny-list and are evaluated only at core placement and
-defense start.
+This milestone only integrates WorldGuard through the conservative soft-dependency adapter. It
+does not infer claim protection from arbitrary plugins, perform public core crafting, physical core
+replacement, role-specific pathing, load testing, or production activation of enemy terrain
+mutation. The configured rectangles remain an explicit deny-list and all checks are evaluated at
+core placement and defense start.
 
 ## Verification
 
