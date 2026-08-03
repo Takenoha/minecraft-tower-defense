@@ -1,6 +1,5 @@
 package io.github.takenoha.towerdefense.paper;
 
-import io.github.takenoha.towerdefense.domain.EnemyObstacleClassification;
 import io.github.takenoha.towerdefense.domain.EnemyObstacleFacts;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.persistence.BlockStateSnapshot;
@@ -20,8 +19,6 @@ import org.bukkit.entity.Entity;
 
 /** Captures one read-only forward obstacle snapshot for the role-aware path controller. */
 public final class PaperEnemyPathController {
-    private static final String AIR = "minecraft:air";
-
     private PaperEnemyPathController() {
     }
 
@@ -136,12 +133,7 @@ public final class PaperEnemyPathController {
     }
 
     private static EnemyObstacleFacts unavailable() {
-        return new EnemyObstacleFacts(
-                EnemyObstacleClassification.UNAVAILABLE,
-                AIR,
-                AIR,
-                false,
-                false);
+        return EnemyObstacleFacts.unavailable();
     }
 
     /** Read-only candidate passed to the main-thread mutation boundary. */
