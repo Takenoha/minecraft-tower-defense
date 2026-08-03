@@ -17,11 +17,12 @@ public record DefenseRuntimeStatus(
         long coreHitPoints,
         long coreMaximumHitPoints,
         boolean ending,
-        String persistenceFailure) {
+        String persistenceFailure,
+        EnemyPathMetrics.Snapshot pathMetrics) {
     public DefenseRuntimeStatus {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(phase, "phase");
+        Objects.requireNonNull(pathMetrics, "pathMetrics");
     }
 }
-

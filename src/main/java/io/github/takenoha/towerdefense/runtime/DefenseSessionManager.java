@@ -280,7 +280,8 @@ public final class DefenseSessionManager
                 session.coreState().currentHitPoints(),
                 session.coreState().maximumHitPoints(),
                 active.ending,
-                active.persistenceFailure));
+                active.persistenceFailure,
+                active.pathMetrics.snapshot()));
     }
 
     public boolean hasActiveSession() {
