@@ -13,6 +13,7 @@ import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseRuntimeStatus;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
+import io.github.takenoha.towerdefense.runtime.TerrainMutationActivationGate;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
@@ -392,6 +393,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                         + " breakSuccesses=" + value.pathMetrics().breakSuccessCount()
                         + " bridgeAttempts=" + value.pathMetrics().bridgeAttemptCount()
                         + " bridgePlacements=" + value.pathMetrics().bridgePlacementCount()
+                        + " terrainMutation="
+                        + new TerrainMutationActivationGate(settings.terrainMutation()).status()
                         + (value.persistenceFailure() == null
                                 ? ""
                                 : " persistenceError=" + value.persistenceFailure()),

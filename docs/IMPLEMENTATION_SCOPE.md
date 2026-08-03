@@ -233,3 +233,13 @@ status command while a defense is active and documents a repeatable Paper-server
 procedure. It remains read-only: `TerrainMutationPolicy(false)` and tagged event cancellation
 are unchanged, and production activation still requires a reviewed real-server result. See
 `docs/PAPER_LOAD_TEST_RUNBOOK.md`.
+
+## PR #20 explicit terrain activation gate
+
+PR #20 replaces the hard-coded production-disabled constructor input with an explicit, fail-closed
+configuration gate. An operator request, reviewed Paper integration evidence, and reviewed
+recovery evidence are read independently; terrain mutation is enabled only when all three values
+are true. Missing values remain false, malformed values reject configuration loading, and the
+mandatory code-owned protected-material policy is unchanged. The checked-in defaults remain
+disabled because a real Paper server and tick/recovery test are still required. See
+`docs/TERRAIN_MUTATION_ACTIVATION_SCOPE.md`.

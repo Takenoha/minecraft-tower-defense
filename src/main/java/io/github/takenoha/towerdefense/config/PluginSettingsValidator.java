@@ -36,7 +36,17 @@ public final class PluginSettingsValidator {
         validateEnemies(settings.enemies(), unreadablePaths, violations);
         validateProtection(settings.protection(), unreadablePaths, violations);
         validateRewards(settings.rewards(), unreadablePaths, violations);
+        validateTerrainMutation(settings.terrainMutation(), unreadablePaths, violations);
         return List.copyOf(violations);
+    }
+
+    private static void validateTerrainMutation(
+            TerrainMutationSettings terrainMutation,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (terrainMutation == null && !unreadablePaths.contains("terrain-mutation")) {
+            violations.add("terrain-mutation: section is required");
+        }
     }
 
     private static void validateCombat(

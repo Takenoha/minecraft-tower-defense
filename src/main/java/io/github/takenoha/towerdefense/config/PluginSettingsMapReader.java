@@ -18,7 +18,8 @@ final class PluginSettingsMapReader {
                 reader.core(),
                 reader.enemies(),
                 reader.protection(),
-                reader.rewards());
+                reader.rewards(),
+                reader.terrainMutation());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -119,6 +120,29 @@ final class PluginSettingsMapReader {
             }
             return new RewardSettings(
                     integer(values, "rewards", "team-queue-retention-seconds"));
+        }
+
+        private TerrainMutationSettings terrainMutation() {
+            Object raw = root.get("terrain-mutation");
+            if (raw == null) {
+                return TerrainMutationSettings.disabled();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("terrain-mutation", "must be a map");
+                return TerrainMutationSettings.disabled();
+            }
+            return new TerrainMutationSettings(
+                    booleanOrDefault(values, "terrain-mutation", "requested", false),
+                    booleanOrDefault(
+                            values,
+                            "terrain-mutation",
+                            "paper-integration-verified",
+                            false),
+                    booleanOrDefault(
+                            values,
+                            "terrain-mutation",
+                            "recovery-verified",
+                            false));
         }
 
         private Set<String> forbiddenWorlds(Map<?, ?> section) {
@@ -252,6 +276,23 @@ final class PluginSettingsMapReader {
                 return defaultValue;
             }
             return number.doubleValue();
+        }
+
+        private boolean booleanOrDefault(
+                Map<?, ?> section,
+                String sectionName,
+                String key,
+                boolean defaultValue) {
+            String path = sectionName + "." + key;
+            Object value = section.get(key);
+            if (value == null) {
+                return defaultValue;
+            }
+            if (!(value instanceof Boolean booleanValue)) {
+                addProblem(path, "must be a boolean");
+                return defaultValue;
+            }
+            return booleanValue;
         }
 
         private void addProblem(String path, String problem) {

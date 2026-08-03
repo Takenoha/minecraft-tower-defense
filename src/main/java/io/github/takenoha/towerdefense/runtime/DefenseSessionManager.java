@@ -85,6 +85,7 @@ public final class DefenseSessionManager
     private final ThirdPartyRegionProtectionAdapter regionProtection;
     private final PaperEnemyPathIntegrationBoundary pathIntegration;
     private final PaperEnemyTerrainAction terrainAction;
+    private final TerrainMutationActivationGate terrainMutationGate;
     private final EnemyRoleSchedule enemyRoles;
 
     private BukkitTask tickTask;
@@ -182,8 +183,9 @@ public final class DefenseSessionManager
         enemyRoles = new EnemyRoleSchedule(
                 settings.enemies().destroyerRatio(),
                 settings.enemies().builderRatio());
+        terrainMutationGate = new TerrainMutationActivationGate(settings.terrainMutation());
         terrainAction = new PaperEnemyTerrainAction(
-                new TerrainMutationPolicy(false),
+                new TerrainMutationPolicy(terrainMutationGate.enabled()),
                 blockMutations,
                 escrowDrops,
                 coreRegistry,
@@ -193,6 +195,11 @@ public final class DefenseSessionManager
     /** Returns the shared, production-disabled enemy terrain action boundary. */
     public PaperEnemyTerrainAction terrainAction() {
         return terrainAction;
+    }
+
+    /** Returns the immutable activation decision used by the shared terrain-action boundary. */
+    public TerrainMutationActivationGate terrainMutationGate() {
+        return terrainMutationGate;
     }
 
     public void startTicking() {

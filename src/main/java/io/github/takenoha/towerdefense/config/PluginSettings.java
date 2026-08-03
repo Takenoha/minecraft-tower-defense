@@ -8,7 +8,18 @@ public record PluginSettings(
         CoreSettings core,
         EnemySettings enemies,
         ProtectionSettings protection,
-        RewardSettings rewards) {
+        RewardSettings rewards,
+        TerrainMutationSettings terrainMutation) {
+
+    /** Keeps five-field construction source-compatible while the activation gate is opt-in. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies,
+            ProtectionSettings protection,
+            RewardSettings rewards) {
+        this(combat, core, enemies, protection, rewards, TerrainMutationSettings.disabled());
+    }
 
     /** Keeps direct settings construction source-compatible with the pre-boundary model. */
     public PluginSettings(

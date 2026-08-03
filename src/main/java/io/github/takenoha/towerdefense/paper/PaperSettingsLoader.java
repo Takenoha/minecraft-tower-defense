@@ -18,6 +18,7 @@ public final class PaperSettingsLoader {
         values.put("enemies", sectionValues(configuration, "enemies"));
         values.put("protection", sectionValues(configuration, "protection"));
         values.put("rewards", sectionValues(configuration, "rewards"));
+        values.put("terrain-mutation", sectionValues(configuration, "terrain-mutation"));
         return PluginSettings.from(values);
     }
 
