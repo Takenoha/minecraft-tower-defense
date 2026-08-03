@@ -11,6 +11,7 @@ import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
+import io.github.takenoha.towerdefense.paper.ProtectedBlockListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
@@ -99,6 +100,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
+        getServer().getPluginManager().registerEvents(
+                new ProtectedBlockListener(coreRegistry, sessions), this);
         getServer().getPluginManager().registerEvents(
                 new EventEnemyListener(
                         tagger,

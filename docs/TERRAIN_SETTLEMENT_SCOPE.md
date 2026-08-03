@@ -19,6 +19,6 @@ termination without enabling enemy terrain mutation in production.
 
 The production `TerrainMutationPolicy` remains disabled. PR7 adds no-tool block-drop capture,
 PDC-tagged physical escrow displays, participant-only database claims, and transfer/death
-protection. Reward-queue delivery, Tile NBT, protected-region validation, and role-specific
-terrain AI remain future work. Enemy break/place behavior must not be enabled until the remaining
-activation gates are complete.
+protection. Reward-queue delivery, protected-region validation, and role-specific terrain AI
+remain future work. PR #9 adds the Tile NBT API projection and protected-target synchronization.
+Enemy break/place behavior must not be enabled until the remaining activation gates are complete.

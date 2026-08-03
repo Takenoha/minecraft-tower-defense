@@ -36,6 +36,10 @@ final class TerrainMutationPolicyTest {
                 TerrainMutationDecision.PROTECTED,
                 policy.decide(new TerrainMutationInput(
                         "minecraft:stone", false, false, "minecraft:hopper")));
+        assertEquals(
+                TerrainMutationDecision.PROTECTED,
+                policy.decide(new TerrainMutationInput(
+                        "minecraft:oak_sign", false, false, true, "minecraft:air")));
     }
 
     @Test

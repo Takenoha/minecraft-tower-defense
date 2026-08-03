@@ -21,6 +21,6 @@ without enabling enemy terrain mutation in production.
 ## Deliberate boundary
 
 `TerrainMutationPolicy` is still constructed disabled in the production plugin. Reward-queue
-delivery into player inventories, offline delivery, Tile NBT capture, protected-region validation,
-and role-specific terrain AI remain future work. The stored reward payload is never released from
-the queue by this milestone.
+delivery into player inventories, offline delivery, protected-region validation, and role-specific
+terrain AI remain future work. PR #9 adds the Tile NBT API projection and protected-target
+synchronization. The stored reward payload is never released from the queue by this milestone.

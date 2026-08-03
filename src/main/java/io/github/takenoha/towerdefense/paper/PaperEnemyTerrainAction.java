@@ -68,6 +68,7 @@ public final class PaperEnemyTerrainAction {
                 block.getType().getKey().toString(),
                 state instanceof InventoryHolder,
                 cores.isCore(block),
+                state instanceof org.bukkit.block.TileState,
                 event.getTo().getKey().toString());
         if (policy.decide(input) != TerrainMutationDecision.ALLOW) {
             return false;

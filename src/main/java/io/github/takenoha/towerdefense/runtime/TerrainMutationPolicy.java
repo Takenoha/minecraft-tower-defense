@@ -51,6 +51,7 @@ public final class TerrainMutationPolicy {
         }
         if (input.currentCore()
                 || input.currentInventoryHolder()
+                || input.currentTileState()
                 || isRequiredMaterial(input.currentMaterialKey())
                 || isRequiredMaterial(input.targetMaterialKey())) {
             return TerrainMutationDecision.PROTECTED;

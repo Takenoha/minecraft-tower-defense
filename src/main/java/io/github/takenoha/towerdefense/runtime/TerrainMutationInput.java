@@ -7,7 +7,17 @@ public record TerrainMutationInput(
         String currentMaterialKey,
         boolean currentInventoryHolder,
         boolean currentCore,
+        boolean currentTileState,
         String targetMaterialKey) {
+    /** Keeps the original four-fact constructor source-compatible for non-tile callers. */
+    public TerrainMutationInput(
+            String currentMaterialKey,
+            boolean currentInventoryHolder,
+            boolean currentCore,
+            String targetMaterialKey) {
+        this(currentMaterialKey, currentInventoryHolder, currentCore, false, targetMaterialKey);
+    }
+
     public TerrainMutationInput {
         currentMaterialKey = requireMaterialKey(currentMaterialKey, "currentMaterialKey");
         targetMaterialKey = requireMaterialKey(targetMaterialKey, "targetMaterialKey");

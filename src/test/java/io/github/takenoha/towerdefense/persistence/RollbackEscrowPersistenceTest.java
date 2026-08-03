@@ -135,6 +135,40 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void tilePayloadIsDurableAndParticipatesInRecoveryComparison() {
+        Fixture fixture = activeFixture("tile-payload.sqlite");
+        BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());
+        BlockChange change = new BlockChange(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                12,
+                65,
+                -4,
+                BlockChangeKind.EVENT_BLOCK,
+                1L,
+                "minecraft:chest[facing=north]",
+                "minecraft:chest",
+                "v1|before",
+                "minecraft:air",
+                "minecraft:air",
+                "");
+        ledger.prepare(change, UUID.randomUUID(), START);
+
+        StoredBlockChange stored = ledger.loadChanges(fixture.eventId()).getFirst();
+        assertEquals("v1|before", stored.change().beforeTileNbt());
+        BlockRollbackPlanner planner = new BlockRollbackPlanner();
+        assertEquals(
+                BlockRollbackDecision.RESTORE,
+                planner.decide(stored, new BlockStateSnapshot("minecraft:air", "minecraft:air")));
+        assertEquals(
+                BlockRollbackDecision.CONFLICT,
+                planner.decide(
+                        stored,
+                        new BlockStateSnapshot("minecraft:air", "minecraft:air", "v1|changed")));
+    }
+
+    @Test
     void eventRecoveryRefusesUnresolvedBlockChangesUntilAWorldDecisionIsRecorded() {
         Fixture fixture = activeFixture("ledger-guard.sqlite");
         BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());

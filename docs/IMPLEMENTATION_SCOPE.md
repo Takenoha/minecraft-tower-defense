@@ -124,16 +124,28 @@ disabled:
   failures leave the row pending for a later retry.
 
 Technical recovery still voids the queue atomically and does not schedule delivery. Custom reward
-catalogs, research progression, team-queue retention fallback, Tile NBT, protected-region checks,
-role-specific terrain AI, and production terrain activation remain future work. See
+catalogs, research progression, team-queue retention fallback, protected-region checks,
+role-specific terrain AI, and production terrain activation remain future work. PR #9 adds the
+Tile NBT API projection and protected-target synchronization. See
 `docs/REWARD_QUEUE_DELIVERY_SCOPE.md`.
+
+## PR #9 tile payload and protected-target synchronization boundary
+
+PR #9 adds schema v9 tile payload columns to the block WAL and includes the payload in recovery
+comparisons. The Paper codec persists persistent-data bytes, snapshot inventory bytes, lock state,
+and custom name through a versioned API projection, then applies it on the main thread before the
+physical restore is acknowledged. Tile states are now mandatory protected targets for enemy
+terrain actions. A main-thread listener also blocks indirect break, place, piston, explosion,
+fluid, physics, growth, and entity-change paths for protected cores and protected targets inside
+an active combat area. See `docs/TILE_NBT_PROTECTION_SCOPE.md`.
 
 ## Safety boundary
 
 Until the remaining activation gates exist, event enemies cannot break or place blocks and the
 simulation creates no custom or vanilla rewards. PR #7 supplies database-owned block-drop capture
 and a non-usable physical display; PR #8 only delivers rows that already exist in the durable
-queue and does not create new reward sources.
+queue and does not create new reward sources. PR #9 keeps the terrain policy disabled and only
+adds the protection and recovery boundaries needed before activation.
 Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI
 team management remain disabled. PR6 has the normal terrain settlement path, but PR5's production
 policy remains disabled.

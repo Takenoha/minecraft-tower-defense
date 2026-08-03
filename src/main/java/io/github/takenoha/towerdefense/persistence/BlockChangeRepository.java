@@ -57,9 +57,10 @@ public final class BlockChangeRepository {
                         INSERT INTO event_block_changes(
                             change_id, event_id, world_id, block_x, block_y, block_z,
                             change_kind, generation, before_block_data, before_block_state,
-                            expected_after_block_data, expected_after_block_state, status,
+                            before_tile_nbt, expected_after_block_data, expected_after_block_state,
+                            expected_after_tile_nbt, status,
                             prepare_operation_id, prepared_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?)
                         """)) {
                     statement.setString(1, change.changeId().toString());
                     statement.setString(2, change.eventId().toString());
@@ -71,10 +72,12 @@ public final class BlockChangeRepository {
                     statement.setLong(8, change.generation());
                     statement.setString(9, change.beforeBlockData());
                     statement.setString(10, change.beforeBlockState());
-                    statement.setString(11, change.expectedAfterBlockData());
-                    statement.setString(12, change.expectedAfterBlockState());
-                    statement.setString(13, prepareOperationId.toString());
-                    statement.setString(14, preparedAt.toString());
+                    statement.setString(11, change.beforeTileNbt());
+                    statement.setString(12, change.expectedAfterBlockData());
+                    statement.setString(13, change.expectedAfterBlockState());
+                    statement.setString(14, change.expectedAfterTileNbt());
+                    statement.setString(15, prepareOperationId.toString());
+                    statement.setString(16, preparedAt.toString());
                     statement.executeUpdate();
                 }
                 return OperationOutcome.APPLIED;
@@ -386,7 +389,8 @@ public final class BlockChangeRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT change_id, event_id, world_id, block_x, block_y, block_z,
                        change_kind, generation, before_block_data, before_block_state,
-                       expected_after_block_data, expected_after_block_state, status,
+                       before_tile_nbt, expected_after_block_data, expected_after_block_state,
+                       expected_after_tile_nbt, status,
                        prepare_operation_id, apply_operation_id, rollback_operation_id,
                        prepared_at, applied_at, resolved_at
                 FROM event_block_changes
@@ -632,7 +636,8 @@ public final class BlockChangeRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT change_id, event_id, world_id, block_x, block_y, block_z,
                        change_kind, generation, before_block_data, before_block_state,
-                       expected_after_block_data, expected_after_block_state, status,
+                       before_tile_nbt, expected_after_block_data, expected_after_block_state,
+                       expected_after_tile_nbt, status,
                        prepare_operation_id, apply_operation_id, rollback_operation_id,
                        prepared_at, applied_at, resolved_at
                 FROM event_block_changes WHERE change_id = ?
@@ -668,8 +673,10 @@ public final class BlockChangeRepository {
                 resultSet.getLong("generation"),
                 resultSet.getString("before_block_data"),
                 resultSet.getString("before_block_state"),
+                resultSet.getString("before_tile_nbt"),
                 resultSet.getString("expected_after_block_data"),
-                resultSet.getString("expected_after_block_state"));
+                resultSet.getString("expected_after_block_state"),
+                resultSet.getString("expected_after_tile_nbt"));
         return new StoredBlockChange(
                 change,
                 BlockChangeStatus.valueOf(resultSet.getString("status")),
@@ -724,7 +731,8 @@ public final class BlockChangeRepository {
                 + change.worldId() + "|" + change.blockX() + "|" + change.blockY() + "|"
                 + change.blockZ() + "|" + change.kind() + "|" + change.generation() + "|"
                 + change.beforeBlockData() + "|" + change.beforeBlockState() + "|"
-                + change.expectedAfterBlockData() + "|" + change.expectedAfterBlockState();
+                + change.beforeTileNbt() + "|" + change.expectedAfterBlockData() + "|"
+                + change.expectedAfterBlockState() + "|" + change.expectedAfterTileNbt();
         return sha256(canonical);
     }
 

@@ -12,25 +12,20 @@ public final class PaperBlockStateCodec {
     private PaperBlockStateCodec() {
     }
 
-    /** Captures a block before mutation and refuses to overwrite an existing tile entity. */
+    /** Captures a block before mutation, including the mutable tile payload when present. */
     public static BlockStateSnapshot captureBefore(Block block) {
         Objects.requireNonNull(block, "block");
-        BlockState state = block.getState();
-        if (state instanceof org.bukkit.block.TileState) {
-            throw new IllegalStateException(
-                    "Event block mutation cannot overwrite an existing tile entity: "
-                            + block.getType().getKey());
-        }
         return captureComparable(block);
     }
 
-    /** Captures a block for comparison, including a tile entity's type without changing it. */
+    /** Captures a block for comparison, including its mutable tile payload. */
     public static BlockStateSnapshot captureComparable(Block block) {
         Objects.requireNonNull(block, "block");
         BlockState state = block.getState();
         return new BlockStateSnapshot(
                 block.getBlockData().getAsString(),
-                state.getType().getKey().toString());
+                state.getType().getKey().toString(),
+                PaperTileNbtCodec.capture(state));
     }
 
     /** Parses the canonical BlockData string stored in the ledger. */
@@ -39,12 +34,14 @@ public final class PaperBlockStateCodec {
         return Bukkit.createBlockData(blockData);
     }
 
-    /** Builds the comparable snapshot for a planned non-tile BlockData value. */
+    /** Builds the comparable snapshot for a planned BlockData value. */
     public static BlockStateSnapshot snapshotForBlockData(String blockData) {
         BlockData parsed = parseBlockData(blockData);
+        BlockState state = parsed.createBlockState();
         return new BlockStateSnapshot(
                 parsed.getAsString(),
-                parsed.getMaterial().getKey().toString());
+                parsed.getMaterial().getKey().toString(),
+                PaperTileNbtCodec.capture(state));
     }
 
     /** Applies BlockData without allowing vanilla physics to mutate neighboring blocks. */
@@ -56,5 +53,21 @@ public final class PaperBlockStateCodec {
                             + block.getType().getKey());
         }
         block.setBlockData(parseBlockData(blockData), false);
+    }
+
+    /** Applies a durable block snapshot and then updates its tile payload, if any. */
+    public static void applySnapshot(Block block, BlockStateSnapshot snapshot) {
+        Objects.requireNonNull(block, "block");
+        Objects.requireNonNull(snapshot, "snapshot");
+        block.setBlockData(parseBlockData(snapshot.blockData()), false);
+        if (snapshot.tileNbt().isBlank()) {
+            return;
+        }
+        BlockState state = block.getState();
+        PaperTileNbtCodec.apply(state, snapshot.tileNbt());
+        if (!state.update(true, false)) {
+            throw new IllegalStateException(
+                    "Paper rejected the durable tile-state update at " + block.getLocation());
+        }
     }
 }

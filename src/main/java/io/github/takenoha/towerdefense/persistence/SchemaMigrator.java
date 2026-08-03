@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 8;
+    public static final int CURRENT_VERSION = 9;
 
     private SchemaMigrator() {
     }
@@ -55,6 +55,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 8) {
                     applyVersionEight(connection);
                     recordMigration(connection, 8);
+                }
+                if (installedVersion < 9) {
+                    applyVersionNine(connection);
+                    recordMigration(connection, 9);
                 }
                 return null;
             });
@@ -621,6 +625,19 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX event_reward_delivery_operations_event_idx
                     ON event_reward_delivery_operations(event_id, player_id, state)
+                    """);
+        }
+    }
+
+    private static void applyVersionNine(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE event_block_changes
+                    ADD COLUMN before_tile_nbt TEXT NOT NULL DEFAULT ''
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE event_block_changes
+                    ADD COLUMN expected_after_tile_nbt TEXT NOT NULL DEFAULT ''
                     """);
         }
     }

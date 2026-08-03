@@ -7,9 +7,9 @@ event enemies to modify survival terrain yet.
 
 - SQLite schema migration 5, which persists a prepared rollback decision so a stop between the
   physical restore and its database acknowledgement can resume with the same operation UUID.
-- `PaperBlockStateCodec` for canonical BlockData/type snapshots and physics-disabled BlockData
-  application. Existing tile entities are rejected as mutation sources so their contents cannot be
-  silently overwritten.
+- `PaperBlockStateCodec` for canonical BlockData/type snapshots, versioned TileState payloads, and
+  physics-disabled BlockData application. Tile payloads are restored through the Paper main-thread
+  `BlockState` API before the physical acknowledgement.
 - `PaperBlockMutationAdapter`, which follows prepare → physical apply → verification → applied
   acknowledgement and refuses to overwrite a live state that differs from the ledger.
 - Reverse-generation startup recovery that restores only expected event-owned blocks, skips already
@@ -19,8 +19,9 @@ event enemies to modify survival terrain yet.
 ## Deliberate boundary
 
 The event enemy listener still cancels EntityChangeBlockEvent, and no enemy break/place behavior is
-enabled. Tile-container NBT, escrow entities, hopper/container/death protection, reward delivery,
-protected-region integration, and real Mob terrain pathing remain future work. If a required world
+enabled. Escrow entities, hopper/container/death protection, reward delivery, protected-region
+integration, and real Mob terrain pathing remain future work. PR #9 adds the versioned Tile NBT API
+projection and protected-target synchronization. If a required world
 or a safe block state is unavailable during recovery, startup stops with the event lock retained for
 operator inspection rather than claiming recovery succeeded.
 
@@ -31,5 +32,5 @@ terrain settlement and block-drop escrow are connected.
 PR6 adds normal terminal settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`: destruction rows are
 kept in place, temporary rows are removed through the conflict-safe planner, and the event lock is
 not released when settlement fails. PR7 adds held no-tool block-drop capture, tagged non-usable
-display entities, participant-only claims, and transfer protection. Reward delivery, Tile NBT,
+display entities, participant-only claims, and transfer protection. Reward delivery,
 protected-region validation, and real Mob terrain pathing remain activation gates.

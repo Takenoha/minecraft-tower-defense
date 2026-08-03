@@ -20,11 +20,13 @@ public final class BlockRollbackPlanner {
         }
         BlockChange value = change.change();
         if (current.blockData().equals(value.expectedAfterBlockData())
-                && current.blockState().equals(value.expectedAfterBlockState())) {
+                && current.blockState().equals(value.expectedAfterBlockState())
+                && current.tileNbt().equals(value.expectedAfterTileNbt())) {
             return BlockRollbackDecision.RESTORE;
         }
         if (current.blockData().equals(value.beforeBlockData())
-                && current.blockState().equals(value.beforeBlockState())) {
+                && current.blockState().equals(value.beforeBlockState())
+                && current.tileNbt().equals(value.beforeTileNbt())) {
             return BlockRollbackDecision.SKIP_ALREADY_BEFORE;
         }
         return BlockRollbackDecision.CONFLICT;

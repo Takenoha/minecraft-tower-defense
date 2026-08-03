@@ -90,8 +90,10 @@ public final class PaperBlockMutationAdapter {
                     durable.generation(),
                     durable.beforeBlockData(),
                     durable.beforeBlockState(),
+                    durable.beforeTileNbt(),
                     expectedAfter.blockData(),
-                    expectedAfter.blockState());
+                    expectedAfter.blockState(),
+                    expectedAfter.tileNbt());
         } else {
             BlockStateSnapshot before = PaperBlockStateCodec.captureBefore(block);
             requested = new BlockChange(
@@ -105,8 +107,10 @@ public final class PaperBlockMutationAdapter {
                     generation,
                     before.blockData(),
                     before.blockState(),
+                    before.tileNbt(),
                     expectedAfter.blockData(),
-                    expectedAfter.blockState());
+                    expectedAfter.blockState(),
+                    expectedAfter.tileNbt());
         }
         ledger.prepare(requested, prepareOperationId, occurredAt);
         StoredBlockChange durable = findChange(eventId, changeId);
@@ -117,7 +121,8 @@ public final class PaperBlockMutationAdapter {
         if (durable.status() == BlockChangeStatus.ROLLED_BACK) {
             BlockStateSnapshot durableBeforeState = new BlockStateSnapshot(
                     durable.change().beforeBlockData(),
-                    durable.change().beforeBlockState());
+                    durable.change().beforeBlockState(),
+                    durable.change().beforeTileNbt());
             if (!PaperBlockStateCodec.captureComparable(block).equals(durableBeforeState)) {
                 throw new PersistenceConflictException(
                         "A rolled-back block change no longer matches its before-state");
@@ -128,10 +133,12 @@ public final class PaperBlockMutationAdapter {
         BlockStateSnapshot current = PaperBlockStateCodec.captureComparable(block);
         BlockStateSnapshot expected = new BlockStateSnapshot(
                 durable.change().expectedAfterBlockData(),
-                durable.change().expectedAfterBlockState());
+                durable.change().expectedAfterBlockState(),
+                durable.change().expectedAfterTileNbt());
         BlockStateSnapshot durableBefore = new BlockStateSnapshot(
                 durable.change().beforeBlockData(),
-                durable.change().beforeBlockState());
+                durable.change().beforeBlockState(),
+                durable.change().beforeTileNbt());
         if (!current.equals(durableBefore) && !current.equals(expected)) {
             throw new PersistenceConflictException(
                     "The live block changed after the event ledger was prepared");
@@ -145,7 +152,7 @@ public final class PaperBlockMutationAdapter {
         }
         ledger.prepareApply(eventId, changeId, applyOperationId, occurredAt);
         if (current.equals(durableBefore)) {
-            PaperBlockStateCodec.applyBlockData(block, expected.blockData());
+            PaperBlockStateCodec.applySnapshot(block, expected);
             if (!PaperBlockStateCodec.captureComparable(block).equals(expected)) {
                 throw new PersistenceConflictException(
                         "The Paper block did not reach its expected after-state");
@@ -230,12 +237,14 @@ public final class PaperBlockMutationAdapter {
             BlockStateSnapshot current = PaperBlockStateCodec.captureComparable(block);
             BlockStateSnapshot expected = new BlockStateSnapshot(
                     change.change().expectedAfterBlockData(),
-                    change.change().expectedAfterBlockState());
+                    change.change().expectedAfterBlockState(),
+                    change.change().expectedAfterTileNbt());
             BlockStateSnapshot before = new BlockStateSnapshot(
                     change.change().beforeBlockData(),
-                    change.change().beforeBlockState());
+                    change.change().beforeBlockState(),
+                    change.change().beforeTileNbt());
             if (current.equals(expected)) {
-                PaperBlockStateCodec.applyBlockData(block, before.blockData());
+                PaperBlockStateCodec.applySnapshot(block, before);
                 if (!PaperBlockStateCodec.captureComparable(block).equals(before)) {
                     throw new PersistenceConflictException(
                             "The Paper block did not reach its rollback before-state");
@@ -248,7 +257,8 @@ public final class PaperBlockMutationAdapter {
                 && !PaperBlockStateCodec.captureComparable(block).equals(
                         new BlockStateSnapshot(
                                 change.change().beforeBlockData(),
-                                change.change().beforeBlockState()))) {
+                                change.change().beforeBlockState(),
+                                change.change().beforeTileNbt()))) {
             throw new PersistenceConflictException(
                     "A skip rollback no longer matches the before-state");
         }

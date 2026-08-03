@@ -29,8 +29,8 @@ not enable enemy terrain mutation or create new reward sources.
 
 - Public reward configuration, custom item catalogs, research progression, or team GUI.
 - Retention-period owner fallback for an abandoned team queue.
-- Tile NBT preservation, protected-region validation, role-specific terrain AI, or Paper load and
-  TPS tests.
+- Protected-region validation, role-specific terrain AI, or Paper load and TPS tests. Tile payload
+  capture and protected-target synchronization are added by PR #9.
 - Production activation of `TerrainMutationPolicy`; the plugin still keeps enemy block changes
   disabled.
 
