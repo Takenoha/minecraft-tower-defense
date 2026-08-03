@@ -63,6 +63,10 @@ scope](docs/BLOCK_DROP_ESCROW_SCOPE.md).
 
 This is deliberately not advertised as the complete game described by the product requirements.
 
+The current Paper integration boundary exposes path-inspection and terrain-action counters through
+`/td admin status` and terminal logs for an isolated-server load test. The production terrain
+mutation policy remains disabled; see [the Paper load-test runbook](docs/PAPER_LOAD_TEST_RUNBOOK.md).
+
 ## Build
 
 ```text

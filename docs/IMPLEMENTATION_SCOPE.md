@@ -225,3 +225,11 @@ protected-block policy, role authorization, and the observed before-state, then 
 WAL and ordinary block-drop escrow. The production `TerrainMutationPolicy(false)` remains
 disabled, so no live terrain mutation or real Paper server load-test result is claimed. See
 `docs/DESTROYER_BLOCK_ACTION_SCOPE.md`.
+
+## PR #19 Paper load-test observability boundary
+
+PR #19 exposes the immutable per-event `EnemyPathMetrics.Snapshot` through the administrator
+status command while a defense is active and documents a repeatable Paper-server observation
+procedure. It remains read-only: `TerrainMutationPolicy(false)` and tagged event cancellation
+are unchanged, and production activation still requires a reviewed real-server result. See
+`docs/PAPER_LOAD_TEST_RUNBOOK.md`.
