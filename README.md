@@ -23,6 +23,44 @@ The first PR is a safe, administrator-only walking skeleton:
 - startup recovery that never resumes a half-finished encounter;
 - no terrain mutation, custom rewards, start-item consumption, or towers until their rollback boundaries exist.
 
+The second milestone adds those rollback boundaries as a persistence-only foundation. It records
+write-ahead block changes, protects later player edits during recovery, keeps event drops in a
+virtual escrow, and makes raid-seal refunds issue a new UUID. The Paper simulation still does not
+enable terrain mutation, physical escrow items, or rewards; the main-thread adapters remain the
+next milestone. See [the PR #2 scope](docs/ROLLBACK_ESCROW_SCOPE.md).
+
+The third milestone adds operation-UUID protected team membership and ownership changes, core
+repair, full-health relocation, and destroyed-core rebuild persistence. These APIs enforce team
+membership and reject changes while an event is active, but public team GUI, core crafting, repair
+costs, protected-region checks, and physical block replacement are still disabled. See [the PR #3
+scope](docs/CORE_TEAM_SCOPE.md).
+
+The fourth milestone connects the PR2 ledger to Paper's main thread for verified block apply and
+startup/shutdown recovery. It persists rollback decisions across the physical-restore boundary,
+preserves later player edits as conflicts, and rejects existing tile entities as mutation sources.
+Enemy break/place behavior, escrow entities, and rewards remain disabled until their protection
+adapters are complete. See [the PR #4 scope](docs/PAPER_RECOVERY_ADAPTER_SCOPE.md).
+
+The fifth milestone adds a guarded single-enemy-block action, mandatory protected-material policy,
+and durable per-coordinate generation sequencing. The handler is wired into the tagged-enemy event
+listener but is constructed disabled because normal-end terrain settlement, tile NBT, and escrow
+drop protection are not complete. See [the PR #5 scope](docs/ENEMY_TERRAIN_ACTION_SCOPE.md).
+
+The sixth milestone connects normal `VICTORY`, `DEFEAT`, and `ABORTED` termination to the terrain
+ledger: enemy destruction is settled in place, temporary enemy blocks are removed in reverse
+generation order, and player edits become durable conflicts rather than being overwritten. The
+production enemy mutation policy remains disabled until physical block-drop escrow and its item
+protection lifecycle are complete. See [the PR #6 scope](docs/TERRAIN_SETTLEMENT_SCOPE.md).
+
+The seventh milestone adds the physical block-drop escrow boundary. No-tool drops are persisted
+before an event destruction is applied, displayed only as PDC-tagged non-usable Item entities, and
+claimed through registered-participant database records. Pickup, inventory transfer, crafting,
+placement, dispensing, item-frame use, merging, despawning, damage, portals, and death paths are
+blocked; normal terminal settlement and technical recovery remove the displays and clear or void
+the escrow rows. The production enemy mutation policy remains disabled until reward delivery,
+Tile NBT, protected-region validation, and role-specific terrain AI are complete. See [the PR #7
+scope](docs/BLOCK_DROP_ESCROW_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build
@@ -42,4 +80,3 @@ The plugin JAR is written to `build/libs/minecraft-tower-defense-0.1.0-SNAPSHOT.
 5. Inspect the encounter with `/td admin status` or stop it safely with `/td admin abort`.
 
 All current commands require `towerdefense.admin` (operator by default).
-

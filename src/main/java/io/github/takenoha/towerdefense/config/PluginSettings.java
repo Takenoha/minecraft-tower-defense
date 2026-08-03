@@ -6,7 +6,26 @@ import java.util.Map;
 public record PluginSettings(
         CombatSettings combat,
         CoreSettings core,
-        EnemySettings enemies) {
+        EnemySettings enemies,
+        ProtectionSettings protection,
+        RewardSettings rewards) {
+
+    /** Keeps direct settings construction source-compatible with the pre-boundary model. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies) {
+        this(combat, core, enemies, ProtectionSettings.empty(), RewardSettings.defaults());
+    }
+
+    /** Keeps four-field construction source-compatible with the protection-boundary model. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies,
+            ProtectionSettings protection) {
+        this(combat, core, enemies, protection, RewardSettings.defaults());
+    }
 
     /**
      * Reads and validates the nested map shape used by {@code config.yml}.

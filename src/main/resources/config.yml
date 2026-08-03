@@ -24,4 +24,17 @@ enemies:
   added-per-wave: 2
   boss-health-multiplier: 4.0
   move-speed: 1.0
+  # Baseline role ratios; bounded stage/wave progression increases these up to 3x.
+  destroyer-ratio: 0.15
+  builder-ratio: 0.10
 
+protection:
+  # Case-insensitive world names in which cores and combat areas cannot be placed.
+  forbidden-worlds: []
+  # Horizontal inclusive rectangles. A rectangle intersecting the full combat circle is rejected.
+  forbidden-regions: []
+
+rewards:
+  # TEAM rows are available to registered participants for this long before the current owner
+  # may receive the pending row as a safe fallback.
+  team-queue-retention-seconds: 604800

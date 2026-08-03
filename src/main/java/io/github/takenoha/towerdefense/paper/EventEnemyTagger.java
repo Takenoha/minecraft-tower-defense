@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.runtime.TaggedEnemy;
 import java.util.Objects;
 import java.util.Optional;
@@ -14,11 +15,13 @@ import org.bukkit.plugin.Plugin;
 public final class EventEnemyTagger {
     private final NamespacedKey eventIdKey;
     private final NamespacedKey logicalEnemyIdKey;
+    private final NamespacedKey roleKey;
 
     public EventEnemyTagger(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
         eventIdKey = new NamespacedKey(plugin, "event_id");
         logicalEnemyIdKey = new NamespacedKey(plugin, "logical_enemy_id");
+        roleKey = new NamespacedKey(plugin, "enemy_role");
     }
 
     public void tag(Entity entity, TaggedEnemy taggedEnemy) {
@@ -30,6 +33,7 @@ public final class EventEnemyTagger {
                 logicalEnemyIdKey,
                 PersistentDataType.STRING,
                 taggedEnemy.logicalEnemyId().toString());
+        data.set(roleKey, PersistentDataType.STRING, taggedEnemy.role().id());
     }
 
     public Optional<TaggedEnemy> read(Entity entity) {
@@ -40,11 +44,14 @@ public final class EventEnemyTagger {
         if (eventId == null || enemyId == null) {
             return Optional.empty();
         }
+        String role = data.get(roleKey, PersistentDataType.STRING);
         try {
-            return Optional.of(new TaggedEnemy(UUID.fromString(eventId), UUID.fromString(enemyId)));
+            return Optional.of(new TaggedEnemy(
+                    UUID.fromString(eventId),
+                    UUID.fromString(enemyId),
+                    role == null ? EnemyRole.NORMAL : EnemyRole.fromId(role)));
         } catch (IllegalArgumentException invalidId) {
             return Optional.empty();
         }
     }
 }
-

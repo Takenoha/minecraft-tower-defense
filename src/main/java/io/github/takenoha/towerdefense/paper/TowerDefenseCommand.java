@@ -45,6 +45,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
     private final DatabaseExecutor databaseExecutor;
     private final DefenseSessionManager sessions;
     private final CoreRegistry cores;
+    private final ThirdPartyRegionProtectionAdapter regionProtection;
     private boolean startInFlight;
     private boolean startCancellationRequested;
     private boolean startRecoveryInFlight;
@@ -57,12 +58,31 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             DatabaseExecutor databaseExecutor,
             DefenseSessionManager sessions,
             CoreRegistry cores) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                ThirdPartyRegionProtectionAdapter.none());
+    }
+
+    public TowerDefenseCommand(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            ThirdPartyRegionProtectionAdapter regionProtection) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.cores = Objects.requireNonNull(cores, "cores");
+        this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -116,6 +136,21 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return true;
         }
 
+        List<String> safetyViolations = PaperCombatAreaSafetyValidator.violations(
+                target.getWorld(),
+                target.getX() + 0.5d,
+                target.getZ() + 0.5d,
+                combatArea,
+                settings.protection(),
+                regionProtection);
+        if (!safetyViolations.isEmpty()) {
+            sender.sendMessage(Component.text(
+                    "コア周辺が防衛戦の保護境界を満たしません: "
+                            + String.join("; ", safetyViolations),
+                    NamedTextColor.RED));
+            return true;
+        }
+
         UUID ownerId = player.getUniqueId();
         UUID teamId = soloTeamId(ownerId);
         UUID worldId = target.getWorld().getUID();
@@ -139,15 +174,22 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                     maximumHitPoints,
                     now,
                     now);
-            return repository.placeCore(core, settings.combat().minimumCoreDistance());
-        }).whenComplete((core, failure) -> runOnMainThread(() -> {
+            return repository.placeCore(
+                    ownerId,
+                    core,
+                    settings.combat().minimumCoreDistance(),
+                    UUID.randomUUID(),
+                    now);
+        }).whenComplete((placement, failure) -> runOnMainThread(() -> {
             if (failure != null) {
                 player.sendMessage(Component.text(
                         "コアを登録できません: " + rootMessage(failure),
                         NamedTextColor.RED));
                 return;
             }
-            cores.register(core);
+            CoreRecord core = placement.core().orElseThrow(
+                    () -> new IllegalStateException("Core placement returned no core"));
+            cores.replace(core);
             player.sendMessage(Component.text(
                     "このブロックをテスト用コアとして登録しました。",
                     NamedTextColor.GREEN));
@@ -209,6 +251,21 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
         if (world == null) {
             completeStartOperation();
             player.sendMessage(Component.text("コアのワールドが読み込まれていません。", NamedTextColor.RED));
+            return;
+        }
+        List<String> safetyViolations = PaperCombatAreaSafetyValidator.violations(
+                world,
+                core.blockX() + 0.5d,
+                core.blockZ() + 0.5d,
+                combatArea,
+                settings.protection(),
+                regionProtection);
+        if (!safetyViolations.isEmpty()) {
+            completeStartOperation();
+            player.sendMessage(Component.text(
+                    "防衛戦を開始できません。戦闘領域が保護境界に接触します: "
+                            + String.join("; ", safetyViolations),
+                    NamedTextColor.RED));
             return;
         }
         if (core.currentHitPoints() <= 0L) {

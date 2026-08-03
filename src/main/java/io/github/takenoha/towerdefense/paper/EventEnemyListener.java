@@ -36,14 +36,17 @@ public final class EventEnemyListener implements Listener {
     private final EventEnemyTagger tagger;
     private final EnemyLifecycleSink lifecycleSink;
     private final EnemyAccessPolicy accessPolicy;
+    private final PaperEnemyTerrainAction terrainAction;
 
     public EventEnemyListener(
             EventEnemyTagger tagger,
             EnemyLifecycleSink lifecycleSink,
-            EnemyAccessPolicy accessPolicy) {
+            EnemyAccessPolicy accessPolicy,
+            PaperEnemyTerrainAction terrainAction) {
         this.tagger = Objects.requireNonNull(tagger, "tagger");
         this.lifecycleSink = Objects.requireNonNull(lifecycleSink, "lifecycleSink");
         this.accessPolicy = Objects.requireNonNull(accessPolicy, "accessPolicy");
+        this.terrainAction = Objects.requireNonNull(terrainAction, "terrainAction");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -158,9 +161,10 @@ public final class EventEnemyListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onChangeBlock(EntityChangeBlockEvent event) {
-        if (tagger.read(event.getEntity()).isPresent()) {
+        tagger.read(event.getEntity()).ifPresent(taggedEnemy -> {
             event.setCancelled(true);
-        }
+            terrainAction.tryApply(event, taggedEnemy);
+        });
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
