@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_VERSION = 5;
 
     private SchemaMigrator() {
     }
@@ -39,6 +39,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 4) {
                     applyVersionFour(connection);
                     recordMigration(connection, 4);
+                }
+                if (installedVersion < 5) {
+                    applyVersionFive(connection);
+                    recordMigration(connection, 5);
                 }
                 return null;
             });
@@ -429,6 +433,19 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX management_operations_resource_idx
                     ON management_operations(resource_type, resource_id, operation_kind)
+                    """);
+        }
+    }
+
+    private static void applyVersionFive(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE event_mutation_operations
+                    ADD COLUMN rollback_decision TEXT CHECK (
+                        rollback_decision IS NULL OR rollback_decision IN (
+                            'RESTORE', 'SKIP_ALREADY_BEFORE', 'CONFLICT'
+                        )
+                    )
                     """);
         }
     }

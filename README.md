@@ -35,6 +35,12 @@ membership and reject changes while an event is active, but public team GUI, cor
 costs, protected-region checks, and physical block replacement are still disabled. See [the PR #3
 scope](docs/CORE_TEAM_SCOPE.md).
 
+The fourth milestone connects the PR2 ledger to Paper's main thread for verified block apply and
+startup/shutdown recovery. It persists rollback decisions across the physical-restore boundary,
+preserves later player edits as conflicts, and rejects existing tile entities as mutation sources.
+Enemy break/place behavior, escrow entities, and rewards remain disabled until their protection
+adapters are complete. See [the PR #4 scope](docs/PAPER_RECOVERY_ADAPTER_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build

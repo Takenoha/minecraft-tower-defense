@@ -47,9 +47,24 @@ The administrator test command remains the only enabled placement path. Physical
 world-border and protected-region validation, repair costs, public team management, and GUI
 confirmation remain future Paper adapter work. See `docs/CORE_TEAM_SCOPE.md`.
 
+## PR #4 Paper recovery adapter boundary
+
+PR #4 connects the PR2 ledger to the Paper main thread without enabling enemy terrain mutation:
+
+- schema v5 persists a prepared rollback decision for the physical-restore/database-acknowledgement
+  stop window;
+- Paper captures canonical BlockData and block type, refuses existing tile-entity mutation sources,
+  applies with physics disabled, verifies the result, and only then acknowledges the ledger row;
+- startup and shutdown recovery run reverse-generation planning before technical event recovery,
+  preserving later player edits as durable conflicts.
+
+Entity-enemy break/place actions, tile-container NBT, escrow entities, hopper/container/death
+protection, protected-region checks, and reward delivery remain disabled. See
+`docs/PAPER_RECOVERY_ADAPTER_SCOPE.md`.
+
 ## Safety boundary
 
-Until a write-ahead world-mutation journal and drop escrow exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled.
+Until a write-ahead world-mutation journal and drop escrow exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled. PR4 has the Paper recovery adapter, but does not enable enemy world mutation.
 
 ## Acceptance mapping
 

@@ -104,6 +104,7 @@ public final class BlockChangeRepository {
                 operationId,
                 "BLOCK_APPLY",
                 loadFingerprint(eventId, changeId),
+                null,
                 preparedAt);
     }
 
@@ -166,6 +167,7 @@ public final class BlockChangeRepository {
                 operationId,
                 "BLOCK_ROLLBACK",
                 rollbackFingerprint(eventId, changeId, decision),
+                decision.name(),
                 preparedAt);
     }
 
@@ -265,6 +267,25 @@ public final class BlockChangeRepository {
                 .toList();
     }
 
+    /** Loads a rollback operation which was prepared but not committed before a stop. */
+    public Optional<PreparedRollback> loadPreparedRollback(UUID eventId, UUID changeId) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(changeId, "changeId");
+        return read("load a prepared block rollback", connection -> {
+            Optional<ResourceOperation> operation = loadResourceOperation(
+                    connection, eventId, "BLOCK_ROLLBACK", changeId);
+            if (operation.isEmpty()
+                    || operation.orElseThrow().state() != ResourceOperationState.PREPARED) {
+                return Optional.empty();
+            }
+            ResourceOperation value = operation.orElseThrow();
+            BlockRollbackDecision decision = value.rollbackDecision().orElseThrow(
+                    () -> new PersistenceConflictException(
+                            "A prepared rollback has no persisted decision"));
+            return Optional.of(new PreparedRollback(value.operationId(), decision));
+        });
+    }
+
     /** Package-private guard used by event recovery to avoid releasing a dirty world mutation. */
     static boolean hasUnresolved(Connection connection, UUID eventId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
@@ -285,6 +306,7 @@ public final class BlockChangeRepository {
             UUID operationId,
             String kind,
             String fingerprint,
+            String rollbackDecision,
             Instant preparedAt) {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(targetId, "targetId");
@@ -324,6 +346,7 @@ public final class BlockChangeRepository {
                         kind,
                         targetId,
                         fingerprint,
+                        rollbackDecision,
                         preparedAt);
                 return OperationOutcome.APPLIED;
             });
@@ -375,12 +398,13 @@ public final class BlockChangeRepository {
             String kind,
             UUID targetId,
             String fingerprint,
+            String rollbackDecision,
             Instant preparedAt) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO event_mutation_operations(
                     operation_id, event_id, operation_kind, target_id,
-                    payload_fingerprint, state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, 'PREPARED', ?)
+                    payload_fingerprint, state, prepared_at, rollback_decision
+                ) VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?)
                 """)) {
             statement.setString(1, operationId.toString());
             statement.setString(2, eventId.toString());
@@ -388,6 +412,7 @@ public final class BlockChangeRepository {
             statement.setString(4, targetId.toString());
             statement.setString(5, fingerprint);
             statement.setString(6, preparedAt.toString());
+            statement.setString(7, rollbackDecision);
             statement.executeUpdate();
         }
     }
@@ -417,7 +442,8 @@ public final class BlockChangeRepository {
             UUID targetId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, event_id, operation_kind, target_id,
-                       payload_fingerprint, state, prepared_at, applied_at
+                       payload_fingerprint, state, prepared_at, applied_at,
+                       rollback_decision
                 FROM event_mutation_operations
                 WHERE event_id = ? AND operation_kind = ? AND target_id = ?
                 """)) {
@@ -437,7 +463,8 @@ public final class BlockChangeRepository {
             UUID operationId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, event_id, operation_kind, target_id,
-                       payload_fingerprint, state, prepared_at, applied_at
+                       payload_fingerprint, state, prepared_at, applied_at,
+                       rollback_decision
                 FROM event_mutation_operations WHERE operation_id = ?
                 """)) {
             statement.setString(1, operationId.toString());
@@ -460,7 +487,9 @@ public final class BlockChangeRepository {
                 resultSet.getString("payload_fingerprint"),
                 ResourceOperationState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
-                appliedAt == null ? Optional.empty() : Optional.of(instant(appliedAt)));
+                appliedAt == null ? Optional.empty() : Optional.of(instant(appliedAt)),
+                Optional.ofNullable(resultSet.getString("rollback_decision"))
+                        .map(BlockRollbackDecision::valueOf));
     }
 
     private static Optional<StoredBlockChange> loadChange(
@@ -613,7 +642,8 @@ public final class BlockChangeRepository {
             String fingerprint,
             ResourceOperationState state,
             Instant preparedAt,
-            Optional<Instant> appliedAt) {
+            Optional<Instant> appliedAt,
+            Optional<BlockRollbackDecision> rollbackDecision) {
     }
 
     private enum ResourceOperationState {

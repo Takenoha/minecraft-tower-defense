@@ -178,6 +178,67 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void preparedRollbackDecisionSurvivesDatabaseReopen() {
+        Path databaseFile = temporaryDirectory.resolve("prepared-rollback.sqlite");
+        Database database = new Database(databaseFile);
+        DefenseRepository repository = new DefenseRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        repository.createSoloTeam(teamId, ownerId, START.minusSeconds(10L));
+        CoreRecord core = new CoreRecord(
+                UUID.randomUUID(),
+                teamId,
+                UUID.randomUUID(),
+                0,
+                64,
+                0,
+                100L,
+                100L,
+                START.minusSeconds(5L),
+                START.minusSeconds(5L));
+        repository.placeCore(core, 192.0D);
+        DefenseSession session = new DefenseSession(
+                UUID.randomUUID(), teamId, 1L, 8, CoreState.intact(100L));
+        assertEquals(
+                StartOutcome.STARTED,
+                repository.tryStart(new StartRequest(
+                        session.snapshot(), core.id(), "{}", 1, START)));
+
+        BlockChangeRepository ledger = new BlockChangeRepository(database);
+        BlockChange change = new BlockChange(
+                session.eventId(),
+                UUID.randomUUID(),
+                core.worldId(),
+                4,
+                65,
+                4,
+                BlockChangeKind.TEMPORARY_BLOCK,
+                1L,
+                "minecraft:air",
+                "minecraft:air",
+                "minecraft:glass",
+                "minecraft:glass");
+        ledger.prepare(change, UUID.randomUUID(), START);
+        UUID rollbackOperation = UUID.randomUUID();
+        assertEquals(
+                OperationOutcome.APPLIED,
+                ledger.prepareRollback(
+                        session.eventId(),
+                        change.changeId(),
+                        rollbackOperation,
+                        BlockRollbackDecision.RESTORE,
+                        START.plusSeconds(1L)));
+        assertEquals(
+                Optional.of(new PreparedRollback(rollbackOperation, BlockRollbackDecision.RESTORE)),
+                ledger.loadPreparedRollback(session.eventId(), change.changeId()));
+
+        BlockChangeRepository reopened = new BlockChangeRepository(new Database(databaseFile));
+        assertEquals(
+                Optional.of(new PreparedRollback(rollbackOperation, BlockRollbackDecision.RESTORE)),
+                reopened.loadPreparedRollback(session.eventId(), change.changeId()));
+    }
+
+    @Test
     void escrowClaimsOnlyRegisteredParticipantsAndNormalAbortSettlesWithoutDuplication() {
         Fixture fixture = activeFixture("escrow-abort.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());

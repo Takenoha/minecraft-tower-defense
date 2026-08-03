@@ -37,6 +37,8 @@ final class DatabaseTest {
         assertTrue(columnExists(reopened, "defense_events", "revision"));
         assertTrue(columnExists(reopened, "event_operations", "target_revision"));
         assertTrue(columnExists(reopened, "event_operations", "payload_fingerprint"));
+        assertTrue(columnExists(
+                reopened, "event_mutation_operations", "rollback_decision"));
         assertTrue(tableExists(reopened, "management_operations"));
     }
 

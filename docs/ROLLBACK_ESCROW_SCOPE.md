@@ -31,7 +31,8 @@ terrain mutation and rewards disabled. A start request created by the existing a
 seal; production start flow must pass `StartRequest(..., Optional.of(sealId))` after the start
 validation and inventory adapter are implemented.
 
-The next milestone should add the main-thread Paper adapter: capture exact `BlockData`/`BlockState`,
-persist the write-ahead row, apply and observe the world mutation, and execute the planner during
-startup recovery. It should also reject tagged escrow entities in hopper, container, death, and
-cross-world paths, then deliver pending queue rows only after DB state is marked delivered.
+PR4 now adds the main-thread Paper adapter for canonical `BlockData`/block-type snapshots, physical
+apply verification, and planner-driven startup recovery. It persists a prepared rollback decision
+so a stop between physical restore and database acknowledgement can resume safely. Enemy terrain
+mutation and physical escrow delivery remain disabled; tagged escrow entity protection in hopper,
+container, death, and cross-world paths is still future work.

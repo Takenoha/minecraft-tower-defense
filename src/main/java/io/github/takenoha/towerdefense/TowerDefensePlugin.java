@@ -5,8 +5,10 @@ import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
+import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
+import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
 import io.github.takenoha.towerdefense.persistence.Database;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
@@ -19,6 +21,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.logging.Level;
 import org.bukkit.World;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Entity;
@@ -28,6 +31,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class TowerDefensePlugin extends JavaPlugin {
     private DatabaseExecutor databaseExecutor;
     private DefenseSessionManager sessions;
+    private PaperBlockMutationAdapter blockMutations;
 
     @Override
     public void onEnable() {
@@ -52,8 +56,9 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
         Database database = new Database(databasePath);
         DefenseRepository repository = new DefenseRepository(database);
+        blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
         EventEnemyTagger tagger = new EventEnemyTagger(this);
-        recoverInterruptedEvents(repository, tagger);
+        recoverInterruptedEvents(repository, tagger, blockMutations);
 
         CoreRegistry coreRegistry = new CoreRegistry();
         coreRegistry.replaceAll(repository.loadAllCores());
@@ -89,6 +94,18 @@ public final class TowerDefensePlugin extends JavaPlugin {
     public void onDisable() {
         if (sessions != null) {
             if (sessions.hasActiveSession()) {
+                if (blockMutations != null) {
+                    try {
+                        sessions.status().ifPresent(status -> blockMutations.recoverEvent(
+                                status.eventId(), Instant.now()));
+                    } catch (RuntimeException recoveryFailure) {
+                        getLogger().log(
+                                Level.SEVERE,
+                                "Could not recover Paper block mutations during shutdown; "
+                                        + "the event lock will remain for operator recovery",
+                                recoveryFailure);
+                    }
+                }
                 sessions.recoverActiveSession();
             }
             sessions.close();
@@ -98,6 +115,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
             databaseExecutor.close();
             databaseExecutor = null;
         }
+        blockMutations = null;
     }
 
     private Path resolveDatabasePath() {
@@ -116,7 +134,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
     private void recoverInterruptedEvents(
             DefenseRepository repository,
-            EventEnemyTagger tagger) {
+            EventEnemyTagger tagger,
+            PaperBlockMutationAdapter blockMutations) {
         List<StoredDefenseEvent> unfinished = repository.loadUnfinishedEvents();
         int removedEntities = 0;
         for (World world : getServer().getWorlds()) {
@@ -128,6 +147,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
             }
         }
         for (StoredDefenseEvent event : unfinished) {
+            blockMutations.recoverEvent(event.session().eventId(), Instant.now());
             repository.recoverUnfinishedEvent(
                     event.session().eventId(),
                     UUID.randomUUID(),
