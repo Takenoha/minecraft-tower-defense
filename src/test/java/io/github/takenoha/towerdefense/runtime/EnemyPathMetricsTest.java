@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 final class EnemyPathMetricsTest {
     @Test
-    void recordsInspectionLatencyDecisionsAndBridgeOutcomesWithoutPersistenceWrites() {
+    void recordsInspectionLatencyDecisionsAndTerrainOutcomesWithoutPersistenceWrites() {
         EnemyPathMetrics metrics = new EnemyPathMetrics();
 
         metrics.recordInspection(10L);
@@ -18,6 +18,8 @@ final class EnemyPathMetricsTest {
         metrics.recordDecision(false, EnemyPathAction.RECALCULATE_PATH);
         metrics.recordBridgeAttempt(false);
         metrics.recordBridgeAttempt(true);
+        metrics.recordBreakAttempt(false);
+        metrics.recordBreakAttempt(true);
 
         EnemyPathMetrics.Snapshot snapshot = metrics.snapshot();
         assertEquals(2L, snapshot.inspectionCount());
@@ -31,6 +33,8 @@ final class EnemyPathMetricsTest {
         assertEquals(1L, snapshot.recalculateDecisionCount());
         assertEquals(2L, snapshot.bridgeAttemptCount());
         assertEquals(1L, snapshot.bridgePlacementCount());
+        assertEquals(2L, snapshot.breakAttemptCount());
+        assertEquals(1L, snapshot.breakSuccessCount());
     }
 
     @Test
@@ -54,6 +58,8 @@ final class EnemyPathMetricsTest {
                         0L,
                         0L,
                         0L,
+                        0L,
+                        0L,
                         0L));
         assertThrows(
                 IllegalArgumentException.class,
@@ -69,6 +75,25 @@ final class EnemyPathMetricsTest {
                         0L,
                         0L,
                         0L,
-                        1L));
+                        1L,
+                        0L,
+                        0L));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new EnemyPathMetrics.Snapshot(
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        1L,
+                        2L));
     }
 }
