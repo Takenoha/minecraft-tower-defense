@@ -24,6 +24,7 @@ class PluginSettingsMapReaderTest {
         assertEquals(new EnemySettings(120, 8, 4, 2, 4.0, 1.0), settings.enemies());
         assertEquals(ProtectionSettings.empty(), settings.protection());
         assertEquals(RewardSettings.defaults(), settings.rewards());
+        assertEquals(TerrainMutationSettings.disabled(), settings.terrainMutation());
     }
 
     @Test
@@ -51,6 +52,38 @@ class PluginSettingsMapReaderTest {
         assertEquals(
                 new EnemySettings(120, 8, 4, 2, 4.0, 1.0),
                 PluginSettings.from(validValues()).enemies());
+    }
+
+    @Test
+    void readsTheIndependentTerrainMutationActivationInputs() {
+        Map<String, Object> values = validValues();
+        values.put("terrain-mutation", Map.of(
+                "requested", true,
+                "paper-integration-verified", true,
+                "recovery-verified", false));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(
+                new TerrainMutationSettings(true, true, false),
+                settings.terrainMutation());
+    }
+
+    @Test
+    void rejectsMalformedTerrainMutationActivationInputs() {
+        Map<String, Object> values = validValues();
+        values.put("terrain-mutation", Map.of(
+                "requested", "yes",
+                "paper-integration-verified", true,
+                "recovery-verified", true));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                () -> PluginSettings.from(values));
+
+        assertEquals(
+                List.of("terrain-mutation.requested: must be a boolean"),
+                exception.violations());
     }
 
     @Test

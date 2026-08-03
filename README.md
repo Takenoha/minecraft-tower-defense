@@ -84,3 +84,8 @@ The plugin JAR is written to `build/libs/minecraft-tower-defense-0.1.0-SNAPSHOT.
 5. Inspect the encounter with `/td admin status` or stop it safely with `/td admin abort`.
 
 All current commands require `towerdefense.admin` (operator by default).
+
+Enemy terrain mutation has an explicit fail-closed activation gate. The default configuration
+requires an operator request plus independently reviewed Paper integration and recovery evidence;
+all three inputs remain `false` until those tests are completed. See
+[`docs/TERRAIN_MUTATION_ACTIVATION_SCOPE.md`](docs/TERRAIN_MUTATION_ACTIVATION_SCOPE.md).

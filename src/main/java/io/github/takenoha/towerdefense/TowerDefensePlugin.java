@@ -135,7 +135,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
         getLogger().info(
                 "Minecraft Tower Defense foundation enabled for Paper 26.2 build 87; "
-                        + "terrain mutation remains disabled; persisted reward queues are retried.");
+                        + "terrain mutation gate=" + sessions.terrainMutationGate().status()
+                        + "; persisted reward queues are retried.");
     }
 
     @Override
