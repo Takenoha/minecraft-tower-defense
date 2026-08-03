@@ -7,6 +7,7 @@ import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
+import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
@@ -132,6 +133,17 @@ public final class DefenseSessionManager
         World world = Bukkit.getWorld(core.worldId());
         if (world == null) {
             throw new IllegalStateException("core world is not loaded: " + core.worldId());
+        }
+        List<String> safetyViolations = PaperCombatAreaSafetyValidator.violations(
+                world,
+                core.blockX() + 0.5d,
+                core.blockZ() + 0.5d,
+                combatArea,
+                settings.protection());
+        if (!safetyViolations.isEmpty()) {
+            throw new IllegalStateException(
+                    "combat area violates a protection boundary: "
+                            + String.join("; ", safetyViolations));
         }
         Location coreTarget = new Location(
                 world,

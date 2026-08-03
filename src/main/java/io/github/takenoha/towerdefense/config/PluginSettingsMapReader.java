@@ -16,7 +16,8 @@ final class PluginSettingsMapReader {
         PluginSettings settings = new PluginSettings(
                 reader.combat(),
                 reader.core(),
-                reader.enemies());
+                reader.enemies(),
+                reader.protection());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -80,6 +81,98 @@ final class PluginSettingsMapReader {
                     integer(values, "enemies", "added-per-wave"),
                     decimal(values, "enemies", "boss-health-multiplier"),
                     decimal(values, "enemies", "move-speed"));
+        }
+
+        private ProtectionSettings protection() {
+            Object raw = root.get("protection");
+            if (raw == null) {
+                return ProtectionSettings.empty();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("protection", "must be a map");
+                return ProtectionSettings.empty();
+            }
+            return new ProtectionSettings(
+                    forbiddenWorlds(values),
+                    forbiddenRegions(values));
+        }
+
+        private Set<String> forbiddenWorlds(Map<?, ?> section) {
+            Object raw = section.get("forbidden-worlds");
+            if (raw == null) {
+                return Set.of();
+            }
+            if (!(raw instanceof List<?> values)) {
+                addProblem("protection.forbidden-worlds", "must be a list");
+                return Set.of();
+            }
+
+            Set<String> worlds = new LinkedHashSet<>();
+            for (int index = 0; index < values.size(); index++) {
+                Object value = values.get(index);
+                String path = "protection.forbidden-worlds[" + index + "]";
+                if (!(value instanceof String world) || world.isBlank()) {
+                    addProblem(path, "must be a non-blank string");
+                    continue;
+                }
+                worlds.add(world);
+            }
+            return Set.copyOf(worlds);
+        }
+
+        private List<ForbiddenRegion> forbiddenRegions(Map<?, ?> section) {
+            Object raw = section.get("forbidden-regions");
+            if (raw == null) {
+                return List.of();
+            }
+            if (!(raw instanceof List<?> values)) {
+                addProblem("protection.forbidden-regions", "must be a list");
+                return List.of();
+            }
+
+            List<ForbiddenRegion> regions = new ArrayList<>();
+            for (int index = 0; index < values.size(); index++) {
+                String path = "protection.forbidden-regions[" + index + "]";
+                Object value = values.get(index);
+                if (!(value instanceof Map<?, ?> region)) {
+                    addProblem(path, "must be a map");
+                    continue;
+                }
+                String world = text(region, path, "world");
+                Double minX = regionDecimal(region, path, "min-x");
+                Double minZ = regionDecimal(region, path, "min-z");
+                Double maxX = regionDecimal(region, path, "max-x");
+                Double maxZ = regionDecimal(region, path, "max-z");
+                if (world != null && minX != null && minZ != null && maxX != null && maxZ != null) {
+                    regions.add(new ForbiddenRegion(world, minX, minZ, maxX, maxZ));
+                }
+            }
+            return List.copyOf(regions);
+        }
+
+        private String text(Map<?, ?> section, String parentPath, String key) {
+            String path = parentPath + "." + key;
+            Object value = section.get(key);
+            if (!(value instanceof String text) || text.isBlank()) {
+                addProblem(path, value == null ? "is required" : "must be a non-blank string");
+                return null;
+            }
+            return text;
+        }
+
+        private Double regionDecimal(Map<?, ?> section, String parentPath, String key) {
+            String path = parentPath + "." + key;
+            Object value = section.get(key);
+            if (!(value instanceof Number number)) {
+                addProblem(path, value == null ? "is required" : "must be a number");
+                return null;
+            }
+            double decimal = number.doubleValue();
+            if (!Double.isFinite(decimal)) {
+                addProblem(path, "must be finite (was " + value + ")");
+                return null;
+            }
+            return decimal;
         }
 
         private Map<?, ?> section(String name) {

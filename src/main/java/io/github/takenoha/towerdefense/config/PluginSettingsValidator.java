@@ -34,6 +34,7 @@ public final class PluginSettingsValidator {
         validateCombat(settings.combat(), unreadablePaths, violations);
         validateCore(settings.core(), unreadablePaths, violations);
         validateEnemies(settings.enemies(), unreadablePaths, violations);
+        validateProtection(settings.protection(), unreadablePaths, violations);
         return List.copyOf(violations);
     }
 
@@ -192,6 +193,64 @@ public final class PluginSettingsValidator {
             } else if (enemies.moveSpeed() <= 0.0) {
                 violations.add(speedPath + ": must be > 0 (was "
                         + enemies.moveSpeed() + ")");
+            }
+        }
+    }
+
+    private static void validateProtection(
+            ProtectionSettings protection,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (protection == null) {
+            if (!unreadablePaths.contains("protection")) {
+                violations.add("protection: section is required");
+            }
+            return;
+        }
+
+        if (protection.forbiddenWorlds() == null) {
+            if (!unreadablePaths.contains("protection.forbidden-worlds")) {
+                violations.add("protection.forbidden-worlds: must be a list");
+            }
+        } else {
+            int index = 0;
+            for (String world : protection.forbiddenWorlds()) {
+                if (world == null || world.isBlank()) {
+                    violations.add(
+                            "protection.forbidden-worlds[" + index
+                                    + "]: must be a non-blank string");
+                }
+                index++;
+            }
+        }
+
+        if (protection.forbiddenRegions() == null) {
+            if (!unreadablePaths.contains("protection.forbidden-regions")) {
+                violations.add("protection.forbidden-regions: must be a list");
+            }
+            return;
+        }
+
+        for (int index = 0; index < protection.forbiddenRegions().size(); index++) {
+            ForbiddenRegion region = protection.forbiddenRegions().get(index);
+            String path = "protection.forbidden-regions[" + index + "]";
+            if (region == null) {
+                violations.add(path + ": must be a map");
+                continue;
+            }
+            if (region.worldName() == null || region.worldName().isBlank()) {
+                violations.add(path + ".world: must be a non-blank string");
+            }
+            requireFinite(path + ".min-x", region.minX(), unreadablePaths, violations);
+            requireFinite(path + ".min-z", region.minZ(), unreadablePaths, violations);
+            requireFinite(path + ".max-x", region.maxX(), unreadablePaths, violations);
+            requireFinite(path + ".max-z", region.maxZ(), unreadablePaths, violations);
+            if (Double.isFinite(region.minX())
+                    && Double.isFinite(region.minZ())
+                    && Double.isFinite(region.maxX())
+                    && Double.isFinite(region.maxZ())
+                    && (region.minX() > region.maxX() || region.minZ() > region.maxZ())) {
+                violations.add(path + ": requires min-x <= max-x and min-z <= max-z");
             }
         }
     }

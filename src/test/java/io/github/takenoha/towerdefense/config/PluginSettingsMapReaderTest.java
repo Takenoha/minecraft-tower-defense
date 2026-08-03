@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class PluginSettingsMapReaderTest {
@@ -21,6 +22,49 @@ class PluginSettingsMapReaderTest {
                 settings.combat());
         assertEquals(new CoreSettings(1_000, 20), settings.core());
         assertEquals(new EnemySettings(120, 8, 4, 2, 4.0, 1.0), settings.enemies());
+        assertEquals(ProtectionSettings.empty(), settings.protection());
+    }
+
+    @Test
+    void readsForbiddenWorldsAndHorizontalRegions() {
+        Map<String, Object> values = validValues();
+        values.put("protection", new LinkedHashMap<>(Map.of(
+                "forbidden-worlds", List.of("world_nether", "event_void"),
+                "forbidden-regions", List.of(Map.of(
+                        "world", "world",
+                        "min-x", -100,
+                        "min-z", -50,
+                        "max-x", 100,
+                        "max-z", 50)))));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(Set.of("world_nether", "event_void"), settings.protection().forbiddenWorlds());
+        assertEquals(
+                List.of(new ForbiddenRegion("world", -100.0, -50.0, 100.0, 50.0)),
+                settings.protection().forbiddenRegions());
+    }
+
+    @Test
+    void reportsMalformedProtectionEntriesAlongsideTheirPaths() {
+        Map<String, Object> values = validValues();
+        values.put("protection", new LinkedHashMap<>(Map.of(
+                "forbidden-worlds", List.of("", 3),
+                "forbidden-regions", List.of(Map.of(
+                        "world", "world",
+                        "min-x", 10,
+                        "min-z", 10,
+                        "max-x", -10,
+                        "max-z", 10)))));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                () -> PluginSettings.from(values));
+
+        assertContains(exception.violations(),
+                "protection.forbidden-worlds[0]: must be a non-blank string",
+                "protection.forbidden-worlds[1]: must be a non-blank string",
+                "protection.forbidden-regions[0]: requires min-x <= max-x");
     }
 
     @Test

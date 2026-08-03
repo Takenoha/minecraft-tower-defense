@@ -25,3 +25,8 @@ enemies:
   boss-health-multiplier: 4.0
   move-speed: 1.0
 
+protection:
+  # Case-insensitive world names in which cores and combat areas cannot be placed.
+  forbidden-worlds: []
+  # Horizontal inclusive rectangles. A rectangle intersecting the full combat circle is rejected.
+  forbidden-regions: []

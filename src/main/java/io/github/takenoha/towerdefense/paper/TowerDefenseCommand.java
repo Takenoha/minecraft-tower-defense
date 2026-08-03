@@ -116,6 +116,20 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return true;
         }
 
+        List<String> safetyViolations = PaperCombatAreaSafetyValidator.violations(
+                target.getWorld(),
+                target.getX() + 0.5d,
+                target.getZ() + 0.5d,
+                combatArea,
+                settings.protection());
+        if (!safetyViolations.isEmpty()) {
+            sender.sendMessage(Component.text(
+                    "コア周辺が防衛戦の保護境界を満たしません: "
+                            + String.join("; ", safetyViolations),
+                    NamedTextColor.RED));
+            return true;
+        }
+
         UUID ownerId = player.getUniqueId();
         UUID teamId = soloTeamId(ownerId);
         UUID worldId = target.getWorld().getUID();
@@ -216,6 +230,20 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
         if (world == null) {
             completeStartOperation();
             player.sendMessage(Component.text("コアのワールドが読み込まれていません。", NamedTextColor.RED));
+            return;
+        }
+        List<String> safetyViolations = PaperCombatAreaSafetyValidator.violations(
+                world,
+                core.blockX() + 0.5d,
+                core.blockZ() + 0.5d,
+                combatArea,
+                settings.protection());
+        if (!safetyViolations.isEmpty()) {
+            completeStartOperation();
+            player.sendMessage(Component.text(
+                    "防衛戦を開始できません。戦闘領域が保護境界に接触します: "
+                            + String.join("; ", safetyViolations),
+                    NamedTextColor.RED));
             return;
         }
         if (core.currentHitPoints() <= 0L) {

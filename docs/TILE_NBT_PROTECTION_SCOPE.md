@@ -22,8 +22,10 @@ targets.
 
 Paper's public API does not expose the server's complete raw vanilla NBT compound. The stored
 payload is therefore the stable API projection above, not an internal CraftBukkit/NMS object. Raw
-NMS access, protected-region configuration, role-specific pathing, and production activation of
-`TerrainMutationPolicy` remain future work.
+NMS access, role-specific pathing, and production activation of `TerrainMutationPolicy` remain
+future work. PR #10 adds the explicit configured deny-list and WorldBorder start/placement gate;
+third-party region-plugin integration remains out of scope. See
+`docs/PROTECTION_BOUNDARIES_SCOPE.md`.
 
 ## Verification
 

@@ -16,6 +16,7 @@ public final class PaperSettingsLoader {
         values.put("combat", sectionValues(configuration, "combat"));
         values.put("core", sectionValues(configuration, "core"));
         values.put("enemies", sectionValues(configuration, "enemies"));
+        values.put("protection", sectionValues(configuration, "protection"));
         return PluginSettings.from(values);
     }
 
@@ -29,4 +30,3 @@ public final class PaperSettingsLoader {
         return new LinkedHashMap<>(section.getValues(false));
     }
 }
-

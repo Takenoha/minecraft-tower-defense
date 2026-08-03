@@ -150,6 +150,16 @@ Towers, research, start-item reservation, public core crafting, physical core re
 team management remain disabled. PR6 has the normal terrain settlement path, but PR5's production
 policy remains disabled.
 
+## PR #10 combat-area protection boundary
+
+PR #10 adds an explicit configuration deny-list for forbidden worlds and horizontal rectangles,
+plus a WorldBorder check that requires the complete combat circle to fit inside the loaded world's
+square border. Core registration and defense start run the check before the asynchronous database
+start transaction, while the session manager repeats it before activation as a defense-in-depth
+guard. Third-party region-plugin integration, role-specific terrain AI, Paper load testing, and
+production terrain activation remain future work. See
+`docs/PROTECTION_BOUNDARIES_SCOPE.md`.
+
 ## Acceptance mapping
 
 The first implementation targets these requirement checks directly:
