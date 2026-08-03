@@ -17,8 +17,8 @@ termination without enabling enemy terrain mutation in production.
 
 ## Deliberate boundary
 
-The production `TerrainMutationPolicy` remains disabled. Block-drop capture and physical escrow
-display/pickup, Tile NBT, hopper/container/death protection, protected-region validation, and
-role-specific terrain AI remain future work. Enemy break/place behavior must not be enabled until
-the drop escrow lifecycle is connected to the same normal-terminal and technical-recovery
-boundaries.
+The production `TerrainMutationPolicy` remains disabled. PR7 adds no-tool block-drop capture,
+PDC-tagged physical escrow displays, participant-only database claims, and transfer/death
+protection. Reward-queue delivery, Tile NBT, protected-region validation, and role-specific
+terrain AI remain future work. Enemy break/place behavior must not be enabled until the remaining
+activation gates are complete.

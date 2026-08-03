@@ -25,10 +25,11 @@ break/place behavior because normal-end settlement of `EVENT_BLOCK` and `TEMPORA
 not yet connected to the event finish transaction. Existing `EntityChangeBlockEvent` handling
 therefore continues to cancel tagged enemy actions.
 
-Tile-container NBT, block drops, escrow display entities, hopper/container/death protection,
-protected-region validation, role-specific pathing, and normal-end terrain settlement remain future
-work. A future activation must keep the mandatory policy and add those lifecycle boundaries first.
+Tile-container NBT, reward-queue delivery, protected-region validation, and role-specific pathing
+remain future work. PR6 adds normal-end terrain settlement and PR7 adds held block-drop capture,
+tagged display entities, participant claims, and physical transfer protection. A future activation
+must keep the mandatory policy and add the remaining lifecycle boundaries first.
 
-PR6 adds normal terminal terrain settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`. The action
-policy remains disabled until block-drop escrow and its physical-item protection lifecycle are also
-connected.
+PR6 adds normal terminal terrain settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`, and PR7 adds
+block-drop escrow plus its physical-item protection lifecycle. The action policy remains disabled
+until reward delivery, Tile NBT, protected-region validation, and role-specific AI are connected.

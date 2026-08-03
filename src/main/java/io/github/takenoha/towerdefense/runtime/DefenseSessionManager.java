@@ -7,6 +7,7 @@ import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
+import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
@@ -69,6 +70,7 @@ public final class DefenseSessionManager
     private final EventEnemyTagger tagger;
     private final DefensePersistenceSink persistence;
     private final PaperBlockMutationAdapter blockMutations;
+    private final PaperEscrowDropManager escrowDrops;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -79,12 +81,14 @@ public final class DefenseSessionManager
             PluginSettings settings,
             EventEnemyTagger tagger,
             DefensePersistenceSink persistence,
-            PaperBlockMutationAdapter blockMutations) {
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
         this.persistence = Objects.requireNonNull(persistence, "persistence");
         this.blockMutations = Objects.requireNonNull(blockMutations, "blockMutations");
+        this.escrowDrops = Objects.requireNonNull(escrowDrops, "escrowDrops");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -707,14 +711,21 @@ public final class DefenseSessionManager
                                 + defense.persistenceFailure);
                 return;
             }
+            escrowDrops.removeEventDisplays(defense.session.eventId());
             active = null;
         }));
     }
 
     private boolean prepareTerrainSettlement(ActiveDefense defense) {
-        if (defense.terrainSettlementComplete
-                || defense.finishSnapshot == null
-                || defense.finishSnapshot.phase() == DefensePhase.RECOVERY) {
+        if (defense.terrainSettlementComplete || defense.finishSnapshot == null) {
+            return true;
+        }
+        if (!escrowDrops.beginTerminal(defense.finishSnapshot.eventId())) {
+            defense.persistenceFailure = "an escrow pickup claim is still in flight";
+            defense.finishRetryTick = currentTick + finishRetryDelay(defense.finishAttempts + 1);
+            return false;
+        }
+        if (defense.finishSnapshot.phase() == DefensePhase.RECOVERY) {
             return true;
         }
         try {

@@ -30,4 +30,6 @@ terrain settlement and block-drop escrow are connected.
 
 PR6 adds normal terminal settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`: destruction rows are
 kept in place, temporary rows are removed through the conflict-safe planner, and the event lock is
-not released when settlement fails. Physical block-drop escrow remains the next activation gate.
+not released when settlement fails. PR7 adds held no-tool block-drop capture, tagged non-usable
+display entities, participant-only claims, and transfer protection. Reward delivery, Tile NBT,
+protected-region validation, and real Mob terrain pathing remain activation gates.

@@ -90,14 +90,32 @@ PR #6 adds the normal terminal terrain lifecycle without enabling enemy mutation
 - Paper terminal handling completes terrain settlement before asynchronous event-lock release and
   retries while retaining the lock if settlement fails.
 
-Technical recovery still rolls back every unresolved row. Physical block-drop escrow and its
-display/pickup/container/death lifecycle remain disabled and are the next safety boundary. See
-`docs/TERRAIN_SETTLEMENT_SCOPE.md`.
+Technical recovery still rolls back every unresolved row. PR7 supplies the physical block-drop
+escrow and display/pickup/container/death protection boundary; see
+`docs/BLOCK_DROP_ESCROW_SCOPE.md`.
+
+## PR #7 physical block-drop escrow boundary
+
+PR #7 adds the Paper-side physical representation of ordinary event-block drops while keeping
+the production terrain policy disabled:
+
+- no-tool block drops are serialized into the existing held escrow rows before the block apply;
+- PDC-tagged Item entities are spawned only after the WAL apply acknowledgement and cannot be
+  picked up as ordinary inventory items;
+- registered participant claims cross the asynchronous persistence boundary, while pickup,
+  inventory, crafting, placement, dispensing, item-frame, merge, despawn, damage, portal, and
+  death paths are blocked;
+- normal terminal settlement clears the physical display and technical recovery removes it while
+  voiding held escrow rows.
+
+Reward queue delivery, Tile NBT, protected-region validation, and role-specific terrain AI remain
+future work. See `docs/BLOCK_DROP_ESCROW_SCOPE.md`.
 
 ## Safety boundary
 
-Until the block-drop escrow boundary exists, event enemies cannot break or place blocks and the
-simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued.
+Until the remaining activation gates exist, event enemies cannot break or place blocks and the
+simulation creates no custom or vanilla rewards. PR #7 supplies only database-owned block-drop
+capture and a non-usable physical display; no temporary substitute rewards are issued.
 Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI
 team management remain disabled. PR6 has the normal terrain settlement path, but PR5's production
 policy remains disabled.

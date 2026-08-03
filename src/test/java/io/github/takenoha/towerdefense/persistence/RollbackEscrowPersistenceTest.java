@@ -431,6 +431,7 @@ final class RollbackEscrowPersistenceTest {
         StoredEscrowDrop settled = escrow.loadDrops(fixture.eventId()).getFirst();
         assertEquals(EscrowDropStatus.SETTLED, settled.status());
         assertEquals(2, settled.claimedQuantity());
+        assertTrue(settled.displayEntityId().isEmpty());
         assertEquals(1, escrow.loadRewardQueue(fixture.eventId()).size());
         assertEquals(
                 RewardQueueScope.PLAYER,
@@ -449,6 +450,7 @@ final class RollbackEscrowPersistenceTest {
     void victoryMovesUnclaimedEscrowToOneTeamQueue() {
         Fixture fixture = activeFixture("escrow-victory.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());
+        UUID displayId = UUID.randomUUID();
         EscrowDrop drop = new EscrowDrop(
                 fixture.eventId(),
                 UUID.randomUUID(),
@@ -457,8 +459,11 @@ final class RollbackEscrowPersistenceTest {
                 "defense_shard",
                 "{\"schema\":1}",
                 3,
-                Optional.empty());
+                Optional.of(displayId));
         escrow.prepare(drop, UUID.randomUUID(), START);
+        assertEquals(
+                displayId,
+                escrow.loadDrops(fixture.eventId()).getFirst().displayEntityId().orElseThrow());
 
         long revision = 1L;
         for (int wave = 1; wave <= fixture.session().totalWaves(); wave++) {
@@ -502,6 +507,36 @@ final class RollbackEscrowPersistenceTest {
         assertEquals(RewardQueueScope.TEAM, queue.scope());
         assertEquals(fixture.teamId(), queue.recipientId());
         assertEquals(3, queue.quantity());
+    }
+
+    @Test
+    void preparedBlockDropCanBeVoidedWhenItsPhysicalActionFails() {
+        Fixture fixture = activeFixture("escrow-discard.sqlite");
+        EscrowRepository escrow = new EscrowRepository(fixture.database());
+        UUID dropId = UUID.randomUUID();
+        EscrowDrop drop = new EscrowDrop(
+                fixture.eventId(),
+                dropId,
+                DropSourceKind.BLOCK,
+                UUID.randomUUID(),
+                "minecraft:stone",
+                "{\"schema\":1}",
+                1,
+                Optional.of(UUID.randomUUID()));
+        escrow.prepare(drop, UUID.randomUUID(), START);
+
+        UUID discardOperation = UUID.randomUUID();
+        assertEquals(
+                OperationOutcome.APPLIED,
+                escrow.voidPreparedDrop(
+                        fixture.eventId(), dropId, discardOperation, START.plusSeconds(1L)));
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                escrow.voidPreparedDrop(
+                        fixture.eventId(), dropId, discardOperation, START.plusSeconds(2L)));
+        StoredEscrowDrop discarded = escrow.loadDrops(fixture.eventId()).getFirst();
+        assertEquals(EscrowDropStatus.VOIDED, discarded.status());
+        assertTrue(discarded.displayEntityId().isEmpty());
     }
 
     @Test
@@ -565,7 +600,9 @@ final class RollbackEscrowPersistenceTest {
         assertNotEquals(sealId, refund.returnedSeal().sealId());
         assertEquals(RaidSealStatus.REFUNDED, seals.find(sealId).orElseThrow().status());
         assertEquals(RaidSealStatus.AVAILABLE, refund.returnedSeal().status());
-        assertEquals(EscrowDropStatus.VOIDED, escrow.loadDrops(session.eventId()).getFirst().status());
+        StoredEscrowDrop voided = escrow.loadDrops(session.eventId()).getFirst();
+        assertEquals(EscrowDropStatus.VOIDED, voided.status());
+        assertTrue(voided.displayEntityId().isEmpty());
         assertEquals(
                 1,
                 seals.loadForOwner(ownerId).stream()

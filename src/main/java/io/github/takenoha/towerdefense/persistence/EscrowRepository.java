@@ -103,14 +103,14 @@ public final class EscrowRepository {
                     throw new PersistenceConflictException(
                             "The escrow drop belongs to another defense event");
                 }
-                if (drop.status() != EscrowDropStatus.HELD) {
+                if (drop.status() != EscrowDropStatus.HELD && display.isPresent()) {
                     throw new IllegalStateException(
                             "A terminal escrow drop cannot receive a display entity");
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
                         UPDATE event_drop_escrow
                         SET display_entity_id = ?, updated_at = ?
-                        WHERE drop_id = ? AND status = 'HELD'
+                        WHERE drop_id = ?
                         """)) {
                     statement.setString(1, display.map(UUID::toString).orElse(null));
                     statement.setString(2, updatedAt.toString());
@@ -121,6 +121,96 @@ public final class EscrowRepository {
             });
         } catch (SQLException exception) {
             throw failure("update an escrow display entity", exception);
+        }
+    }
+
+    /** Clears stale physical display references after the Paper entity has been removed. */
+    public void clearDisplayEntity(UUID eventId, UUID dropId, Instant clearedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(dropId, "dropId");
+        Objects.requireNonNull(clearedAt, "clearedAt");
+        try {
+            database.inImmediateTransaction(connection -> {
+                StoredEscrowDrop drop = requireDrop(connection, dropId);
+                if (!drop.drop().eventId().equals(eventId)) {
+                    throw new PersistenceConflictException(
+                            "The escrow drop belongs to another defense event");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE event_drop_escrow
+                        SET display_entity_id = NULL, updated_at = ?
+                        WHERE drop_id = ?
+                        """)) {
+                    statement.setString(1, clearedAt.toString());
+                    statement.setString(2, dropId.toString());
+                    statement.executeUpdate();
+                }
+                return null;
+            });
+        } catch (SQLException exception) {
+            throw failure("clear an escrow display entity", exception);
+        }
+    }
+
+    /** Voids a drop prepared for a block action that could not be applied. */
+    public OperationOutcome voidPreparedDrop(
+            UUID eventId,
+            UUID dropId,
+            UUID operationId,
+            Instant voidedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(dropId, "dropId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(voidedAt, "voidedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                requireActiveEvent(connection, eventId);
+                StoredEscrowDrop drop = requireDrop(connection, dropId);
+                if (!drop.drop().eventId().equals(eventId)) {
+                    throw new PersistenceConflictException(
+                            "The escrow drop belongs to another defense event");
+                }
+                String targetId = dropId + "|DISCARD";
+                String fingerprint = sha256(dropId + "|DISCARD");
+                if (drop.status() == EscrowDropStatus.VOIDED) {
+                    ensureResourceOperationApplied(
+                            connection,
+                            operationId,
+                            eventId,
+                            "DROP_VOID",
+                            targetId,
+                            fingerprint,
+                            voidedAt);
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (drop.status() != EscrowDropStatus.HELD) {
+                    throw new PersistenceConflictException(
+                            "Only a held escrow drop can be voided before termination");
+                }
+                ensureResourceOperationApplied(
+                        connection,
+                        operationId,
+                        eventId,
+                        "DROP_VOID",
+                        targetId,
+                        fingerprint,
+                        voidedAt);
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE event_drop_escrow
+                        SET status = 'VOIDED', display_entity_id = NULL, updated_at = ?
+                        WHERE drop_id = ? AND status = 'HELD'
+                        """)) {
+                    statement.setString(1, voidedAt.toString());
+                    statement.setString(2, dropId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The escrow drop was concurrently resolved");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("void an unapplied block drop", exception);
         }
     }
 
@@ -469,7 +559,7 @@ public final class EscrowRepository {
             }
             try (PreparedStatement statement = connection.prepareStatement("""
                     UPDATE event_drop_escrow
-                    SET status = 'SETTLED', updated_at = ?
+                    SET status = 'SETTLED', display_entity_id = NULL, updated_at = ?
                     WHERE drop_id = ? AND status = 'HELD'
                     """)) {
                 statement.setString(1, settledAt.toString());

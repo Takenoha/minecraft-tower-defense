@@ -52,6 +52,15 @@ generation order, and player edits become durable conflicts rather than being ov
 production enemy mutation policy remains disabled until physical block-drop escrow and its item
 protection lifecycle are complete. See [the PR #6 scope](docs/TERRAIN_SETTLEMENT_SCOPE.md).
 
+The seventh milestone adds the physical block-drop escrow boundary. No-tool drops are persisted
+before an event destruction is applied, displayed only as PDC-tagged non-usable Item entities, and
+claimed through registered-participant database records. Pickup, inventory transfer, crafting,
+placement, dispensing, item-frame use, merging, despawning, damage, portals, and death paths are
+blocked; normal terminal settlement and technical recovery remove the displays and clear or void
+the escrow rows. The production enemy mutation policy remains disabled until reward delivery,
+Tile NBT, protected-region validation, and role-specific terrain AI are complete. See [the PR #7
+scope](docs/BLOCK_DROP_ESCROW_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build

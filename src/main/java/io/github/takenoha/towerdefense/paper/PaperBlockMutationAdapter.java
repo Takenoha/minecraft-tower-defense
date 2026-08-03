@@ -87,7 +87,7 @@ public final class PaperBlockMutationAdapter {
                     block.getY(),
                     block.getZ(),
                     kind,
-                    generation,
+                    durable.generation(),
                     durable.beforeBlockData(),
                     durable.beforeBlockState(),
                     expectedAfter.blockData(),

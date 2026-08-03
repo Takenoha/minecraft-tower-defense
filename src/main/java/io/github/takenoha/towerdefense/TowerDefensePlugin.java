@@ -3,15 +3,19 @@ package io.github.takenoha.towerdefense;
 import io.github.takenoha.towerdefense.config.InvalidPluginSettingsException;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
+import io.github.takenoha.towerdefense.paper.EscrowDropListener;
+import io.github.takenoha.towerdefense.paper.EscrowDropTagger;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
+import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
 import io.github.takenoha.towerdefense.persistence.Database;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
+import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
@@ -34,6 +38,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
     private DatabaseExecutor databaseExecutor;
     private DefenseSessionManager sessions;
     private PaperBlockMutationAdapter blockMutations;
+    private PaperEscrowDropManager escrowDrops;
 
     @Override
     public void onEnable() {
@@ -59,15 +64,22 @@ public final class TowerDefensePlugin extends JavaPlugin {
         Database database = new Database(databasePath);
         DefenseRepository repository = new DefenseRepository(database);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
+        databaseExecutor = new DatabaseExecutor("tower-defense-db-");
+        escrowDrops = new PaperEscrowDropManager(
+                this,
+                new EscrowRepository(database),
+                databaseExecutor,
+                new EscrowDropTagger(this));
+        escrowDrops.removeAllTaggedDisplays();
         EventEnemyTagger tagger = new EventEnemyTagger(this);
-        recoverInterruptedEvents(repository, tagger, blockMutations);
+        recoverInterruptedEvents(repository, tagger, blockMutations, escrowDrops);
 
         CoreRegistry coreRegistry = new CoreRegistry();
         coreRegistry.replaceAll(repository.loadAllCores());
-        databaseExecutor = new DatabaseExecutor("tower-defense-db-");
         AsyncDefensePersistenceSink persistence = new AsyncDefensePersistenceSink(
                 repository, databaseExecutor);
-        sessions = new DefenseSessionManager(this, settings, tagger, persistence, blockMutations);
+        sessions = new DefenseSessionManager(
+                this, settings, tagger, persistence, blockMutations, escrowDrops);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
@@ -79,9 +91,11 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         new PaperEnemyTerrainAction(
                                 new TerrainMutationPolicy(false),
                                 blockMutations,
+                                escrowDrops,
                                 coreRegistry,
                                 sessions)),
                 this);
+        getServer().getPluginManager().registerEvents(new EscrowDropListener(escrowDrops), this);
 
         TowerDefenseCommand commandHandler = new TowerDefenseCommand(
                 this,
@@ -107,8 +121,12 @@ public final class TowerDefensePlugin extends JavaPlugin {
             if (sessions.hasActiveSession()) {
                 if (blockMutations != null) {
                     try {
-                        sessions.status().ifPresent(status -> blockMutations.recoverEvent(
-                                status.eventId(), Instant.now()));
+                        sessions.status().ifPresent(status -> {
+                            if (escrowDrops != null) {
+                                escrowDrops.removeEventDisplays(status.eventId());
+                            }
+                            blockMutations.recoverEvent(status.eventId(), Instant.now());
+                        });
                     } catch (RuntimeException recoveryFailure) {
                         getLogger().log(
                                 Level.SEVERE,
@@ -121,6 +139,10 @@ public final class TowerDefensePlugin extends JavaPlugin {
             }
             sessions.close();
             sessions = null;
+        }
+        if (escrowDrops != null) {
+            escrowDrops.removeAllTaggedDisplays();
+            escrowDrops = null;
         }
         if (databaseExecutor != null) {
             databaseExecutor.close();
@@ -146,7 +168,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
     private void recoverInterruptedEvents(
             DefenseRepository repository,
             EventEnemyTagger tagger,
-            PaperBlockMutationAdapter blockMutations) {
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops) {
         List<StoredDefenseEvent> unfinished = repository.loadUnfinishedEvents();
         int removedEntities = 0;
         for (World world : getServer().getWorlds()) {
@@ -158,6 +181,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
             }
         }
         for (StoredDefenseEvent event : unfinished) {
+            escrowDrops.removeEventDisplays(event.session().eventId());
             blockMutations.recoverEvent(event.session().eventId(), Instant.now());
             repository.recoverUnfinishedEvent(
                     event.session().eventId(),
