@@ -183,10 +183,20 @@ integrated later. See `docs/THIRD_PARTY_REGION_SCOPE.md`.
 PR #13 adds optional destroyer/builder ratios, deterministic role composition, final-wave boss
 allocation, role PDC metadata, role-specific navigation speed, and a Paper-independent path
 planner. The terrain gate separates destroyer breaking, builder placement, and the explicitly
-proven normal-enemy fallback while keeping mandatory block protection first. The production
-`TerrainMutationPolicy` remains disabled; world-aware obstacle classification, actual bridge or
-destruction actions, custom Mob types, and activation remain future work. See
+proven normal-enemy fallback while keeping mandatory block protection first. See
 `docs/ROLE_SPECIFIC_ENEMY_AI_SCOPE.md`.
+
+## PR #14 world-aware obstacle boundary
+
+PR #14 adds a Paper-independent, fail-closed obstacle classifier and a Paper main-thread adapter
+for candidate block, target BlockData, and support-block facts. It protects current cores,
+inventory/tile blocks, required materials, target tile states, and unsafe/out-of-area support;
+only ordinary breakable blocks and verified replaceable gaps are exposed to the role planner. The
+Paper event action rejects classification/action mismatches before the existing WAL adapter.
+`TerrainMutationPolicy(false)` remains the production setting, so this is read-only world-state
+classification rather than terrain activation. Actual path-controller wiring, bridge placement,
+destroyer operations, custom Mob types, and activation remain future work. See
+`docs/OBSTACLE_CLASSIFICATION_SCOPE.md`.
 
 ## Acceptance mapping
 

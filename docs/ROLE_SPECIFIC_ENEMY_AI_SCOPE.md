@@ -19,12 +19,24 @@ enabled. It does not enable terrain mutation in the production plugin.
   break only when a caller explicitly proves the fallback condition. Mandatory block protection
   still runs first.
 
+## PR #14 obstacle classification boundary
+
+PR #14 adds a fail-closed `EnemyObstacleClassifier` and a Paper main-thread adapter. Protected
+current state, target tile state, out-of-area coordinates, unsupported action shapes, and unsafe
+support blocks cannot become terrain actions. Breakable and buildable classifications can be
+converted to the existing `EnemyPathContext` for a later controller, while the Paper action
+handler rejects a role/action mismatch before the WAL adapter.
+
+The production `TerrainMutationPolicy` remains disabled and tagged enemy events remain cancelled.
+No bridge placement, destroyer block operation, pathfinder integration, or activation is included.
+See `docs/OBSTACLE_CLASSIFICATION_SCOPE.md`.
+
 ## Deliberate boundary
 
-The production plugin still constructs `TerrainMutationPolicy(false)`. World-aware obstacle
-classification, actual builder bridge placement, destroyer block/tower attacks, custom Mob types,
-and enabling terrain mutation remain later Paper integration work. The role schedule and PDC
-metadata are therefore safe to ship independently of world mutation.
+The production plugin still constructs `TerrainMutationPolicy(false)`. Actual builder bridge
+placement, destroyer block/tower attacks, custom Mob types, and enabling terrain mutation remain
+later Paper integration work. The role schedule, PDC metadata, and read-only obstacle boundary
+are therefore safe to ship independently of world mutation.
 
 ## Verification
 

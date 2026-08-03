@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.EnemyObstacleFacts;
 import io.github.takenoha.towerdefense.domain.EnemyTerrainActionKind;
 import io.github.takenoha.towerdefense.persistence.BlockChangeKind;
 import io.github.takenoha.towerdefense.persistence.BlockStateSnapshot;
@@ -64,6 +65,17 @@ public final class PaperEnemyTerrainAction {
         if (!accessPolicy.isCombatAreaProtected(block.getLocation())) {
             return false;
         }
+        EnemyTerrainActionKind action = event.getTo().isAir()
+                ? EnemyTerrainActionKind.BREAK
+                : EnemyTerrainActionKind.BUILD;
+        EnemyObstacleFacts obstacle = PaperEnemyObstacleClassifier.classify(
+                block,
+                Bukkit.createBlockData(event.getTo()),
+                cores,
+                accessPolicy);
+        if (!obstacle.permits(action)) {
+            return false;
+        }
         BlockState state = block.getState();
         TerrainMutationInput input = new TerrainMutationInput(
                 block.getType().getKey().toString(),
@@ -71,9 +83,6 @@ public final class PaperEnemyTerrainAction {
                 cores.isCore(block),
                 state instanceof org.bukkit.block.TileState,
                 event.getTo().getKey().toString());
-        EnemyTerrainActionKind action = event.getTo().isAir()
-                ? EnemyTerrainActionKind.BREAK
-                : EnemyTerrainActionKind.BUILD;
         if (policy.decide(taggedEnemy.role(), action, false, input)
                 != TerrainMutationDecision.ALLOW) {
             return false;
