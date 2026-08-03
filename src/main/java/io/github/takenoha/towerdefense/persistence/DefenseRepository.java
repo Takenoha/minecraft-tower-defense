@@ -582,6 +582,218 @@ public final class DefenseRepository {
         });
     }
 
+    /**
+     * Persists the prepared side of the public core physical-placement stop window.
+     *
+     * <p>No core row is created here. The caller must restore the captured block if this
+     * operation remains prepared during startup recovery.</p>
+     */
+    public CorePlacement prepareCorePlacement(CorePlacement placement) {
+        Objects.requireNonNull(placement, "placement");
+        if (placement.state() != CorePlacementState.PREPARED) {
+            throw new IllegalArgumentException("A placement request must be PREPARED");
+        }
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<CorePlacement> existing = loadCorePlacement(
+                        connection, placement.operationId());
+                if (existing.isPresent()) {
+                    requireMatchingCorePlacement(existing.orElseThrow(), placement);
+                    return existing.orElseThrow();
+                }
+                requireNoActiveEvent(connection, "prepare a core placement");
+                TeamRecord team = requireTeam(connection, placement.teamId());
+                requireTeamOwner(team, placement.actorId());
+                Optional<CoreRecord> current = loadCoreByTeam(connection, placement.teamId());
+                if (placement.rebuildingDestroyedCore()) {
+                    CoreRecord existingCore = current.orElseThrow(
+                            () -> new PersistenceConflictException(
+                                    "The destroyed core to rebuild does not exist"));
+                    if (!existingCore.id().equals(placement.coreId())
+                            || existingCore.currentHitPoints() != 0L) {
+                        throw new PersistenceConflictException(
+                                "Only the team's destroyed core can be rebuilt");
+                    }
+                } else {
+                    if (current.isPresent() && current.orElseThrow().currentHitPoints() > 0L) {
+                        throw new PersistenceConflictException(
+                                "The team already owns a live core");
+                    }
+                    if (loadCore(connection, placement.coreId()).isPresent()) {
+                        throw new PersistenceConflictException(
+                                "The core item identity has already been used");
+                    }
+                }
+                insertCorePlacement(connection, placement);
+                return placement;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core placement conflicts with another pending operation", exception);
+            }
+            throw failure("prepare a core placement", exception);
+        }
+    }
+
+    /** Applies the database side after the Paper block has been replaced and tagged. */
+    public CorePlacementResult applyCorePlacement(UUID operationId, Instant appliedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CorePlacement placement = loadCorePlacement(connection, operationId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The prepared core placement does not exist"));
+                if (placement.state() == CorePlacementState.APPLIED) {
+                    return new CorePlacementResult(
+                            placement,
+                            loadCore(connection, placement.coreId()).orElseThrow(
+                                    () -> new PersistenceConflictException(
+                                            "An applied core placement has no core row")));
+                }
+                if (placement.state() == CorePlacementState.ROLLED_BACK) {
+                    throw new PersistenceConflictException(
+                            "The prepared core placement was already rolled back");
+                }
+                requireNoActiveEvent(connection, "apply a core placement");
+                TeamRecord team = requireTeam(connection, placement.teamId());
+                requireTeamOwner(team, placement.actorId());
+                CoreRecord core;
+                if (placement.rebuildingDestroyedCore()) {
+                    CoreRecord existing = requireCore(connection, placement.coreId());
+                    if (existing.currentHitPoints() != 0L
+                            || !existing.teamId().equals(placement.teamId())) {
+                        throw new PersistenceConflictException(
+                                "The team's core is no longer rebuildable");
+                    }
+                    core = new CoreRecord(
+                            existing.id(),
+                            existing.teamId(),
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockY(),
+                            placement.blockZ(),
+                            placement.maximumHitPoints(),
+                            placement.maximumHitPoints(),
+                            existing.createdAt(),
+                            appliedAt);
+                    Optional<CoreRecord> nearby = findDistanceConflict(
+                            connection,
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockZ(),
+                            placement.minimumCoreDistance(),
+                            existing.id());
+                    if (nearby.isPresent()) {
+                        throw new PersistenceConflictException(
+                                "Core position is too close to core " + nearby.orElseThrow().id());
+                    }
+                    updateCore(connection, core);
+                } else {
+                    core = new CoreRecord(
+                            placement.coreId(),
+                            placement.teamId(),
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockY(),
+                            placement.blockZ(),
+                            placement.maximumHitPoints(),
+                            placement.maximumHitPoints(),
+                            appliedAt,
+                            appliedAt);
+                    placeCore(connection, core, placement.minimumCoreDistance());
+                }
+                CorePlacement applied = new CorePlacement(
+                        placement.operationId(),
+                        placement.itemId(),
+                        placement.coreId(),
+                        placement.actorId(),
+                        placement.teamId(),
+                        placement.worldId(),
+                        placement.blockX(),
+                        placement.blockY(),
+                        placement.blockZ(),
+                        placement.maximumHitPoints(),
+                        placement.minimumCoreDistance(),
+                        placement.rebuildingDestroyedCore(),
+                        placement.previousBlockData(),
+                        CorePlacementState.APPLIED,
+                        placement.preparedAt(),
+                        appliedAt,
+                        null);
+                updateCorePlacementState(connection, applied);
+                return new CorePlacementResult(applied, core);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core placement conflicts with persisted core data", exception);
+            }
+            throw failure("apply a core placement", exception);
+        }
+    }
+
+    /** Marks a still-prepared placement as rolled back after its physical block is restored. */
+    public Optional<CorePlacement> rollbackCorePlacement(
+            UUID operationId, Instant rolledBackAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rolledBackAt, "rolledBackAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<CorePlacement> loaded = loadCorePlacement(connection, operationId);
+                if (loaded.isEmpty() || loaded.orElseThrow().state() != CorePlacementState.PREPARED) {
+                    return loaded;
+                }
+                CorePlacement rolledBack = new CorePlacement(
+                        loaded.orElseThrow().operationId(),
+                        loaded.orElseThrow().itemId(),
+                        loaded.orElseThrow().coreId(),
+                        loaded.orElseThrow().actorId(),
+                        loaded.orElseThrow().teamId(),
+                        loaded.orElseThrow().worldId(),
+                        loaded.orElseThrow().blockX(),
+                        loaded.orElseThrow().blockY(),
+                        loaded.orElseThrow().blockZ(),
+                        loaded.orElseThrow().maximumHitPoints(),
+                        loaded.orElseThrow().minimumCoreDistance(),
+                        loaded.orElseThrow().rebuildingDestroyedCore(),
+                        loaded.orElseThrow().previousBlockData(),
+                        CorePlacementState.ROLLED_BACK,
+                        loaded.orElseThrow().preparedAt(),
+                        null,
+                        rolledBackAt);
+                updateCorePlacementState(connection, rolledBack);
+                return Optional.of(rolledBack);
+            });
+        } catch (SQLException exception) {
+            throw failure("roll back a prepared core placement", exception);
+        }
+    }
+
+    /** Loads prepared operations for startup physical recovery. */
+    public List<CorePlacement> loadPendingCorePlacements() {
+        return loadCorePlacementsByState(CorePlacementState.PREPARED);
+    }
+
+    /** Loads item identities which were applied before their inventory handoff completed. */
+    public List<UUID> loadAppliedCorePlacementItemIds() {
+        return read("load applied core placement item identities", connection -> {
+            List<UUID> itemIds = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT item_id FROM core_placement_operations
+                    WHERE state = 'APPLIED'
+                    ORDER BY applied_at, operation_id
+                    """);
+                    ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    itemIds.add(uuid(resultSet.getString("item_id")));
+                }
+            }
+            return List.copyOf(itemIds);
+        });
+    }
+
     /** Returns the first same-world core strictly nearer than the configured distance. */
     public Optional<CoreRecord> findDistanceConflict(
             UUID worldId, int blockX, int blockZ, double minimumCoreDistance) {
@@ -1744,6 +1956,149 @@ public final class DefenseRepository {
         }
     }
 
+    private List<CorePlacement> loadCorePlacementsByState(CorePlacementState state) {
+        Objects.requireNonNull(state, "state");
+        return read("load core placements", connection -> {
+            List<CorePlacement> placements = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, max_hp, minimum_core_distance,
+                           rebuilding_destroyed_core, previous_block_data, state,
+                           prepared_at, applied_at, rolled_back_at
+                    FROM core_placement_operations
+                    WHERE state = ?
+                    ORDER BY prepared_at, operation_id
+                    """)) {
+                statement.setString(1, state.name());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        placements.add(corePlacementFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(placements);
+        });
+    }
+
+    private static Optional<CorePlacement> loadCorePlacement(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
+                       block_x, block_y, block_z, max_hp, minimum_core_distance,
+                       rebuilding_destroyed_core, previous_block_data, state,
+                       prepared_at, applied_at, rolled_back_at
+                FROM core_placement_operations
+                WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(corePlacementFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static void insertCorePlacement(
+            Connection connection, CorePlacement placement) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO core_placement_operations(
+                    operation_id, item_id, core_id, actor_id, team_id, world_id,
+                    block_x, block_y, block_z, max_hp, minimum_core_distance,
+                    rebuilding_destroyed_core, previous_block_data, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                """)) {
+            statement.setString(1, placement.operationId().toString());
+            statement.setString(2, placement.itemId().toString());
+            statement.setString(3, placement.coreId().toString());
+            statement.setString(4, placement.actorId().toString());
+            statement.setString(5, placement.teamId().toString());
+            statement.setString(6, placement.worldId().toString());
+            statement.setInt(7, placement.blockX());
+            statement.setInt(8, placement.blockY());
+            statement.setInt(9, placement.blockZ());
+            statement.setLong(10, placement.maximumHitPoints());
+            statement.setDouble(11, placement.minimumCoreDistance());
+            statement.setInt(12, placement.rebuildingDestroyedCore() ? 1 : 0);
+            statement.setString(13, placement.previousBlockData());
+            statement.setString(14, placement.preparedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void updateCorePlacementState(
+            Connection connection, CorePlacement placement) throws SQLException {
+        String sql;
+        if (placement.state() == CorePlacementState.APPLIED) {
+            sql = """
+                    UPDATE core_placement_operations
+                    SET state = 'APPLIED', applied_at = ?
+                    WHERE operation_id = ? AND state = 'PREPARED'
+                    """;
+        } else if (placement.state() == CorePlacementState.ROLLED_BACK) {
+            sql = """
+                    UPDATE core_placement_operations
+                    SET state = 'ROLLED_BACK', rolled_back_at = ?
+                    WHERE operation_id = ? AND state = 'PREPARED'
+                    """;
+        } else {
+            throw new IllegalArgumentException("Only terminal placement states can be persisted");
+        }
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(
+                    1,
+                    placement.state() == CorePlacementState.APPLIED
+                            ? placement.appliedAt().toString()
+                            : placement.rolledBackAt().toString());
+            statement.setString(2, placement.operationId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The core placement state update affected no rows");
+            }
+        }
+    }
+
+    private static CorePlacement corePlacementFromRow(ResultSet resultSet) throws SQLException {
+        return new CorePlacement(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("item_id")),
+                uuid(resultSet.getString("core_id")),
+                uuid(resultSet.getString("actor_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("world_id")),
+                resultSet.getInt("block_x"),
+                resultSet.getInt("block_y"),
+                resultSet.getInt("block_z"),
+                resultSet.getLong("max_hp"),
+                resultSet.getDouble("minimum_core_distance"),
+                resultSet.getInt("rebuilding_destroyed_core") != 0,
+                resultSet.getString("previous_block_data"),
+                CorePlacementState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                nullableInstant(resultSet.getString("applied_at")),
+                nullableInstant(resultSet.getString("rolled_back_at")));
+    }
+
+    private static void requireMatchingCorePlacement(
+            CorePlacement existing, CorePlacement requested) {
+        if (!existing.itemId().equals(requested.itemId())
+                || !existing.coreId().equals(requested.coreId())
+                || !existing.actorId().equals(requested.actorId())
+                || !existing.teamId().equals(requested.teamId())
+                || !existing.worldId().equals(requested.worldId())
+                || existing.blockX() != requested.blockX()
+                || existing.blockY() != requested.blockY()
+                || existing.blockZ() != requested.blockZ()
+                || existing.maximumHitPoints() != requested.maximumHitPoints()
+                || Double.compare(
+                                existing.minimumCoreDistance(), requested.minimumCoreDistance())
+                        != 0
+                || existing.rebuildingDestroyedCore() != requested.rebuildingDestroyedCore()
+                || !existing.previousBlockData().equals(requested.previousBlockData())) {
+            throw new PersistenceConflictException(
+                    "The operation UUID was reused with a different core placement payload");
+        }
+    }
+
     private static Optional<CoreRecord> findDistanceConflict(
             Connection connection,
             UUID worldId,
@@ -2340,6 +2695,10 @@ public final class DefenseRepository {
 
     private static Instant instant(String value) {
         return Instant.parse(value);
+    }
+
+    private static Instant nullableInstant(String value) {
+        return value == null ? null : Instant.parse(value);
     }
 
     private record ParticipantSets(Set<UUID> registered, Set<UUID> effective) {

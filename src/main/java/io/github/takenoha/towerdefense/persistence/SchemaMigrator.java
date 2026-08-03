@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 10;
+    public static final int CURRENT_VERSION = 11;
 
     private SchemaMigrator() {
     }
@@ -63,6 +63,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 10) {
                     applyVersionTen(connection);
                     recordMigration(connection, 10);
+                }
+                if (installedVersion < 11) {
+                    applyVersionEleven(connection);
+                    recordMigration(connection, 11);
                 }
                 return null;
             });
@@ -653,6 +657,55 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX event_reward_queue_team_deadline_idx
                     ON event_reward_queue(scope, status, team_claim_deadline)
+                    """);
+        }
+    }
+
+    private static void applyVersionEleven(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE core_placement_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        item_id TEXT NOT NULL,
+                        core_id TEXT NOT NULL,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        max_hp INTEGER NOT NULL CHECK (max_hp > 0),
+                        minimum_core_distance REAL NOT NULL CHECK (minimum_core_distance > 0),
+                        rebuilding_destroyed_core INTEGER NOT NULL CHECK (
+                            rebuilding_destroyed_core IN (0, 1)
+                        ),
+                        previous_block_data TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX core_placement_operations_state_idx
+                    ON core_placement_operations(state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX core_placement_operations_active_team_idx
+                    ON core_placement_operations(team_id)
+                    WHERE state = 'PREPARED'
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX core_placement_operations_applied_item_idx
+                    ON core_placement_operations(item_id)
+                    WHERE state = 'APPLIED'
                     """);
         }
     }

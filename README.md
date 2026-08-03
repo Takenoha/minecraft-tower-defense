@@ -69,6 +69,13 @@ mutation policy remains disabled; see [the Paper load-test runbook](docs/PAPER_L
 Enemies that reach the core remain in the encounter and attack it every configured
 `core.attack-interval-ticks` ticks (20 ticks by default) until defeated or the event ends.
 
+The public core placement boundary is now available as a separate Paper interaction: craft the
+initial diamond/nether-star core item, then right-click a validated ordinary Overworld block to
+replace it with a tagged beacon. Placement is owner-only, blocked during an active defense, and
+protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, towers,
+research, start items, and team GUI remain later backlog; see
+[`docs/PUBLIC_CORE_PLACEMENT_SCOPE.md`](docs/PUBLIC_CORE_PLACEMENT_SCOPE.md).
+
 ## Build
 
 ```text

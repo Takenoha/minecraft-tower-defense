@@ -3,6 +3,8 @@ package io.github.takenoha.towerdefense;
 import io.github.takenoha.towerdefense.config.InvalidPluginSettingsException;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
+import io.github.takenoha.towerdefense.paper.CoreItemListener;
+import io.github.takenoha.towerdefense.paper.CoreItemTagger;
 import io.github.takenoha.towerdefense.paper.EscrowDropListener;
 import io.github.takenoha.towerdefense.paper.EscrowDropTagger;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
@@ -103,6 +105,19 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 rewardQueues,
                 coreRegistry,
                 regionProtection);
+
+        CoreItemListener coreItems = new CoreItemListener(
+                this,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                coreRegistry,
+                regionProtection,
+                new CoreItemTagger(this));
+        coreItems.registerRecipe();
+        coreItems.recoverPreparedPlacements();
+        getServer().getPluginManager().registerEvents(coreItems, this);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
