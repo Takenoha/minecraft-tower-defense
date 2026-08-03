@@ -14,6 +14,7 @@ import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyPathController;
+import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
@@ -82,6 +83,7 @@ public final class DefenseSessionManager
     private final RewardQueueDeliveryManager rewardQueues;
     private final CoreRegistry coreRegistry;
     private final ThirdPartyRegionProtectionAdapter regionProtection;
+    private final PaperEnemyTerrainAction terrainAction;
     private final EnemyRoleSchedule enemyRoles;
 
     private BukkitTask tickTask;
@@ -178,6 +180,17 @@ public final class DefenseSessionManager
         enemyRoles = new EnemyRoleSchedule(
                 settings.enemies().destroyerRatio(),
                 settings.enemies().builderRatio());
+        terrainAction = new PaperEnemyTerrainAction(
+                new TerrainMutationPolicy(false),
+                blockMutations,
+                escrowDrops,
+                coreRegistry,
+                this);
+    }
+
+    /** Returns the shared, production-disabled enemy terrain action boundary. */
+    public PaperEnemyTerrainAction terrainAction() {
+        return terrainAction;
     }
 
     public void startTicking() {
@@ -628,6 +641,15 @@ public final class DefenseSessionManager
                     defense.session.enterRecovery();
                     finish(defense, "イベント敵の経路探索が連続して失敗したため技術的復旧へ移行しました。");
                     return;
+                }
+                if (pathAction == EnemyPathAction.BUILD_SUPPORT) {
+                    boolean bridgePlaced = terrainAction.tryBuildBridge(
+                            zombie,
+                            defense.coreTarget,
+                            new TaggedEnemy(defense.session.eventId(), logicalId, role));
+                    if (bridgePlaced) {
+                        progress.recordPathAttempt(true);
+                    }
                 }
             }
         }
