@@ -26,6 +26,10 @@ public final class CoreRegistry {
 
     public void register(CoreRecord core) {
         Objects.requireNonNull(core, "core");
+        if (core.currentHitPoints() == 0L) {
+            unregister(core.id());
+            return;
+        }
         CoreBlockKey key = new CoreBlockKey(
                 core.worldId(), core.blockX(), core.blockY(), core.blockZ());
         CoreRecord blockCollision = byBlock.putIfAbsent(key, core);
@@ -37,6 +41,20 @@ public final class CoreRegistry {
             byBlock.remove(key, core);
             throw new IllegalStateException("team has more than one core: " + core.teamId());
         }
+    }
+
+    /** Replaces the cached version of a core, removing a destroyed core from protection. */
+    public void replace(CoreRecord core) {
+        Objects.requireNonNull(core, "core");
+        unregister(core.id());
+        register(core);
+    }
+
+    /** Removes a core identity from both main-thread indexes. */
+    public void unregister(UUID coreId) {
+        Objects.requireNonNull(coreId, "coreId");
+        byBlock.entrySet().removeIf(entry -> entry.getValue().id().equals(coreId));
+        byTeam.entrySet().removeIf(entry -> entry.getValue().id().equals(coreId));
     }
 
     public Optional<CoreRecord> at(Block block) {

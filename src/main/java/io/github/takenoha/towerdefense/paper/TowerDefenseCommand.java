@@ -139,15 +139,22 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                     maximumHitPoints,
                     now,
                     now);
-            return repository.placeCore(core, settings.combat().minimumCoreDistance());
-        }).whenComplete((core, failure) -> runOnMainThread(() -> {
+            return repository.placeCore(
+                    ownerId,
+                    core,
+                    settings.combat().minimumCoreDistance(),
+                    UUID.randomUUID(),
+                    now);
+        }).whenComplete((placement, failure) -> runOnMainThread(() -> {
             if (failure != null) {
                 player.sendMessage(Component.text(
                         "コアを登録できません: " + rootMessage(failure),
                         NamedTextColor.RED));
                 return;
             }
-            cores.register(core);
+            CoreRecord core = placement.core().orElseThrow(
+                    () -> new IllegalStateException("Core placement returned no core"));
+            cores.replace(core);
             player.sendMessage(Component.text(
                     "このブロックをテスト用コアとして登録しました。",
                     NamedTextColor.GREEN));

@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
 
     private SchemaMigrator() {
     }
@@ -35,6 +35,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 3) {
                     applyVersionThree(connection);
                     recordMigration(connection, 3);
+                }
+                if (installedVersion < 4) {
+                    applyVersionFour(connection);
+                    recordMigration(connection, 4);
                 }
                 return null;
             });
@@ -402,6 +406,29 @@ public final class SchemaMigrator {
                         stage_level INTEGER NOT NULL CHECK (stage_level > 0),
                         issued_at TEXT NOT NULL
                     )
+                    """);
+        }
+    }
+
+    private static void applyVersionFour(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE management_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        resource_type TEXT NOT NULL CHECK (resource_type IN ('TEAM', 'CORE')),
+                        resource_id TEXT NOT NULL,
+                        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+                            'TEAM_ADD_MEMBER', 'TEAM_REMOVE_MEMBER', 'TEAM_TRANSFER_OWNER',
+                            'TEAM_LEAVE', 'TEAM_DISBAND', 'CORE_REPAIR', 'CORE_RELOCATE',
+                            'CORE_REBUILD', 'CORE_PLACE'
+                        )),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX management_operations_resource_idx
+                    ON management_operations(resource_type, resource_id, operation_kind)
                     """);
         }
     }

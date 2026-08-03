@@ -96,6 +96,351 @@ public final class DefenseRepository {
         });
     }
 
+    /** Looks up the team to which a player currently belongs. */
+    public Optional<TeamRecord> findTeamByMember(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load a team by member", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT team_id FROM team_members WHERE player_id = ?
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        return Optional.empty();
+                    }
+                    return loadTeam(connection, uuid(resultSet.getString("team_id")));
+                }
+            }
+        });
+    }
+
+    /** Adds a member when the actor is the owner and no event is active. */
+    public TeamMutationResult addTeamMember(
+            UUID teamId,
+            UUID actorId,
+            UUID memberId,
+            UUID operationId,
+            Instant joinedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(memberId, "memberId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(joinedAt, "joinedAt");
+        String fingerprint = managementFingerprint(
+                "TEAM_ADD_MEMBER", teamId, actorId, memberId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(), "TEAM", teamId, "TEAM_ADD_MEMBER", fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "change team membership");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                if (team.members().contains(memberId)) {
+                    insertManagementOperation(
+                            connection,
+                            operationId,
+                            "TEAM",
+                            teamId,
+                            "TEAM_ADD_MEMBER",
+                            fingerprint,
+                            joinedAt);
+                    return new TeamMutationResult(
+                            ManagementOutcome.APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO team_members(team_id, player_id, role, joined_at)
+                        VALUES (?, ?, 'MEMBER', ?)
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, memberId.toString());
+                    statement.setString(3, joinedAt.toString());
+                    statement.executeUpdate();
+                }
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "TEAM",
+                        teamId,
+                        "TEAM_ADD_MEMBER",
+                        fingerprint,
+                        joinedAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The player already belongs to another team", exception);
+            }
+            throw failure("add a team member", exception);
+        }
+    }
+
+    /** Removes a non-owner member when the actor is the owner and no event is active. */
+    public TeamMutationResult removeTeamMember(
+            UUID teamId,
+            UUID actorId,
+            UUID memberId,
+            UUID operationId,
+            Instant removedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(memberId, "memberId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(removedAt, "removedAt");
+        String fingerprint = managementFingerprint(
+                "TEAM_REMOVE_MEMBER", teamId, actorId, memberId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "TEAM",
+                            teamId,
+                            "TEAM_REMOVE_MEMBER",
+                            fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "change team membership");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                if (!team.members().contains(memberId)) {
+                    throw new PersistenceConflictException(
+                            "Player " + memberId + " is not a member of team " + teamId);
+                }
+                if (team.ownerId().equals(memberId)) {
+                    throw new PersistenceConflictException("The team owner cannot be removed");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        DELETE FROM team_members WHERE team_id = ? AND player_id = ?
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, memberId.toString());
+                    statement.executeUpdate();
+                }
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "TEAM",
+                        teamId,
+                        "TEAM_REMOVE_MEMBER",
+                        fingerprint,
+                        removedAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            throw failure("remove a team member", exception);
+        }
+    }
+
+    /** Transfers ownership to an existing member while the team is idle. */
+    public TeamMutationResult transferTeamOwnership(
+            UUID teamId,
+            UUID actorId,
+            UUID newOwnerId,
+            UUID operationId,
+            Instant transferredAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(newOwnerId, "newOwnerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(transferredAt, "transferredAt");
+        String fingerprint = managementFingerprint(
+                "TEAM_TRANSFER_OWNER", teamId, actorId, newOwnerId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "TEAM",
+                            teamId,
+                            "TEAM_TRANSFER_OWNER",
+                            fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "transfer team ownership");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                if (!team.members().contains(newOwnerId)) {
+                    throw new PersistenceConflictException(
+                            "Ownership can only be transferred to an existing team member");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE team_members SET role = 'MEMBER'
+                        WHERE team_id = ? AND player_id = ?
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, actorId.toString());
+                    statement.executeUpdate();
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE team_members SET role = 'OWNER'
+                        WHERE team_id = ? AND player_id = ?
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, newOwnerId.toString());
+                    statement.executeUpdate();
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE teams SET owner_player_id = ? WHERE team_id = ?
+                        """)) {
+                    statement.setString(1, newOwnerId.toString());
+                    statement.setString(2, teamId.toString());
+                    statement.executeUpdate();
+                }
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "TEAM",
+                        teamId,
+                        "TEAM_TRANSFER_OWNER",
+                        fingerprint,
+                        transferredAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            throw failure("transfer team ownership", exception);
+        }
+    }
+
+    /** Leaves a team; a sole owner may leave only by removing an empty team. */
+    public TeamMutationResult leaveTeam(
+            UUID teamId,
+            UUID playerId,
+            UUID operationId,
+            Instant leftAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(leftAt, "leftAt");
+        String fingerprint = managementFingerprint("TEAM_LEAVE", teamId, playerId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(), "TEAM", teamId, "TEAM_LEAVE", fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "leave a team");
+                TeamRecord team = requireTeam(connection, teamId);
+                if (!team.members().contains(playerId)) {
+                    throw new PersistenceConflictException(
+                            "Player " + playerId + " is not a member of team " + teamId);
+                }
+                if (team.ownerId().equals(playerId)) {
+                    if (team.members().size() > 1) {
+                        throw new PersistenceConflictException(
+                                "The owner must transfer ownership before leaving");
+                    }
+                    requireTeamCanBeDeleted(connection, teamId);
+                    deleteTeam(connection, teamId);
+                } else {
+                    try (PreparedStatement statement = connection.prepareStatement("""
+                            DELETE FROM team_members WHERE team_id = ? AND player_id = ?
+                            """)) {
+                        statement.setString(1, teamId.toString());
+                        statement.setString(2, playerId.toString());
+                        statement.executeUpdate();
+                    }
+                }
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "TEAM",
+                        teamId,
+                        "TEAM_LEAVE",
+                        fingerprint,
+                        leftAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The team still has persisted references", exception);
+            }
+            throw failure("leave a team", exception);
+        }
+    }
+
+    /** Disbands an idle, empty team after verifying owner authority. */
+    public TeamMutationResult disbandTeam(
+            UUID teamId,
+            UUID actorId,
+            UUID operationId,
+            Instant disbandedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(disbandedAt, "disbandedAt");
+        String fingerprint = managementFingerprint("TEAM_DISBAND", teamId, actorId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "TEAM",
+                            teamId,
+                            "TEAM_DISBAND",
+                            fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "disband a team");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                requireTeamCanBeDeleted(connection, teamId);
+                deleteTeam(connection, teamId);
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "TEAM",
+                        teamId,
+                        "TEAM_DISBAND",
+                        fingerprint,
+                        disbandedAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        Optional.empty());
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The team still has persisted references", exception);
+            }
+            throw failure("disband a team", exception);
+        }
+    }
+
     /**
      * Places a core after checking the one-core-per-team and horizontal-distance invariants under
      * the same write lock as the insert.
@@ -105,26 +450,7 @@ public final class DefenseRepository {
         requireDistance(minimumCoreDistance);
         try {
             return database.inImmediateTransaction(connection -> {
-                if (loadActiveEventId(connection).isPresent()) {
-                    throw new PersistenceConflictException(
-                            "A core cannot be placed while a defense event owns the global lock");
-                }
-                if (loadCoreByTeam(connection, core.teamId()).isPresent()) {
-                    throw new PersistenceConflictException(
-                            "Team " + core.teamId() + " already owns a core");
-                }
-                Optional<CoreRecord> nearby = findDistanceConflict(
-                        connection,
-                        core.worldId(),
-                        core.blockX(),
-                        core.blockZ(),
-                        minimumCoreDistance);
-                if (nearby.isPresent()) {
-                    throw new PersistenceConflictException(
-                            "Core position is too close to core " + nearby.orElseThrow().id());
-                }
-                insertCore(connection, core);
-                return core;
+                return placeCore(connection, core, minimumCoreDistance);
             });
         } catch (SQLException exception) {
             if (isConstraintViolation(exception)) {
@@ -132,6 +458,87 @@ public final class DefenseRepository {
                         "The core conflicts with persisted ownership or position data", exception);
             }
             throw failure("place a core", exception);
+        }
+    }
+
+    /** Places a core after verifying that the actor belongs to its team. */
+    public CoreRecord placeCore(
+            UUID actorId, CoreRecord core, double minimumCoreDistance) {
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(core, "core");
+        requireDistance(minimumCoreDistance);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                requireTeamMember(connection, core.teamId(), actorId);
+                return placeCore(connection, core, minimumCoreDistance);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core conflicts with persisted ownership or position data", exception);
+            }
+            throw failure("place a core for a team member", exception);
+        }
+    }
+
+    /** Places a core with an operation UUID so a Paper retry cannot create a second core. */
+    public CoreMutationResult placeCore(
+            UUID actorId,
+            CoreRecord core,
+            double minimumCoreDistance,
+            UUID operationId,
+            Instant placedAt) {
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(core, "core");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(placedAt, "placedAt");
+        requireDistance(minimumCoreDistance);
+        String fingerprint = managementFingerprint(
+                "CORE_PLACE",
+                core.id(),
+                actorId,
+                core.teamId(),
+                core.worldId(),
+                core.blockX(),
+                core.blockY(),
+                core.blockZ(),
+                core.maximumHitPoints(),
+                minimumCoreDistance);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "CORE",
+                            core.id(),
+                            "CORE_PLACE",
+                            fingerprint);
+                    return new CoreMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadCore(connection, core.id()));
+                }
+                requireTeamMember(connection, core.teamId(), actorId);
+                placeCore(connection, core, minimumCoreDistance);
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "CORE",
+                        core.id(),
+                        "CORE_PLACE",
+                        fingerprint,
+                        placedAt);
+                return new CoreMutationResult(
+                        ManagementOutcome.APPLIED,
+                        Optional.of(core));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core conflicts with persisted ownership or position data", exception);
+            }
+            throw failure("place a core with an operation", exception);
         }
     }
 
@@ -173,6 +580,264 @@ public final class DefenseRepository {
                 "check core distance",
                 connection -> findDistanceConflict(
                         connection, worldId, blockX, blockZ, minimumCoreDistance));
+    }
+
+    /** Repairs a present core outside an active defense event. */
+    public CoreMutationResult repairCore(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            UUID operationId,
+            Instant repairedAt) {
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(repairedAt, "repairedAt");
+        if (amount <= 0L) {
+            throw new IllegalArgumentException("repair amount must be positive");
+        }
+        String fingerprint = managementFingerprint("CORE_REPAIR", coreId, actorId, amount);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "CORE",
+                            coreId,
+                            "CORE_REPAIR",
+                            fingerprint);
+                    return new CoreMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadCore(connection, coreId));
+                }
+                requireNoActiveEvent(connection, "repair a core");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                if (core.currentHitPoints() == 0L) {
+                    throw new PersistenceConflictException(
+                            "A destroyed core must be rebuilt before it can be repaired");
+                }
+                long missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
+                long repairedHitPoints = core.currentHitPoints()
+                        + Math.min(amount, missingHitPoints);
+                CoreRecord updated = new CoreRecord(
+                        core.id(),
+                        core.teamId(),
+                        core.worldId(),
+                        core.blockX(),
+                        core.blockY(),
+                        core.blockZ(),
+                        repairedHitPoints,
+                        core.maximumHitPoints(),
+                        core.createdAt(),
+                        repairedAt);
+                updateCoreHealth(connection, updated);
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "CORE",
+                        coreId,
+                        "CORE_REPAIR",
+                        fingerprint,
+                        repairedAt);
+                return new CoreMutationResult(
+                        ManagementOutcome.APPLIED,
+                        Optional.of(updated));
+            });
+        } catch (SQLException exception) {
+            throw failure("repair a core", exception);
+        }
+    }
+
+    /** Moves an intact core after checking ownership, idle state, and world separation. */
+    public CoreMutationResult relocateCore(
+            UUID coreId,
+            UUID actorId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            double minimumCoreDistance,
+            UUID operationId,
+            Instant relocatedAt) {
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(relocatedAt, "relocatedAt");
+        requireDistance(minimumCoreDistance);
+        String fingerprint = managementFingerprint(
+                "CORE_RELOCATE",
+                coreId,
+                actorId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                minimumCoreDistance);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "CORE",
+                            coreId,
+                            "CORE_RELOCATE",
+                            fingerprint);
+                    return new CoreMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadCore(connection, coreId));
+                }
+                requireNoActiveEvent(connection, "relocate a core");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                if (core.currentHitPoints() != core.maximumHitPoints()) {
+                    throw new PersistenceConflictException(
+                            "A core can only be relocated at full HP");
+                }
+                Optional<CoreRecord> nearby = findDistanceConflict(
+                        connection,
+                        worldId,
+                        blockX,
+                        blockZ,
+                        minimumCoreDistance,
+                        coreId);
+                if (nearby.isPresent()) {
+                    throw new PersistenceConflictException(
+                            "Core position is too close to core " + nearby.orElseThrow().id());
+                }
+                CoreRecord updated = new CoreRecord(
+                        core.id(),
+                        core.teamId(),
+                        worldId,
+                        blockX,
+                        blockY,
+                        blockZ,
+                        core.currentHitPoints(),
+                        core.maximumHitPoints(),
+                        core.createdAt(),
+                        relocatedAt);
+                updateCorePosition(connection, updated);
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "CORE",
+                        coreId,
+                        "CORE_RELOCATE",
+                        fingerprint,
+                        relocatedAt);
+                return new CoreMutationResult(
+                        ManagementOutcome.APPLIED,
+                        Optional.of(updated));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core position conflicts with persisted data", exception);
+            }
+            throw failure("relocate a core", exception);
+        }
+    }
+
+    /** Rebuilds a destroyed core in place as a new full-health placement. */
+    public CoreMutationResult rebuildCore(
+            UUID coreId,
+            UUID actorId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            long maximumHitPoints,
+            double minimumCoreDistance,
+            UUID operationId,
+            Instant rebuiltAt) {
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rebuiltAt, "rebuiltAt");
+        if (maximumHitPoints <= 0L) {
+            throw new IllegalArgumentException("maximumHitPoints must be positive");
+        }
+        requireDistance(minimumCoreDistance);
+        String fingerprint = managementFingerprint(
+                "CORE_REBUILD",
+                coreId,
+                actorId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                maximumHitPoints,
+                minimumCoreDistance);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ManagementOperation> existing = loadManagementOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingManagementOperation(
+                            existing.orElseThrow(),
+                            "CORE",
+                            coreId,
+                            "CORE_REBUILD",
+                            fingerprint);
+                    return new CoreMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadCore(connection, coreId));
+                }
+                requireNoActiveEvent(connection, "rebuild a core");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                if (core.currentHitPoints() != 0L) {
+                    throw new PersistenceConflictException(
+                            "Only a destroyed core can be rebuilt");
+                }
+                Optional<CoreRecord> nearby = findDistanceConflict(
+                        connection,
+                        worldId,
+                        blockX,
+                        blockZ,
+                        minimumCoreDistance,
+                        coreId);
+                if (nearby.isPresent()) {
+                    throw new PersistenceConflictException(
+                            "Core position is too close to core " + nearby.orElseThrow().id());
+                }
+                CoreRecord updated = new CoreRecord(
+                        core.id(),
+                        core.teamId(),
+                        worldId,
+                        blockX,
+                        blockY,
+                        blockZ,
+                        maximumHitPoints,
+                        maximumHitPoints,
+                        rebuiltAt,
+                        rebuiltAt);
+                updateCore(connection, updated);
+                insertManagementOperation(
+                        connection,
+                        operationId,
+                        "CORE",
+                        coreId,
+                        "CORE_REBUILD",
+                        fingerprint,
+                        rebuiltAt);
+                return new CoreMutationResult(
+                        ManagementOutcome.APPLIED,
+                        Optional.of(updated));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The rebuilt core conflicts with persisted data", exception);
+            }
+            throw failure("rebuild a core", exception);
+        }
     }
 
     /**
@@ -783,6 +1448,232 @@ public final class DefenseRepository {
         }
     }
 
+    private static TeamRecord requireTeam(Connection connection, UUID teamId)
+            throws SQLException {
+        return loadTeam(connection, teamId).orElseThrow(
+                () -> new PersistenceConflictException("Team " + teamId + " does not exist"));
+    }
+
+    private static CoreRecord requireCore(Connection connection, UUID coreId)
+            throws SQLException {
+        return loadCore(connection, coreId).orElseThrow(
+                () -> new PersistenceConflictException("Core " + coreId + " does not exist"));
+    }
+
+    private static void requireTeamOwner(TeamRecord team, UUID actorId) {
+        if (!team.ownerId().equals(actorId)) {
+            throw new PersistenceConflictException(
+                    "Only the team owner may perform this operation");
+        }
+    }
+
+    private static void requireTeamMember(
+            Connection connection, UUID teamId, UUID playerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_members WHERE team_id = ? AND player_id = ?
+                """)) {
+            statement.setString(1, teamId.toString());
+            statement.setString(2, playerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "Player " + playerId + " is not a member of team " + teamId);
+                }
+            }
+        }
+    }
+
+    private static void requireNoActiveEvent(Connection connection, String operation)
+            throws SQLException {
+        if (loadActiveEventId(connection).isPresent()) {
+            throw new PersistenceConflictException(
+                    "Cannot " + operation + " while a defense event owns the global lock");
+        }
+    }
+
+    private static void requireTeamCanBeDeleted(Connection connection, UUID teamId)
+            throws SQLException {
+        if (loadCoreByTeam(connection, teamId).isPresent()) {
+            throw new PersistenceConflictException(
+                    "A team with a core cannot be disbanded or left by its sole owner");
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM defense_events WHERE team_id = ? LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "A team with defense history cannot be deleted");
+                }
+            }
+        }
+    }
+
+    private static void deleteTeam(Connection connection, UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM teams WHERE team_id = ?")) {
+            statement.setString(1, teamId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The team delete affected no rows");
+            }
+        }
+    }
+
+    private static void insertManagementOperation(
+            Connection connection,
+            UUID operationId,
+            String resourceType,
+            UUID resourceId,
+            String operationKind,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO management_operations(
+                    operation_id, resource_type, resource_id, operation_kind,
+                    payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, resourceType);
+            statement.setString(3, resourceId.toString());
+            statement.setString(4, operationKind);
+            statement.setString(5, payloadFingerprint);
+            statement.setString(6, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<ManagementOperation> loadManagementOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT resource_type, resource_id, operation_kind, payload_fingerprint
+                FROM management_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new ManagementOperation(
+                        resultSet.getString("resource_type"),
+                        uuid(resultSet.getString("resource_id")),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingManagementOperation(
+            ManagementOperation operation,
+            String resourceType,
+            UUID resourceId,
+            String operationKind,
+            String payloadFingerprint) {
+        if (!operation.resourceType().equals(resourceType)
+                || !operation.resourceId().equals(resourceId)
+                || !operation.operationKind().equals(operationKind)
+                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The management operation UUID is already assigned to a different payload");
+        }
+    }
+
+    private static String managementFingerprint(String operationKind, Object... values) {
+        StringBuilder canonical = new StringBuilder(operationKind);
+        canonical.append('|');
+        for (Object value : values) {
+            canonical.append(Objects.requireNonNull(value, "management fingerprint value"));
+            canonical.append('|');
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(
+                    digest.digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new AssertionError("Every Java runtime must provide SHA-256", exception);
+        }
+    }
+
+    private static CoreRecord placeCore(
+            Connection connection, CoreRecord core, double minimumCoreDistance)
+            throws SQLException {
+        requireNoActiveEvent(connection, "place a core");
+        if (loadCoreByTeam(connection, core.teamId()).isPresent()) {
+            throw new PersistenceConflictException(
+                    "Team " + core.teamId() + " already owns a core");
+        }
+        Optional<CoreRecord> nearby = findDistanceConflict(
+                connection,
+                core.worldId(),
+                core.blockX(),
+                core.blockZ(),
+                minimumCoreDistance,
+                null);
+        if (nearby.isPresent()) {
+            throw new PersistenceConflictException(
+                    "Core position is too close to core " + nearby.orElseThrow().id());
+        }
+        insertCore(connection, core);
+        return core;
+    }
+
+    private static void updateCoreHealth(Connection connection, CoreRecord core)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE cores SET current_hp = ?, updated_at = ? WHERE core_id = ?
+                """)) {
+            statement.setLong(1, core.currentHitPoints());
+            statement.setString(2, core.updatedAt().toString());
+            statement.setString(3, core.id().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The core health update affected no rows");
+            }
+        }
+    }
+
+    private static void updateCorePosition(Connection connection, CoreRecord core)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE cores
+                SET world_id = ?, block_x = ?, block_y = ?, block_z = ?, updated_at = ?
+                WHERE core_id = ?
+                """)) {
+            statement.setString(1, core.worldId().toString());
+            statement.setInt(2, core.blockX());
+            statement.setInt(3, core.blockY());
+            statement.setInt(4, core.blockZ());
+            statement.setString(5, core.updatedAt().toString());
+            statement.setString(6, core.id().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The core position update affected no rows");
+            }
+        }
+    }
+
+    private static void updateCore(Connection connection, CoreRecord core) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE cores
+                SET team_id = ?, world_id = ?, block_x = ?, block_y = ?, block_z = ?,
+                    current_hp = ?, max_hp = ?, created_at = ?, updated_at = ?
+                WHERE core_id = ?
+                """)) {
+            statement.setString(1, core.teamId().toString());
+            statement.setString(2, core.worldId().toString());
+            statement.setInt(3, core.blockX());
+            statement.setInt(4, core.blockY());
+            statement.setInt(5, core.blockZ());
+            statement.setLong(6, core.currentHitPoints());
+            statement.setLong(7, core.maximumHitPoints());
+            statement.setString(8, core.createdAt().toString());
+            statement.setString(9, core.updatedAt().toString());
+            statement.setString(10, core.id().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The core rebuild update affected no rows");
+            }
+        }
+    }
+
     private static void insertCore(Connection connection, CoreRecord core) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO cores(
@@ -842,6 +1733,17 @@ public final class DefenseRepository {
             int blockX,
             int blockZ,
             double minimumCoreDistance) throws SQLException {
+        return findDistanceConflict(
+                connection, worldId, blockX, blockZ, minimumCoreDistance, null);
+    }
+
+    private static Optional<CoreRecord> findDistanceConflict(
+            Connection connection,
+            UUID worldId,
+            int blockX,
+            int blockZ,
+            double minimumCoreDistance,
+            UUID excludedCoreId) throws SQLException {
         if (minimumCoreDistance == 0.0D) {
             return Optional.empty();
         }
@@ -850,6 +1752,7 @@ public final class DefenseRepository {
                        current_hp, max_hp, created_at, updated_at
                 FROM cores
                 WHERE world_id = ?
+                  AND (? IS NULL OR core_id <> ?)
                   AND (
                       CAST(block_x - ? AS REAL) * CAST(block_x - ? AS REAL)
                       + CAST(block_z - ? AS REAL) * CAST(block_z - ? AS REAL)
@@ -858,11 +1761,18 @@ public final class DefenseRepository {
                 LIMIT 1
                 """)) {
             statement.setString(1, worldId.toString());
-            statement.setInt(2, blockX);
-            statement.setInt(3, blockX);
-            statement.setInt(4, blockZ);
-            statement.setInt(5, blockZ);
-            statement.setDouble(6, minimumCoreDistance * minimumCoreDistance);
+            if (excludedCoreId == null) {
+                statement.setNull(2, java.sql.Types.VARCHAR);
+                statement.setNull(3, java.sql.Types.VARCHAR);
+            } else {
+                statement.setString(2, excludedCoreId.toString());
+                statement.setString(3, excludedCoreId.toString());
+            }
+            statement.setInt(4, blockX);
+            statement.setInt(5, blockX);
+            statement.setInt(6, blockZ);
+            statement.setInt(7, blockZ);
+            statement.setDouble(8, minimumCoreDistance * minimumCoreDistance);
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next()
                         ? Optional.of(coreFromRow(resultSet))
@@ -1422,6 +2332,13 @@ public final class DefenseRepository {
             UUID eventId,
             OperationKind kind,
             long targetRevision,
+            String payloadFingerprint) {
+    }
+
+    private record ManagementOperation(
+            String resourceType,
+            UUID resourceId,
+            String operationKind,
             String payloadFingerprint) {
     }
 

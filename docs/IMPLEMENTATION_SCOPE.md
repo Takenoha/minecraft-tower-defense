@@ -32,9 +32,24 @@ Live Bukkit/Paper block listeners, escrow entity listeners, inventory reconcilia
 queue delivery remain disabled until the next adapter milestone. See
 `docs/ROLLBACK_ESCROW_SCOPE.md` for the exact API boundary and remaining integration work.
 
+## PR #3 core and team persistence boundary
+
+PR #3 adds durable ownership and core lifecycle mutations without enabling public crafting or GUI
+flows:
+
+- operation-UUID protected team member add/remove, ownership transfer, leave, and disband;
+- actor membership checks and server-global event-lock checks on core/team mutations;
+- full-health core relocation, repair, destroyed-core rebuild, and distance conflict checks;
+- a core registry replacement path that stops protecting a destroyed core after a main-thread caller
+  refreshes it.
+
+The administrator test command remains the only enabled placement path. Physical block replacement,
+world-border and protected-region validation, repair costs, public team management, and GUI
+confirmation remain future Paper adapter work. See `docs/CORE_TEAM_SCOPE.md`.
+
 ## Safety boundary
 
-Until a write-ahead world-mutation journal and drop escrow exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. The first implementation also excludes towers, research, start-item reservation, public core crafting, and team management.
+Until a write-ahead world-mutation journal and drop escrow exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled.
 
 ## Acceptance mapping
 

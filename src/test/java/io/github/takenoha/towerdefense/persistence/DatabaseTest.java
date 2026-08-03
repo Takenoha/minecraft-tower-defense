@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -36,6 +37,7 @@ final class DatabaseTest {
         assertTrue(columnExists(reopened, "defense_events", "revision"));
         assertTrue(columnExists(reopened, "event_operations", "target_revision"));
         assertTrue(columnExists(reopened, "event_operations", "payload_fingerprint"));
+        assertTrue(tableExists(reopened, "management_operations"));
     }
 
     private static void assertConnectionConfiguration(Database database) throws SQLException {
@@ -75,6 +77,18 @@ final class DatabaseTest {
                 }
             }
             return false;
+        }
+    }
+
+    private static boolean tableExists(Database database, String table) throws SQLException {
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+                        """)) {
+            statement.setString(1, table);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
         }
     }
 }

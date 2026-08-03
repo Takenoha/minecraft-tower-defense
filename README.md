@@ -29,6 +29,12 @@ virtual escrow, and makes raid-seal refunds issue a new UUID. The Paper simulati
 enable terrain mutation, physical escrow items, or rewards; the main-thread adapters remain the
 next milestone. See [the PR #2 scope](docs/ROLLBACK_ESCROW_SCOPE.md).
 
+The third milestone adds operation-UUID protected team membership and ownership changes, core
+repair, full-health relocation, and destroyed-core rebuild persistence. These APIs enforce team
+membership and reject changes while an event is active, but public team GUI, core crafting, repair
+costs, protected-region checks, and physical block replacement are still disabled. See [the PR #3
+scope](docs/CORE_TEAM_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build
