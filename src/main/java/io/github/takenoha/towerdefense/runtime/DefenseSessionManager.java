@@ -5,15 +5,15 @@ import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
+import io.github.takenoha.towerdefense.domain.EnemyObstacleFacts;
 import io.github.takenoha.towerdefense.domain.EnemyPathAction;
-import io.github.takenoha.towerdefense.domain.EnemyPathContext;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
-import io.github.takenoha.towerdefense.domain.EnemyRolePlanner;
 import io.github.takenoha.towerdefense.domain.EnemyRoleSchedule;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
+import io.github.takenoha.towerdefense.paper.PaperEnemyPathController;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
@@ -80,6 +80,7 @@ public final class DefenseSessionManager
     private final PaperBlockMutationAdapter blockMutations;
     private final PaperEscrowDropManager escrowDrops;
     private final RewardQueueDeliveryManager rewardQueues;
+    private final CoreRegistry coreRegistry;
     private final ThirdPartyRegionProtectionAdapter regionProtection;
     private final EnemyRoleSchedule enemyRoles;
 
@@ -103,6 +104,7 @@ public final class DefenseSessionManager
                 blockMutations,
                 escrowDrops,
                 rewardQueues,
+                new CoreRegistry(),
                 ThirdPartyRegionProtectionAdapter.none());
     }
 
@@ -115,6 +117,49 @@ public final class DefenseSessionManager
             PaperEscrowDropManager escrowDrops,
             RewardQueueDeliveryManager rewardQueues,
             ThirdPartyRegionProtectionAdapter regionProtection) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                new CoreRegistry(),
+                regionProtection);
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                ThirdPartyRegionProtectionAdapter.none());
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -122,6 +167,7 @@ public final class DefenseSessionManager
         this.blockMutations = Objects.requireNonNull(blockMutations, "blockMutations");
         this.escrowDrops = Objects.requireNonNull(escrowDrops, "escrowDrops");
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
+        this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -567,14 +613,17 @@ public final class DefenseSessionManager
                         defense.coreTarget,
                         role.navigationSpeed(settings.enemies().moveSpeed()));
                 progress.recordPathAttempt(accepted);
-                EnemyPathAction pathAction = EnemyRolePlanner.decide(
+                EnemyObstacleFacts obstacleFacts = PaperEnemyPathController.inspect(
+                        zombie,
+                        defense.coreTarget,
                         role,
-                        new EnemyPathContext(
-                                accepted,
-                                false,
-                                false,
-                                false,
-                                progress.consecutivePathFailures));
+                        coreRegistry,
+                        this);
+                EnemyPathAction pathAction = EnemyPathController.decide(
+                        role,
+                        accepted,
+                        obstacleFacts,
+                        progress.consecutivePathFailures);
                 if (pathAction == EnemyPathAction.RECOVER) {
                     defense.session.enterRecovery();
                     finish(defense, "イベント敵の経路探索が連続して失敗したため技術的復旧へ移行しました。");

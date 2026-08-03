@@ -24,18 +24,22 @@ enabled. It does not enable terrain mutation in the production plugin.
 PR #14 adds a fail-closed `EnemyObstacleClassifier` and a Paper main-thread adapter. Protected
 current state, target tile state, out-of-area coordinates, unsupported action shapes, and unsafe
 support blocks cannot become terrain actions. Breakable and buildable classifications can be
-converted to the existing `EnemyPathContext` for a later controller, while the Paper action
-handler rejects a role/action mismatch before the WAL adapter.
+converted to the existing `EnemyPathContext` for the PR #15 path controller, while the Paper
+action handler rejects a role/action mismatch before the WAL adapter.
+
+PR #15 connects the read-only Paper obstacle snapshot to the role-aware planner. The controller
+keeps direct pathfinder success authoritative and supplies classified protected, breakable, or
+buildable states only when the direct path is unavailable.
 
 The production `TerrainMutationPolicy` remains disabled and tagged enemy events remain cancelled.
-No bridge placement, destroyer block operation, pathfinder integration, or activation is included.
-See `docs/OBSTACLE_CLASSIFICATION_SCOPE.md`.
+No bridge placement, destroyer block operation, or activation is included. See
+`docs/OBSTACLE_CLASSIFICATION_SCOPE.md`.
 
 ## Deliberate boundary
 
 The production plugin still constructs `TerrainMutationPolicy(false)`. Actual builder bridge
 placement, destroyer block/tower attacks, custom Mob types, and enabling terrain mutation remain
-later Paper integration work. The role schedule, PDC metadata, and read-only obstacle boundary
+later Paper integration work. The role schedule, PDC metadata, and read-only path controller
 are therefore safe to ship independently of world mutation.
 
 ## Verification

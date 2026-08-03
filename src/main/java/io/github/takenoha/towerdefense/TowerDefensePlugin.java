@@ -103,6 +103,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 blockMutations,
                 escrowDrops,
                 rewardQueues,
+                coreRegistry,
                 regionProtection);
 
         getServer().getPluginManager().registerEvents(
