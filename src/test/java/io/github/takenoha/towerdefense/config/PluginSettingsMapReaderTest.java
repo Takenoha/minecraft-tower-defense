@@ -38,6 +38,22 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsOptionalRoleRatiosAndKeepsDefaultsWhenTheyAreAbsent() {
+        Map<String, Object> values = validValues();
+        Map<String, Object> enemies = mutableSection(values, "enemies");
+        enemies.put("destroyer-ratio", 0.2d);
+        enemies.put("builder-ratio", 0.3d);
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(0.2d, settings.enemies().destroyerRatio());
+        assertEquals(0.3d, settings.enemies().builderRatio());
+        assertEquals(
+                new EnemySettings(120, 8, 4, 2, 4.0, 1.0),
+                PluginSettings.from(validValues()).enemies());
+    }
+
+    @Test
     void rejectsNonPositiveTeamRewardRetention() {
         Map<String, Object> values = validValues();
         values.put("rewards", Map.of("team-queue-retention-seconds", 0));

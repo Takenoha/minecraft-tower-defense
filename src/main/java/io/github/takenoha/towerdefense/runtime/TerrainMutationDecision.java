@@ -4,5 +4,6 @@ package io.github.takenoha.towerdefense.runtime;
 public enum TerrainMutationDecision {
     ALLOW,
     DISABLED,
-    PROTECTED
+    PROTECTED,
+    ROLE_REJECTED
 }

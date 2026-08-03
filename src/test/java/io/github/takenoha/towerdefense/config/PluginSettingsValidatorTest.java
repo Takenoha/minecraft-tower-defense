@@ -87,6 +87,31 @@ class PluginSettingsValidatorTest {
     }
 
     @Test
+    void rejectsNegativeAndOverlappingRoleRatios() {
+        PluginSettings negative = new PluginSettings(
+                new CombatSettings(80.0, 0.0, 80.0, 192.0, 32.0, 1, 1, 1, 1, 1),
+                new CoreSettings(1, 1),
+                new EnemySettings(1, 1, 1, 0, 1.0, 1.0, -0.1, 0.1));
+        InvalidPluginSettingsException negativeException = assertThrows(
+                InvalidPluginSettingsException.class,
+                negative::validated);
+        assertEquals(
+                List.of("enemies.destroyer-ratio: must be >= 0 (was -0.1)"),
+                negativeException.violations());
+
+        PluginSettings overlapping = new PluginSettings(
+                new CombatSettings(80.0, 0.0, 80.0, 192.0, 32.0, 1, 1, 1, 1, 1),
+                new CoreSettings(1, 1),
+                new EnemySettings(1, 1, 1, 0, 1.0, 1.0, 0.6, 0.5));
+        InvalidPluginSettingsException overlappingException = assertThrows(
+                InvalidPluginSettingsException.class,
+                overlapping::validated);
+        assertEquals(1, overlappingException.violations().size());
+        assertTrue(overlappingException.violations().get(0).startsWith(
+                "enemies: destroyer-ratio + builder-ratio must be <= 1"));
+    }
+
+    @Test
     void reportsAllMissingRecordSections() {
         PluginSettings settings = new PluginSettings(null, null, null);
 

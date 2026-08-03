@@ -1,5 +1,7 @@
 package io.github.takenoha.towerdefense.runtime;
 
+import io.github.takenoha.towerdefense.domain.EnemyRole;
+import io.github.takenoha.towerdefense.domain.EnemyTerrainActionKind;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -57,6 +59,25 @@ public final class TerrainMutationPolicy {
             return TerrainMutationDecision.PROTECTED;
         }
         return TerrainMutationDecision.ALLOW;
+    }
+
+    /**
+     * Applies role-specific terrain authorization after the mandatory block safety checks.
+     * Normal enemies require an explicit pathing fallback flag; callers must not infer it from a
+     * failed Paper pathfinder call alone.
+     */
+    public TerrainMutationDecision decide(
+            EnemyRole role,
+            EnemyTerrainActionKind action,
+            boolean fallbackEligible,
+            TerrainMutationInput input) {
+        TerrainMutationDecision safety = decide(input);
+        if (safety != TerrainMutationDecision.ALLOW) {
+            return safety;
+        }
+        return role.allowsTerrainAction(action, fallbackEligible)
+                ? TerrainMutationDecision.ALLOW
+                : TerrainMutationDecision.ROLE_REJECTED;
     }
 
     public static boolean isRequiredMaterial(String materialKey) {

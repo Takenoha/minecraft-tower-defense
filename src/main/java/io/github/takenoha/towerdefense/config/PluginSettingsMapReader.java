@@ -81,7 +81,17 @@ final class PluginSettingsMapReader {
                     integer(values, "enemies", "base-per-wave"),
                     integer(values, "enemies", "added-per-wave"),
                     decimal(values, "enemies", "boss-health-multiplier"),
-                    decimal(values, "enemies", "move-speed"));
+                    decimal(values, "enemies", "move-speed"),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "destroyer-ratio",
+                            EnemySettings.DEFAULT_DESTROYER_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "builder-ratio",
+                            EnemySettings.DEFAULT_BUILDER_RATIO));
         }
 
         private ProtectionSettings protection() {
@@ -223,6 +233,23 @@ final class PluginSettingsMapReader {
             if (!(value instanceof Number number)) {
                 addProblem(path, value == null ? "is required" : "must be a number");
                 return Double.NaN;
+            }
+            return number.doubleValue();
+        }
+
+        private double decimalOrDefault(
+                Map<?, ?> section,
+                String sectionName,
+                String key,
+                double defaultValue) {
+            String path = sectionName + "." + key;
+            Object value = section.get(key);
+            if (value == null) {
+                return defaultValue;
+            }
+            if (!(value instanceof Number number)) {
+                addProblem(path, "must be a number");
+                return defaultValue;
             }
             return number.doubleValue();
         }

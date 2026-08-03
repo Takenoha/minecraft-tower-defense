@@ -24,6 +24,9 @@ enemies:
   added-per-wave: 2
   boss-health-multiplier: 4.0
   move-speed: 1.0
+  # Baseline role ratios; bounded stage/wave progression increases these up to 3x.
+  destroyer-ratio: 0.15
+  builder-ratio: 0.10
 
 protection:
   # Case-insensitive world names in which cores and combat areas cannot be placed.

@@ -25,14 +25,17 @@ break/place behavior because normal-end settlement of `EVENT_BLOCK` and `TEMPORA
 not yet connected to the event finish transaction. Existing `EntityChangeBlockEvent` handling
 therefore continues to cancel tagged enemy actions.
 
-Reward-queue delivery, protected-region validation, and role-specific pathing remain future work.
+Protected-region validation and world-aware role-specific pathing remain future work. PR #13 adds
+the role schedule, PDC metadata, Paper-independent planner, and
+destroyer/builder terrain-action gate without enabling production mutation.
 PR #9 adds the Tile NBT API projection and protected-target synchronization. PR6 adds normal-end
 terrain settlement and PR7 adds held block-drop capture,
 tagged display entities, participant claims, and physical transfer protection. A future activation
 must keep the mandatory policy and add the remaining lifecycle boundaries first.
 
 PR6 adds normal terminal terrain settlement in `docs/TERRAIN_SETTLEMENT_SCOPE.md`, and PR7 adds
-block-drop escrow plus its physical-item protection lifecycle. The action policy remains disabled
-until reward delivery, protected-region validation, and role-specific AI are connected. The PR9
+block-drop escrow plus its physical-item protection lifecycle. PR #13 connects the role metadata
+and action gate, but the action policy remains disabled until world-aware obstacle classification,
+real builder/destroyer behavior, and the remaining activation tests are complete. The PR9
 protection and tile-recovery boundary is present, but the production terrain policy remains
 disabled.

@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.EnemyTerrainActionKind;
 import io.github.takenoha.towerdefense.persistence.BlockChangeKind;
 import io.github.takenoha.towerdefense.persistence.BlockStateSnapshot;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
@@ -70,7 +71,11 @@ public final class PaperEnemyTerrainAction {
                 cores.isCore(block),
                 state instanceof org.bukkit.block.TileState,
                 event.getTo().getKey().toString());
-        if (policy.decide(input) != TerrainMutationDecision.ALLOW) {
+        EnemyTerrainActionKind action = event.getTo().isAir()
+                ? EnemyTerrainActionKind.BREAK
+                : EnemyTerrainActionKind.BUILD;
+        if (policy.decide(taggedEnemy.role(), action, false, input)
+                != TerrainMutationDecision.ALLOW) {
             return false;
         }
 

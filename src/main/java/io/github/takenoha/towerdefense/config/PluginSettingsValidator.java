@@ -196,6 +196,38 @@ public final class PluginSettingsValidator {
                         + enemies.moveSpeed() + ")");
             }
         }
+
+        String destroyerPath = "enemies.destroyer-ratio";
+        String builderPath = "enemies.builder-ratio";
+        validateRoleRatio(destroyerPath, enemies.destroyerRatio(), unreadablePaths, violations);
+        validateRoleRatio(builderPath, enemies.builderRatio(), unreadablePaths, violations);
+        if (isReadable(destroyerPath, unreadablePaths)
+                && isReadable(builderPath, unreadablePaths)
+                && Double.isFinite(enemies.destroyerRatio())
+                && Double.isFinite(enemies.builderRatio())
+                && enemies.destroyerRatio() >= 0.0d
+                && enemies.builderRatio() >= 0.0d
+                && enemies.destroyerRatio() + enemies.builderRatio() > 1.0d) {
+            violations.add(
+                    "enemies: destroyer-ratio + builder-ratio must be <= 1"
+                            + " (was " + enemies.destroyerRatio()
+                            + " + " + enemies.builderRatio() + ")");
+        }
+    }
+
+    private static void validateRoleRatio(
+            String path,
+            double value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (!isReadable(path, unreadablePaths)) {
+            return;
+        }
+        if (!Double.isFinite(value)) {
+            violations.add(path + ": must be finite (was " + value + ")");
+        } else if (value < 0.0d) {
+            violations.add(path + ": must be >= 0 (was " + value + ")");
+        }
     }
 
     private static void validateProtection(

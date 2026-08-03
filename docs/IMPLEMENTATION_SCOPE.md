@@ -178,6 +178,16 @@ without WorldGuard retain the explicit forbidden-world, forbidden-rectangle, and
 checks. The domain validator exposes a Paper-independent probe so other claim systems can be
 integrated later. See `docs/THIRD_PARTY_REGION_SCOPE.md`.
 
+## PR #13 role-specific enemy AI boundary
+
+PR #13 adds optional destroyer/builder ratios, deterministic role composition, final-wave boss
+allocation, role PDC metadata, role-specific navigation speed, and a Paper-independent path
+planner. The terrain gate separates destroyer breaking, builder placement, and the explicitly
+proven normal-enemy fallback while keeping mandatory block protection first. The production
+`TerrainMutationPolicy` remains disabled; world-aware obstacle classification, actual bridge or
+destruction actions, custom Mob types, and activation remain future work. See
+`docs/ROLE_SPECIFIC_ENEMY_AI_SCOPE.md`.
+
 ## Acceptance mapping
 
 The first implementation targets these requirement checks directly:

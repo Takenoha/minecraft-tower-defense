@@ -5,6 +5,11 @@ import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
+import io.github.takenoha.towerdefense.domain.EnemyPathAction;
+import io.github.takenoha.towerdefense.domain.EnemyPathContext;
+import io.github.takenoha.towerdefense.domain.EnemyRole;
+import io.github.takenoha.towerdefense.domain.EnemyRolePlanner;
+import io.github.takenoha.towerdefense.domain.EnemyRoleSchedule;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
@@ -59,7 +64,6 @@ public final class DefenseSessionManager
     private static final long TICKS_PER_SECOND = 20L;
     private static final long PATH_REFRESH_TICKS = 20L;
     private static final long PATH_STALL_TIMEOUT_TICKS = 45L * TICKS_PER_SECOND;
-    private static final int PATH_FAILURE_LIMIT = 3;
     private static final double MIN_PATH_PROGRESS = 0.5d;
     private static final int SPAWN_ATTEMPTS_PER_ENEMY = 16;
     private static final long SPAWN_FAILURE_TIMEOUT_TICKS = 10L * TICKS_PER_SECOND;
@@ -77,6 +81,7 @@ public final class DefenseSessionManager
     private final PaperEscrowDropManager escrowDrops;
     private final RewardQueueDeliveryManager rewardQueues;
     private final ThirdPartyRegionProtectionAdapter regionProtection;
+    private final EnemyRoleSchedule enemyRoles;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -124,6 +129,9 @@ public final class DefenseSessionManager
                 settings.combat().spawnOuter(),
                 settings.combat().minimumCoreDistance(),
                 settings.combat().coreGap());
+        enemyRoles = new EnemyRoleSchedule(
+                settings.enemies().destroyerRatio(),
+                settings.enemies().builderRatio());
     }
 
     public void startTicking() {
@@ -316,6 +324,7 @@ public final class DefenseSessionManager
         }
         active.entitiesByLogicalId.remove(taggedEnemy.logicalEnemyId());
         active.enemyProgress.remove(taggedEnemy.logicalEnemyId());
+        active.enemyRolesByLogicalId.remove(taggedEnemy.logicalEnemyId());
         observe(
                 active,
                 persistence.recordEnemyStatus(
@@ -423,6 +432,9 @@ public final class DefenseSessionManager
         boolean spawnedAny = false;
         while (spawnBudget > 0 && !defense.pendingLogicalIds.isEmpty()) {
             UUID logicalEnemyId = defense.pendingLogicalIds.peekFirst();
+            EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
+                    logicalEnemyId,
+                    EnemyRole.NORMAL);
             Optional<Location> spawnLocation = findSpawnLocation(defense);
             if (spawnLocation.isEmpty()) {
                 if (defense.spawnFailureSinceTick < 0L) {
@@ -435,21 +447,20 @@ public final class DefenseSessionManager
                 return;
             }
             defense.spawnFailureSinceTick = -1L;
-            boolean boss = logicalEnemyId.equals(defense.bossLogicalEnemyId);
             Zombie zombie;
             try {
                 zombie = defense.world.spawn(
                         spawnLocation.orElseThrow(),
                         Zombie.class,
                         CreatureSpawnEvent.SpawnReason.CUSTOM,
-                        entity -> configureEnemy(entity, boss));
+                        entity -> configureEnemy(entity, role));
             } catch (IllegalArgumentException spawnFailure) {
                 plugin.getLogger().warning("Could not spawn event enemy: " + spawnFailure.getMessage());
                 return;
             }
 
             TaggedEnemy taggedEnemy = new TaggedEnemy(
-                    defense.session.eventId(), logicalEnemyId);
+                    defense.session.eventId(), logicalEnemyId, role);
             tagger.tag(zombie, taggedEnemy);
             defense.pendingLogicalIds.removeFirst();
             defense.entitiesByLogicalId.put(logicalEnemyId, zombie.getUniqueId());
@@ -463,7 +474,7 @@ public final class DefenseSessionManager
                     defense.session.eventId(),
                     logicalEnemyId,
                     zombie.getUniqueId(),
-                    boss ? "FOUNDATION_BOSS" : "FOUNDATION_NORMAL",
+                    role.ledgerType(),
                     defense.session.currentWave(),
                     EnemyStatus.SPAWNED,
                     "{}",
@@ -478,7 +489,7 @@ public final class DefenseSessionManager
         }
     }
 
-    private void configureEnemy(Zombie zombie, boolean boss) {
+    private void configureEnemy(Zombie zombie, EnemyRole role) {
         zombie.setPersistent(true);
         zombie.setRemoveWhenFarAway(false);
         zombie.setCanPickupItems(false);
@@ -487,7 +498,7 @@ public final class DefenseSessionManager
         zombie.setLootTable(null);
         zombie.getPathfinder().setCanOpenDoors(false);
         zombie.getPathfinder().setCanPassDoors(false);
-        if (boss) {
+        if (role == EnemyRole.BOSS) {
             AttributeInstance maximumHealth = Objects.requireNonNull(
                     zombie.getAttribute(Attribute.MAX_HEALTH),
                     "zombie max-health attribute");
@@ -498,6 +509,12 @@ public final class DefenseSessionManager
             zombie.customName(Component.text("防衛戦ボス", NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
             zombie.setGlowing(true);
+        } else if (role == EnemyRole.DESTROYER) {
+            zombie.customName(Component.text("防衛戦破壊兵", NamedTextColor.DARK_RED));
+            zombie.setCustomNameVisible(true);
+        } else if (role == EnemyRole.BUILDER) {
+            zombie.customName(Component.text("防衛戦建築兵", NamedTextColor.BLUE));
+            zombie.setCustomNameVisible(true);
         }
     }
 
@@ -543,11 +560,22 @@ public final class DefenseSessionManager
             }
             if (currentTick - defense.lastPathRefreshTick >= PATH_REFRESH_TICKS
                     && entity instanceof Zombie zombie) {
+                EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
+                        logicalId,
+                        EnemyRole.NORMAL);
                 boolean accepted = zombie.getPathfinder().moveTo(
                         defense.coreTarget,
-                        settings.enemies().moveSpeed());
+                        role.navigationSpeed(settings.enemies().moveSpeed()));
                 progress.recordPathAttempt(accepted);
-                if (progress.consecutivePathFailures >= PATH_FAILURE_LIMIT) {
+                EnemyPathAction pathAction = EnemyRolePlanner.decide(
+                        role,
+                        new EnemyPathContext(
+                                accepted,
+                                false,
+                                false,
+                                false,
+                                progress.consecutivePathFailures));
+                if (pathAction == EnemyPathAction.RECOVER) {
                     defense.session.enterRecovery();
                     finish(defense, "イベント敵の経路探索が連続して失敗したため技術的復旧へ移行しました。");
                     return;
@@ -588,6 +616,7 @@ public final class DefenseSessionManager
             return;
         }
         defense.enemyProgress.remove(logicalId);
+        defense.enemyRolesByLogicalId.remove(logicalId);
         observe(
                 defense,
                 persistence.recordEnemyStatus(
@@ -650,14 +679,18 @@ public final class DefenseSessionManager
     private void populateLogicalQueue(ActiveDefense defense, long enemyCount) {
         defense.pendingLogicalIds.clear();
         defense.entitiesByLogicalId.clear();
-        defense.bossLogicalEnemyId = null;
-        for (long index = 0L; index < enemyCount; index++) {
+        defense.enemyRolesByLogicalId.clear();
+        int enemyCountInt = Math.toIntExact(enemyCount);
+        List<EnemyRole> roles = enemyRoles.forWave(
+                defense.session.stageLevel(),
+                defense.session.currentWave(),
+                enemyCountInt,
+                defense.session.currentWave() == defense.session.totalWaves());
+        for (int index = 0; index < enemyCountInt; index++) {
             UUID logicalEnemyId = UUID.randomUUID();
             defense.pendingLogicalIds.addLast(logicalEnemyId);
-            if (index == 0L
-                    && defense.session.currentWave() == defense.session.totalWaves()) {
-                defense.bossLogicalEnemyId = logicalEnemyId;
-            }
+            EnemyRole role = roles.get(index);
+            defense.enemyRolesByLogicalId.put(logicalEnemyId, role);
         }
     }
 
@@ -812,6 +845,7 @@ public final class DefenseSessionManager
         }
         defense.entitiesByLogicalId.clear();
         defense.enemyProgress.clear();
+        defense.enemyRolesByLogicalId.clear();
         defense.pendingLogicalIds.clear();
         for (UUID playerId : defense.bossBarViewers) {
             Player player = Bukkit.getPlayer(playerId);
@@ -1049,6 +1083,7 @@ public final class DefenseSessionManager
         private final Deque<UUID> pendingLogicalIds = new ArrayDeque<>();
         private final Map<UUID, UUID> entitiesByLogicalId = new LinkedHashMap<>();
         private final Map<UUID, EnemyProgress> enemyProgress = new HashMap<>();
+        private final Map<UUID, EnemyRole> enemyRolesByLogicalId = new HashMap<>();
         private final Set<Long> chunkTickets = new HashSet<>();
         private final Set<UUID> bossBarViewers = new HashSet<>();
 
@@ -1056,7 +1091,6 @@ public final class DefenseSessionManager
         private long absentSinceTick = -1L;
         private long lastPathRefreshTick;
         private long spawnFailureSinceTick = -1L;
-        private UUID bossLogicalEnemyId;
         private boolean ending;
         private boolean finishInFlight;
         private int finishAttempts;
