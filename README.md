@@ -66,6 +66,8 @@ This is deliberately not advertised as the complete game described by the produc
 The current Paper integration boundary exposes path-inspection and terrain-action counters through
 `/td admin status` and terminal logs for an isolated-server load test. The production terrain
 mutation policy remains disabled; see [the Paper load-test runbook](docs/PAPER_LOAD_TEST_RUNBOOK.md).
+Enemies that reach the core remain in the encounter and attack it every configured
+`core.attack-interval-ticks` ticks (20 ticks by default) until defeated or the event ends.
 
 ## Build
 

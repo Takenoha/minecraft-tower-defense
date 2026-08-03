@@ -16,6 +16,8 @@ combat:
 core:
   max-health: 1000
   damage-per-enemy: 20
+  # Each enemy at the core deals this damage once per this many server ticks.
+  attack-interval-ticks: 20
 
 enemies:
   max-alive: 120

@@ -20,7 +20,9 @@ snapshot after the event ends.
 3. Run `/td admin simulate 1` and keep the test player inside the configured combat area.
 4. During each active wave, record `/td admin status`. The status includes event phase, enemy
    counts, `pathInspections`, `pathFailures`, `pathAvgNanos`, `pathMaxNanos`, builder bridge
-   attempts/placements, and destroyer break attempts/successes.
+   attempts/placements, destroyer break attempts/successes, and `coreAttackers`/`coreAttacks`.
+   An enemy that reaches the core remains alive and contributes one `coreAttacks` increment every
+   `core.attack-interval-ticks` ticks; the default interval is 20 ticks (one second).
 5. After normal completion or `/td admin abort`, save the server log line beginning with
    `Enemy path metrics for event`. It contains the terminal snapshot for comparison.
 6. Repeat with the chosen `enemies.max-alive` and `enemies.spawn-per-tick` profile. Keep the

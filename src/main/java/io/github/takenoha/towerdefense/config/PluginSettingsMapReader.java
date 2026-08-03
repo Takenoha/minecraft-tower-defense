@@ -68,7 +68,12 @@ final class PluginSettingsMapReader {
             }
             return new CoreSettings(
                     integer(values, "core", "max-health"),
-                    integer(values, "core", "damage-per-enemy"));
+                    integer(values, "core", "damage-per-enemy"),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "attack-interval-ticks",
+                            CoreSettings.DEFAULT_ATTACK_INTERVAL_TICKS));
         }
 
         private EnemySettings enemies() {
@@ -247,6 +252,32 @@ final class PluginSettingsMapReader {
                     || decimal > Integer.MAX_VALUE) {
                 addProblem(path, "must be a 32-bit integer (was " + value + ")");
                 return 0;
+            }
+            return (int) decimal;
+        }
+
+        private int integerOrDefault(
+                Map<?, ?> section,
+                String sectionName,
+                String key,
+                int defaultValue) {
+            String path = sectionName + "." + key;
+            Object value = section.get(key);
+            if (value == null) {
+                return defaultValue;
+            }
+            if (!(value instanceof Number number)) {
+                addProblem(path, "must be an integer");
+                return defaultValue;
+            }
+
+            double decimal = number.doubleValue();
+            if (!Double.isFinite(decimal)
+                    || decimal != Math.rint(decimal)
+                    || decimal < Integer.MIN_VALUE
+                    || decimal > Integer.MAX_VALUE) {
+                addProblem(path, "must be a 32-bit integer (was " + value + ")");
+                return defaultValue;
             }
             return (int) decimal;
         }

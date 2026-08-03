@@ -286,6 +286,8 @@ public final class DefenseSessionManager
                 session.aliveEnemies(),
                 session.coreState().currentHitPoints(),
                 session.coreState().maximumHitPoints(),
+                active.coreAttackSchedules.size(),
+                active.coreAttackCount,
                 active.ending,
                 active.persistenceFailure,
                 active.pathMetrics.snapshot()));
@@ -394,6 +396,7 @@ public final class DefenseSessionManager
         active.entitiesByLogicalId.remove(taggedEnemy.logicalEnemyId());
         active.enemyProgress.remove(taggedEnemy.logicalEnemyId());
         active.enemyRolesByLogicalId.remove(taggedEnemy.logicalEnemyId());
+        active.coreAttackSchedules.remove(taggedEnemy.logicalEnemyId());
         observe(
                 active,
                 persistence.recordEnemyStatus(
@@ -606,9 +609,21 @@ public final class DefenseSessionManager
                 requeueMissingEnemy(defense, logicalId, entityId);
                 continue;
             }
-            if (entity.getLocation().distanceSquared(defense.coreTarget)
-                    <= CORE_REACH_DISTANCE_SQUARED) {
-                resolveCoreReach(defense, logicalId, entity);
+            boolean atCore = entity.getLocation().distanceSquared(defense.coreTarget)
+                    <= CORE_REACH_DISTANCE_SQUARED;
+            if (defense.coreAttackSchedules.containsKey(logicalId) && !atCore) {
+                defense.coreAttackSchedules.remove(logicalId);
+            }
+            if (defense.coreAttackSchedules.containsKey(logicalId)) {
+                holdAtCore(entity);
+                attackCoreIfDue(defense, logicalId);
+                if (defense.ending || defense.session.phase() != DefensePhase.WAVE_ACTIVE) {
+                    return;
+                }
+                continue;
+            }
+            if (atCore) {
+                beginCoreAttack(defense, logicalId, entity);
                 if (defense.ending || defense.session.phase() != DefensePhase.WAVE_ACTIVE) {
                     return;
                 }
@@ -685,6 +700,7 @@ public final class DefenseSessionManager
             UUID entityId) {
         if (defense.entitiesByLogicalId.remove(logicalId, entityId)) {
             defense.enemyProgress.remove(logicalId);
+            defense.coreAttackSchedules.remove(logicalId);
             defense.pendingLogicalIds.addLast(logicalId);
             defense.session.returnAliveEnemiesToPending(1L);
             observe(
@@ -698,39 +714,40 @@ public final class DefenseSessionManager
         }
     }
 
-    private void resolveCoreReach(
+    private void beginCoreAttack(
             ActiveDefense defense,
             UUID logicalId,
             Entity entity) {
-        UUID entityId = entity.getUniqueId();
-        entity.remove();
-        if (!defense.entitiesByLogicalId.remove(logicalId, entityId)) {
+        if (!defense.entitiesByLogicalId.containsKey(logicalId)) {
             return;
         }
         defense.enemyProgress.remove(logicalId);
-        defense.enemyRolesByLogicalId.remove(logicalId);
-        observe(
-                defense,
-                persistence.recordEnemyStatus(
-                        defense.session.eventId(),
-                        logicalId,
-                        entityId,
-                        EnemyStatus.DESPAWNED));
+        defense.coreAttackSchedules.computeIfAbsent(
+                logicalId,
+                ignored -> new CoreAttackSchedule(settings.core().attackIntervalTicks()));
+        holdAtCore(entity);
+        attackCoreIfDue(defense, logicalId);
+    }
+
+    private void holdAtCore(Entity entity) {
+        if (entity instanceof Zombie zombie) {
+            zombie.getPathfinder().stopPathfinding();
+        }
+    }
+
+    private void attackCoreIfDue(ActiveDefense defense, UUID logicalId) {
+        CoreAttackSchedule schedule = defense.coreAttackSchedules.get(logicalId);
+        if (schedule == null || !schedule.tryClaim(currentTick)) {
+            return;
+        }
+        defense.coreAttackCount = increment(defense.coreAttackCount);
         boolean coreDestroyed = defense.session.damageCore(
                 settings.core().damagePerEnemy());
         if (coreDestroyed) {
             finish(defense, "コアが破壊されたため敗北しました。");
             return;
         }
-        boolean waveCleared = defense.session.recordEnemyDefeated(1L);
-        if (defense.session.isTerminal()) {
-            onWaveCleared(defense);
-            return;
-        }
         persistTransition(defense);
-        if (waveCleared) {
-            onWaveCleared(defense);
-        }
     }
 
     private void onWaveCleared(ActiveDefense defense) {
@@ -772,6 +789,7 @@ public final class DefenseSessionManager
         defense.pendingLogicalIds.clear();
         defense.entitiesByLogicalId.clear();
         defense.enemyRolesByLogicalId.clear();
+        defense.coreAttackSchedules.clear();
         int enemyCountInt = Math.toIntExact(enemyCount);
         List<EnemyRole> roles = enemyRoles.forWave(
                 defense.session.stageLevel(),
@@ -868,7 +886,9 @@ public final class DefenseSessionManager
                         + ", bridgeAttempts=" + metrics.bridgeAttemptCount()
                         + ", bridgePlacements=" + metrics.bridgePlacementCount()
                         + ", breakAttempts=" + metrics.breakAttemptCount()
-                        + ", breakSuccesses=" + metrics.breakSuccessCount());
+                        + ", breakSuccesses=" + metrics.breakSuccessCount()
+                        + ", coreAttackers=" + defense.coreAttackSchedules.size()
+                        + ", coreAttacks=" + defense.coreAttackCount);
     }
 
     private void submitFinish(ActiveDefense defense) {
@@ -942,6 +962,10 @@ public final class DefenseSessionManager
         return Math.min(FINISH_RETRY_MAX_TICKS, FINISH_RETRY_BASE_TICKS * multiplier);
     }
 
+    private static long increment(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
     private void cleanupWorldState(ActiveDefense defense) {
         for (Map.Entry<UUID, UUID> entry : defense.entitiesByLogicalId.entrySet()) {
             Entity entity = Bukkit.getEntity(entry.getValue());
@@ -959,6 +983,7 @@ public final class DefenseSessionManager
         defense.entitiesByLogicalId.clear();
         defense.enemyProgress.clear();
         defense.enemyRolesByLogicalId.clear();
+        defense.coreAttackSchedules.clear();
         defense.pendingLogicalIds.clear();
         for (UUID playerId : defense.bossBarViewers) {
             Player player = Bukkit.getPlayer(playerId);
@@ -1197,6 +1222,7 @@ public final class DefenseSessionManager
         private final Map<UUID, UUID> entitiesByLogicalId = new LinkedHashMap<>();
         private final Map<UUID, EnemyProgress> enemyProgress = new HashMap<>();
         private final Map<UUID, EnemyRole> enemyRolesByLogicalId = new HashMap<>();
+        private final Map<UUID, CoreAttackSchedule> coreAttackSchedules = new HashMap<>();
         private final Set<Long> chunkTickets = new HashSet<>();
         private final Set<UUID> bossBarViewers = new HashSet<>();
         private final EnemyPathMetrics pathMetrics = new EnemyPathMetrics();
@@ -1205,6 +1231,7 @@ public final class DefenseSessionManager
         private long absentSinceTick = -1L;
         private long lastPathRefreshTick;
         private long spawnFailureSinceTick = -1L;
+        private long coreAttackCount;
         private boolean ending;
         private boolean finishInFlight;
         private int finishAttempts;
