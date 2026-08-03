@@ -216,3 +216,12 @@ failure becomes an unavailable obstacle, and in-memory per-event metrics capture
 latency, path decisions, and builder bridge acknowledgements for load testing. The production
 terrain policy remains disabled; a real Paper test server is still required before claiming
 runtime movement or tick-load validation. See `docs/PAPER_PATH_INTEGRATION_SCOPE.md`.
+
+## PR #18 destroyer block-action boundary
+
+PR #18 routes a destroyer's `BREAK_OBSTACLE` decision through a read-only candidate snapshot and
+an activation-ready `EVENT_BLOCK` mutation boundary. The action rechecks `BREAKABLE` facts,
+protected-block policy, role authorization, and the observed before-state, then reuses the block
+WAL and ordinary block-drop escrow. The production `TerrainMutationPolicy(false)` remains
+disabled, so no live terrain mutation or real Paper server load-test result is claimed. See
+`docs/DESTROYER_BLOCK_ACTION_SCOPE.md`.

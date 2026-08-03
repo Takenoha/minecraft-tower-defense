@@ -23,6 +23,8 @@ public final class EnemyPathMetrics {
     private long recoverDecisionCount;
     private long bridgeAttemptCount;
     private long bridgePlacementCount;
+    private long breakAttemptCount;
+    private long breakSuccessCount;
 
     public void recordInspection(long elapsedNanos) {
         if (elapsedNanos < 0L) {
@@ -61,6 +63,13 @@ public final class EnemyPathMetrics {
         }
     }
 
+    public void recordBreakAttempt(boolean broken) {
+        breakAttemptCount = increment(breakAttemptCount);
+        if (broken) {
+            breakSuccessCount = increment(breakSuccessCount);
+        }
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(
                 inspectionCount,
@@ -74,7 +83,9 @@ public final class EnemyPathMetrics {
                 recalculateDecisionCount,
                 recoverDecisionCount,
                 bridgeAttemptCount,
-                bridgePlacementCount);
+                bridgePlacementCount,
+                breakAttemptCount,
+                breakSuccessCount);
     }
 
     private static long increment(long value) {
@@ -101,7 +112,9 @@ public final class EnemyPathMetrics {
             long recalculateDecisionCount,
             long recoverDecisionCount,
             long bridgeAttemptCount,
-            long bridgePlacementCount) {
+            long bridgePlacementCount,
+            long breakAttemptCount,
+            long breakSuccessCount) {
         public Snapshot {
             requireNonNegative(inspectionCount, "inspectionCount");
             requireNonNegative(inspectionFailureCount, "inspectionFailureCount");
@@ -115,6 +128,8 @@ public final class EnemyPathMetrics {
             requireNonNegative(recoverDecisionCount, "recoverDecisionCount");
             requireNonNegative(bridgeAttemptCount, "bridgeAttemptCount");
             requireNonNegative(bridgePlacementCount, "bridgePlacementCount");
+            requireNonNegative(breakAttemptCount, "breakAttemptCount");
+            requireNonNegative(breakSuccessCount, "breakSuccessCount");
             if (maxInspectionNanos > totalInspectionNanos && inspectionCount > 0L) {
                 throw new IllegalArgumentException(
                         "maxInspectionNanos must not exceed totalInspectionNanos");
@@ -122,6 +137,10 @@ public final class EnemyPathMetrics {
             if (bridgePlacementCount > bridgeAttemptCount) {
                 throw new IllegalArgumentException(
                         "bridgePlacementCount must not exceed bridgeAttemptCount");
+            }
+            if (breakSuccessCount > breakAttemptCount) {
+                throw new IllegalArgumentException(
+                        "breakSuccessCount must not exceed breakAttemptCount");
             }
         }
 

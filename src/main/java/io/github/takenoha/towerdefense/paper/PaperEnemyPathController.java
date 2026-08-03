@@ -2,6 +2,7 @@ package io.github.takenoha.towerdefense.paper;
 
 import io.github.takenoha.towerdefense.domain.EnemyObstacleFacts;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
+import io.github.takenoha.towerdefense.domain.EnemyTerrainActionKind;
 import io.github.takenoha.towerdefense.persistence.BlockStateSnapshot;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.EnemyBridgePlan;
@@ -50,6 +51,51 @@ public final class PaperEnemyPathController {
         Block candidate = nextHorizontalBlock(current, destination);
         BlockData target = targetFor(candidate, role);
         return PaperEnemyObstacleClassifier.classify(candidate, target, cores, accessPolicy);
+    }
+
+    /**
+     * Plans one destroyer break from the same main-thread candidate snapshot used by path control.
+     * The returned candidate is read-only; the mutation boundary must re-check its before-state
+     * immediately before preparing the event-owned WAL row.
+     */
+    public static Optional<BreakCandidate> planBreak(
+            Entity entity,
+            Location destination,
+            EnemyRole role,
+            CoreRegistry cores,
+            EnemyAccessPolicy accessPolicy) {
+        requireMainThread();
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(destination, "destination");
+        Objects.requireNonNull(role, "role");
+        Objects.requireNonNull(cores, "cores");
+        Objects.requireNonNull(accessPolicy, "accessPolicy");
+        if (role != EnemyRole.DESTROYER) {
+            return Optional.empty();
+        }
+
+        Location current = entity.getLocation();
+        if (current.getWorld() == null
+                || destination.getWorld() == null
+                || !current.getWorld().equals(destination.getWorld())) {
+            return Optional.empty();
+        }
+
+        Block candidate = nextHorizontalBlock(current, destination);
+        BlockData target = Bukkit.createBlockData(Material.AIR);
+        EnemyObstacleFacts facts = PaperEnemyObstacleClassifier.classify(
+                candidate,
+                target,
+                cores,
+                accessPolicy);
+        if (!facts.permits(EnemyTerrainActionKind.BREAK)) {
+            return Optional.empty();
+        }
+        return Optional.of(new BreakCandidate(
+                candidate,
+                target.getAsString(),
+                facts,
+                PaperBlockStateCodec.captureComparable(candidate)));
     }
 
     /**
@@ -147,6 +193,20 @@ public final class PaperEnemyPathController {
             Objects.requireNonNull(block, "block");
             Objects.requireNonNull(targetBlockData, "targetBlockData");
             Objects.requireNonNull(plan, "plan");
+            Objects.requireNonNull(facts, "facts");
+            Objects.requireNonNull(observedBefore, "observedBefore");
+        }
+    }
+
+    /** Read-only destroyer candidate passed to the main-thread mutation boundary. */
+    public record BreakCandidate(
+            Block block,
+            String targetBlockData,
+            EnemyObstacleFacts facts,
+            BlockStateSnapshot observedBefore) {
+        public BreakCandidate {
+            Objects.requireNonNull(block, "block");
+            Objects.requireNonNull(targetBlockData, "targetBlockData");
             Objects.requireNonNull(facts, "facts");
             Objects.requireNonNull(observedBefore, "observedBefore");
         }

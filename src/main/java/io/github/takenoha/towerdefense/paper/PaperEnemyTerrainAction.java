@@ -151,6 +151,122 @@ public final class PaperEnemyTerrainAction {
     }
 
     /**
+     * Applies one path-driven destroyer break through the event-owned WAL and drop escrow.
+     * Classification and the observed before-state are both rechecked at this boundary; a
+     * player edit or protected block therefore fails closed. The production policy remains
+     * disabled, so this method is currently an activation-ready boundary rather than a live
+     * terrain mutation.
+     */
+    public boolean tryBreakObstacle(
+            Entity entity,
+            Location destination,
+            TaggedEnemy taggedEnemy) {
+        requireMainThread();
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(destination, "destination");
+        Objects.requireNonNull(taggedEnemy, "taggedEnemy");
+        if (!policy.enabled() || taggedEnemy.role() != EnemyRole.DESTROYER) {
+            return false;
+        }
+        if (!accessPolicy.mayRemain(taggedEnemy, entity.getUniqueId())) {
+            return false;
+        }
+
+        Optional<PaperEnemyPathController.BreakCandidate> candidate;
+        try {
+            candidate = PaperEnemyPathController.planBreak(
+                    entity,
+                    destination,
+                    taggedEnemy.role(),
+                    cores,
+                    accessPolicy);
+        } catch (RuntimeException paperReadFailure) {
+            // A transient Paper read failure must not become a terrain mutation or a retry that
+            // overwrites an unknown block state.
+            return false;
+        }
+        if (candidate.isEmpty()) {
+            return false;
+        }
+        PaperEnemyPathController.BreakCandidate value = candidate.orElseThrow();
+        if (!value.facts().permits(EnemyTerrainActionKind.BREAK)) {
+            return false;
+        }
+        Block block = value.block();
+        if (!value.observedBefore().equals(PaperBlockStateCodec.captureComparable(block))) {
+            // The candidate was observed before this action boundary and the world changed in
+            // between. Returning false preserves the player edit and lets the next path tick
+            // classify the new state again.
+            return false;
+        }
+        BlockData target = PaperBlockStateCodec.parseBlockData(value.targetBlockData());
+        if (!target.getMaterial().isAir()) {
+            return false;
+        }
+        BlockState state = block.getState();
+        TerrainMutationInput input = new TerrainMutationInput(
+                block.getType().getKey().toString(),
+                state instanceof InventoryHolder,
+                cores.isCore(block),
+                state instanceof org.bukkit.block.TileState,
+                target.getMaterial().getKey().toString());
+        if (policy.decide(
+                        taggedEnemy.role(),
+                        EnemyTerrainActionKind.BREAK,
+                        false,
+                        input)
+                != TerrainMutationDecision.ALLOW) {
+            return false;
+        }
+
+        BlockStateSnapshot expectedAfter = PaperBlockStateCodec.snapshotForBlockData(
+                value.targetBlockData());
+        BlockStateSnapshot current = PaperBlockStateCodec.captureComparable(block);
+        if (current.equals(expectedAfter)) {
+            return false;
+        }
+        long generation = blockMutations.nextGeneration(taggedEnemy.eventId(), block);
+        String actionKey = "DESTROYER_BREAK|"
+                + block.getWorld().getUID()
+                + "|" + block.getX()
+                + "|" + block.getY()
+                + "|" + block.getZ()
+                + "|" + expectedAfter.blockData()
+                + "|" + expectedAfter.blockState();
+        UUID changeId = deterministic(taggedEnemy.eventId(), "DESTROYER_BREAK_CHANGE", actionKey);
+        UUID prepareOperationId = deterministic(changeId, "BLOCK_PREPARE", actionKey);
+        UUID applyOperationId = deterministic(changeId, "BLOCK_APPLY", actionKey);
+        List<PaperEscrowDropManager.PreparedDrop> preparedDrops =
+                escrowDrops.prepareBlockDrops(
+                        taggedEnemy.eventId(), changeId, block, Instant.now());
+        try {
+            blockMutations.apply(
+                    taggedEnemy.eventId(),
+                    generation,
+                    BlockChangeKind.EVENT_BLOCK,
+                    block,
+                    expectedAfter,
+                    changeId,
+                    prepareOperationId,
+                    applyOperationId,
+                    Instant.now());
+        } catch (RuntimeException applyFailure) {
+            if (!preparedDrops.isEmpty()) {
+                try {
+                    escrowDrops.discardPreparedDrops(preparedDrops, Instant.now());
+                } catch (RuntimeException discardFailure) {
+                    applyFailure.addSuppressed(discardFailure);
+                }
+            }
+            throw applyFailure;
+        }
+        if (!preparedDrops.isEmpty()) {
+            escrowDrops.spawnPreparedDrops(block, preparedDrops);
+        }
+        return true;
+    }
+
+    /**
      * Applies one path-driven builder bridge block through the same temporary-block WAL as event
      * block changes. The production policy is disabled, so the path controller currently remains
      * read-only while this complete action boundary is exercised by future activation tests.

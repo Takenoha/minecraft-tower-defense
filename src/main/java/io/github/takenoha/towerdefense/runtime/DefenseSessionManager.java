@@ -644,6 +644,16 @@ public final class DefenseSessionManager
                     finish(defense, "イベント敵の経路探索が連続して失敗したため技術的復旧へ移行しました。");
                     return;
                 }
+                if (pathAction == EnemyPathAction.BREAK_OBSTACLE) {
+                    boolean obstacleBroken = terrainAction.tryBreakObstacle(
+                            zombie,
+                            defense.coreTarget,
+                            new TaggedEnemy(defense.session.eventId(), logicalId, role));
+                    defense.pathMetrics.recordBreakAttempt(obstacleBroken);
+                    if (obstacleBroken) {
+                        progress.recordPathAttempt(true);
+                    }
+                }
                 if (pathAction == EnemyPathAction.BUILD_SUPPORT) {
                     boolean bridgePlaced = terrainAction.tryBuildBridge(
                             zombie,
@@ -848,7 +858,9 @@ public final class DefenseSessionManager
                         + ", recalculate=" + metrics.recalculateDecisionCount()
                         + ", recover=" + metrics.recoverDecisionCount()
                         + ", bridgeAttempts=" + metrics.bridgeAttemptCount()
-                        + ", bridgePlacements=" + metrics.bridgePlacementCount());
+                        + ", bridgePlacements=" + metrics.bridgePlacementCount()
+                        + ", breakAttempts=" + metrics.breakAttemptCount()
+                        + ", breakSuccesses=" + metrics.breakSuccessCount());
     }
 
     private void submitFinish(ActiveDefense defense) {
