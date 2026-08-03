@@ -289,6 +289,26 @@ public final class BlockChangeRepository {
                 .toList();
     }
 
+    /** Counts unresolved temporary blocks so a builder cap survives a process restart. */
+    public long countUnresolvedTemporaryBlocks(UUID eventId) {
+        Objects.requireNonNull(eventId, "eventId");
+        return read("count unresolved temporary blocks", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT COUNT(*)
+                    FROM event_block_changes
+                    WHERE event_id = ?
+                      AND change_kind = 'TEMPORARY_BLOCK'
+                      AND status IN ('PREPARED', 'APPLIED')
+                    """)) {
+                statement.setString(1, eventId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    resultSet.next();
+                    return resultSet.getLong(1);
+                }
+            }
+        });
+    }
+
     /** Loads a rollback operation which was prepared but not committed before a stop. */
     public Optional<PreparedRollback> loadPreparedRollback(UUID eventId, UUID changeId) {
         Objects.requireNonNull(eventId, "eventId");

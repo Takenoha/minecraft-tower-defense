@@ -9,7 +9,6 @@ import io.github.takenoha.towerdefense.paper.EventEnemyListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
-import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
 import io.github.takenoha.towerdefense.paper.ProtectedBlockListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
@@ -27,7 +26,6 @@ import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
-import io.github.takenoha.towerdefense.runtime.TerrainMutationPolicy;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -115,12 +113,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         tagger,
                         sessions,
                         sessions,
-                        new PaperEnemyTerrainAction(
-                                new TerrainMutationPolicy(false),
-                                blockMutations,
-                                escrowDrops,
-                                coreRegistry,
-                                sessions)),
+                        sessions.terrainAction()),
                 this);
         getServer().getPluginManager().registerEvents(new EscrowDropListener(escrowDrops), this);
         getServer().getPluginManager().registerEvents(

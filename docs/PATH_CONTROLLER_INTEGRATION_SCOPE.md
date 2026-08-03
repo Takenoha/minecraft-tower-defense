@@ -16,12 +16,15 @@ enabling survival-world terrain mutation.
 - Repeated protected-path failures still recover, while a classified breakable obstacle or
   buildable gap remains an explicit role action for a later mutation controller.
 
+PR #16 adds the bounded builder bridge action boundary described in
+`docs/BUILDER_BRIDGE_SCOPE.md`. It still keeps the production mutation policy disabled.
+
 ## Deliberate boundary
 
 The production plugin continues to construct `TerrainMutationPolicy(false)`, and
 `EntityChangeBlockEvent` remains cancelled for tagged enemies. This change only connects
-read-only world facts to the planner. Bridge placement, destroyer block operations, path detours,
-and mutation activation remain later work.
+read-only world facts to the planner. Destroyer block operations, path detours, and mutation
+activation remain later work.
 
 ## Verification
 

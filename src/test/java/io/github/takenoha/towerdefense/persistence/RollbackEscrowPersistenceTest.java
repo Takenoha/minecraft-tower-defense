@@ -299,6 +299,43 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void unresolvedTemporaryBlockCountIsDurableAndDropsAfterRollback() {
+        Fixture fixture = activeFixture("temporary-count.sqlite");
+        BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());
+        BlockChange change = new BlockChange(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                6,
+                64,
+                6,
+                BlockChangeKind.TEMPORARY_BLOCK,
+                1L,
+                "minecraft:air",
+                "minecraft:air",
+                "minecraft:stone",
+                "minecraft:stone");
+
+        ledger.prepare(change, UUID.randomUUID(), START);
+        assertEquals(1L, ledger.countUnresolvedTemporaryBlocks(fixture.eventId()));
+
+        UUID rollbackOperation = UUID.randomUUID();
+        ledger.prepareRollback(
+                fixture.eventId(),
+                change.changeId(),
+                rollbackOperation,
+                BlockRollbackDecision.SKIP_ALREADY_BEFORE,
+                START.plusSeconds(1L));
+        ledger.applyRollback(
+                fixture.eventId(),
+                change.changeId(),
+                rollbackOperation,
+                BlockRollbackDecision.SKIP_ALREADY_BEFORE,
+                START.plusSeconds(2L));
+        assertEquals(0L, ledger.countUnresolvedTemporaryBlocks(fixture.eventId()));
+    }
+
+    @Test
     void normalSettlementKeepsEventDestructionAndIsIdempotent() {
         Fixture fixture = activeFixture("settlement.sqlite");
         BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());

@@ -44,6 +44,13 @@ public final class PaperBlockMutationAdapter {
                 block.getZ());
     }
 
+    /** Returns the durable count used by the per-event temporary bridge cap. */
+    public long countUnresolvedTemporaryBlocks(UUID eventId) {
+        requireMainThread();
+        Objects.requireNonNull(eventId, "eventId");
+        return ledger.countUnresolvedTemporaryBlocks(eventId);
+    }
+
     PaperBlockMutationAdapter(
             BlockChangeRepository ledger,
             BlockRollbackPlanner planner) {
