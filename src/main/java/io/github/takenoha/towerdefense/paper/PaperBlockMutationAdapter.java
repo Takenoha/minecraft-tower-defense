@@ -30,6 +30,19 @@ public final class PaperBlockMutationAdapter {
         this(ledger, new BlockRollbackPlanner());
     }
 
+    /** Calculates the next durable generation for one block coordinate. */
+    public long nextGeneration(UUID eventId, Block block) {
+        requireMainThread();
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(block, "block");
+        return ledger.nextGeneration(
+                eventId,
+                block.getWorld().getUID(),
+                block.getX(),
+                block.getY(),
+                block.getZ());
+    }
+
     PaperBlockMutationAdapter(
             BlockChangeRepository ledger,
             BlockRollbackPlanner planner) {

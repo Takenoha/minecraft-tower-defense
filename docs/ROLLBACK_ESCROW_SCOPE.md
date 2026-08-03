@@ -35,4 +35,6 @@ PR4 now adds the main-thread Paper adapter for canonical `BlockData`/block-type 
 apply verification, and planner-driven startup recovery. It persists a prepared rollback decision
 so a stop between physical restore and database acknowledgement can resume safely. Enemy terrain
 mutation and physical escrow delivery remain disabled; tagged escrow entity protection in hopper,
-container, death, and cross-world paths is still future work.
+container, death, and cross-world paths is still future work. PR5 adds the guarded single-block
+enemy action path and mandatory material policy, but leaves the production policy disabled until
+normal-end terrain settlement and block-drop escrow are connected.

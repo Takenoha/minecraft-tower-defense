@@ -239,6 +239,31 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void blockMutationGenerationsIncreasePerCoordinate() {
+        Fixture fixture = activeFixture("generation.sqlite");
+        BlockChangeRepository ledger = new BlockChangeRepository(fixture.database());
+        UUID worldId = UUID.randomUUID();
+
+        assertEquals(1L, ledger.nextGeneration(fixture.eventId(), worldId, 1, 64, 1));
+        BlockChange first = new BlockChange(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                worldId,
+                1,
+                64,
+                1,
+                BlockChangeKind.EVENT_BLOCK,
+                1L,
+                "minecraft:stone",
+                "minecraft:stone",
+                "minecraft:air",
+                "minecraft:air");
+        ledger.prepare(first, UUID.randomUUID(), START);
+        assertEquals(2L, ledger.nextGeneration(fixture.eventId(), worldId, 1, 64, 1));
+        assertEquals(1L, ledger.nextGeneration(fixture.eventId(), worldId, 2, 64, 1));
+    }
+
+    @Test
     void escrowClaimsOnlyRegisteredParticipantsAndNormalAbortSettlesWithoutDuplication() {
         Fixture fixture = activeFixture("escrow-abort.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());

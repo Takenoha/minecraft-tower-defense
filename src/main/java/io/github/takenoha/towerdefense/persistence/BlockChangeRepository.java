@@ -108,6 +108,45 @@ public final class BlockChangeRepository {
                 preparedAt);
     }
 
+    /** Calculates the next per-coordinate generation for a main-thread block action. */
+    public long nextGeneration(
+            UUID eventId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(worldId, "worldId");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                requireActiveEvent(connection, eventId);
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        SELECT COALESCE(MAX(generation), 0)
+                        FROM event_block_changes
+                        WHERE event_id = ? AND world_id = ?
+                          AND block_x = ? AND block_y = ? AND block_z = ?
+                        """)) {
+                    statement.setString(1, eventId.toString());
+                    statement.setString(2, worldId.toString());
+                    statement.setInt(3, blockX);
+                    statement.setInt(4, blockY);
+                    statement.setInt(5, blockZ);
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        resultSet.next();
+                        long current = resultSet.getLong(1);
+                        if (current == Long.MAX_VALUE) {
+                            throw new IllegalStateException(
+                                    "The block mutation generation reached Long.MAX_VALUE");
+                        }
+                        return current + 1L;
+                    }
+                }
+            });
+        } catch (SQLException exception) {
+            throw failure("allocate a block mutation generation", exception);
+        }
+    }
+
     /** Marks a previously prepared physical block operation as applied. */
     public OperationOutcome apply(
             UUID eventId,

@@ -6,6 +6,7 @@ import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
+import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
@@ -16,6 +17,7 @@ import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
+import io.github.takenoha.towerdefense.runtime.TerrainMutationPolicy;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -70,7 +72,16 @@ public final class TowerDefensePlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
         getServer().getPluginManager().registerEvents(
-                new EventEnemyListener(tagger, sessions, sessions), this);
+                new EventEnemyListener(
+                        tagger,
+                        sessions,
+                        sessions,
+                        new PaperEnemyTerrainAction(
+                                new TerrainMutationPolicy(false),
+                                blockMutations,
+                                coreRegistry,
+                                sessions)),
+                this);
 
         TowerDefenseCommand commandHandler = new TowerDefenseCommand(
                 this,

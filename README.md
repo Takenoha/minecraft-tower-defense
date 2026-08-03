@@ -41,6 +41,11 @@ preserves later player edits as conflicts, and rejects existing tile entities as
 Enemy break/place behavior, escrow entities, and rewards remain disabled until their protection
 adapters are complete. See [the PR #4 scope](docs/PAPER_RECOVERY_ADAPTER_SCOPE.md).
 
+The fifth milestone adds a guarded single-enemy-block action, mandatory protected-material policy,
+and durable per-coordinate generation sequencing. The handler is wired into the tagged-enemy event
+listener but is constructed disabled because normal-end terrain settlement, tile NBT, and escrow
+drop protection are not complete. See [the PR #5 scope](docs/ENEMY_TERRAIN_ACTION_SCOPE.md).
+
 This is deliberately not advertised as the complete game described by the product requirements.
 
 ## Build

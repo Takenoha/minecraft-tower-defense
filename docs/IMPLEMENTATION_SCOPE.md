@@ -62,9 +62,25 @@ Entity-enemy break/place actions, tile-container NBT, escrow entities, hopper/co
 protection, protected-region checks, and reward delivery remain disabled. See
 `docs/PAPER_RECOVERY_ADAPTER_SCOPE.md`.
 
+## PR #5 guarded enemy terrain action boundary
+
+PR #5 adds the first single-block enemy action path and keeps it disabled in production:
+
+- `TerrainMutationPolicy` code-owns mandatory protection for cores, inventory-like blocks, beds,
+  redstone machinery, portals, administrative blocks, and dangerous materials;
+- the Paper event handler validates the tagged enemy and combat area, cancels the vanilla event, and
+  routes an allowed action through the PR4 WAL adapter with a durable coordinate generation;
+- destruction and placement are recorded as `EVENT_BLOCK` and `TEMPORARY_BLOCK` respectively so
+  later normal-end settlement can apply different cleanup rules.
+
+Normal-end settlement is not yet wired, so the production listener continues to cancel all tagged
+enemy block changes. Tile NBT, block-drop escrow, hopper/container/death protection,
+protected-region validation, and role-specific AI remain future work. See
+`docs/ENEMY_TERRAIN_ACTION_SCOPE.md`.
+
 ## Safety boundary
 
-Until a write-ahead world-mutation journal and drop escrow exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled. PR4 has the Paper recovery adapter, but does not enable enemy world mutation.
+Until normal-end terrain settlement and the block-drop escrow boundary exist, event enemies cannot break or place blocks and the simulation creates no custom or vanilla rewards. No temporary substitute rewards are issued. Towers, research, start-item reservation, public core crafting, physical core replacement, and GUI team management remain disabled. PR5 has the guarded action path, but its production policy remains disabled.
 
 ## Acceptance mapping
 

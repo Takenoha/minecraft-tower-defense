@@ -24,5 +24,6 @@ protected-region integration, and real Mob terrain pathing remain future work. I
 or a safe block state is unavailable during recovery, startup stops with the event lock retained for
 operator inspection rather than claiming recovery succeeded.
 
-The next step is a narrowly scoped enemy terrain action that calls this adapter for one change at a
-time, then adds the complete protected-block and escrow-entity policy before enabling broader AI.
+PR5 adds the narrowly scoped action and mandatory protection policy in
+`docs/ENEMY_TERRAIN_ACTION_SCOPE.md`; its production policy remains disabled until normal-end
+terrain settlement and block-drop escrow are connected.
