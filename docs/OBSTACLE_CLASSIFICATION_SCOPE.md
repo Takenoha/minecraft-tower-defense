@@ -17,15 +17,15 @@ then returns a conservative obstacle result for the role planner and terrain gat
   tile state before any future mutation can be considered.
 - `PaperEnemyTerrainAction` rejects obstacle/action mismatches before the existing WAL adapter;
   the existing role gate and mandatory protection checks remain in force.
-- Classified facts can be converted to the existing `EnemyPathContext`, so a future path
-  controller can pass an explicit action decision rather than inferring authorization from a
-  failed pathfinder call.
+- Classified facts can be converted to the existing `EnemyPathContext`, and PR #15 connects that
+  conversion to the role-aware path controller rather than inferring authorization from a failed
+  pathfinder call.
 
 ## Deliberate boundary
 
 The production plugin still constructs `TerrainMutationPolicy(false)`, and event listeners still
-cancel tagged enemy block events. PR #14 does not place bridge blocks, destroy blocks, invoke a
-Paper pathfinder, or enable terrain mutation. Actual path-controller wiring, multi-block bridge
+cancel tagged enemy block events. PR #15 invokes the read-only Paper path inspection boundary but
+does not place bridge blocks, destroy blocks, or enable terrain mutation. Multi-block bridge
 planning, load/region preflight during movement, and Paper integration tests remain later work.
 
 ## Verification
