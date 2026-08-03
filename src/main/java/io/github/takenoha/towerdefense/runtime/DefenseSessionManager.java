@@ -13,7 +13,7 @@ import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
-import io.github.takenoha.towerdefense.paper.PaperEnemyPathController;
+import io.github.takenoha.towerdefense.paper.PaperEnemyPathIntegrationBoundary;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
@@ -83,6 +83,7 @@ public final class DefenseSessionManager
     private final RewardQueueDeliveryManager rewardQueues;
     private final CoreRegistry coreRegistry;
     private final ThirdPartyRegionProtectionAdapter regionProtection;
+    private final PaperEnemyPathIntegrationBoundary pathIntegration;
     private final PaperEnemyTerrainAction terrainAction;
     private final EnemyRoleSchedule enemyRoles;
 
@@ -171,6 +172,7 @@ public final class DefenseSessionManager
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
         this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
+        pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -626,17 +628,17 @@ public final class DefenseSessionManager
                         defense.coreTarget,
                         role.navigationSpeed(settings.enemies().moveSpeed()));
                 progress.recordPathAttempt(accepted);
-                EnemyObstacleFacts obstacleFacts = PaperEnemyPathController.inspect(
+                EnemyObstacleFacts obstacleFacts = pathIntegration.inspect(
                         zombie,
                         defense.coreTarget,
                         role,
-                        coreRegistry,
-                        this);
+                        defense.pathMetrics);
                 EnemyPathAction pathAction = EnemyPathController.decide(
                         role,
                         accepted,
                         obstacleFacts,
                         progress.consecutivePathFailures);
+                defense.pathMetrics.recordDecision(accepted, pathAction);
                 if (pathAction == EnemyPathAction.RECOVER) {
                     defense.session.enterRecovery();
                     finish(defense, "イベント敵の経路探索が連続して失敗したため技術的復旧へ移行しました。");
@@ -647,6 +649,7 @@ public final class DefenseSessionManager
                             zombie,
                             defense.coreTarget,
                             new TaggedEnemy(defense.session.eventId(), logicalId, role));
+                    defense.pathMetrics.recordBridgeAttempt(bridgePlaced);
                     if (bridgePlaced) {
                         progress.recordPathAttempt(true);
                     }
@@ -821,12 +824,31 @@ public final class DefenseSessionManager
             return;
         }
         defense.ending = true;
+        logPathMetrics(defense);
         broadcast(defense, Component.text(message, NamedTextColor.GOLD));
         cleanupWorldState(defense);
         defense.finishOperationId = UUID.randomUUID();
         defense.finishSnapshot = defense.session.snapshot();
         defense.finishRetryTick = currentTick;
         submitFinish(defense);
+    }
+
+    private void logPathMetrics(ActiveDefense defense) {
+        EnemyPathMetrics.Snapshot metrics = defense.pathMetrics.snapshot();
+        plugin.getLogger().info(
+                "Enemy path metrics for event " + defense.session.eventId()
+                        + ": inspections=" + metrics.inspectionCount()
+                        + ", inspectionFailures=" + metrics.inspectionFailureCount()
+                        + ", averageNanos=" + metrics.averageInspectionNanos()
+                        + ", maxNanos=" + metrics.maxInspectionNanos()
+                        + ", directPaths=" + metrics.directPathAcceptedCount()
+                        + ", advance=" + metrics.advanceDecisionCount()
+                        + ", break=" + metrics.breakObstacleDecisionCount()
+                        + ", build=" + metrics.buildSupportDecisionCount()
+                        + ", recalculate=" + metrics.recalculateDecisionCount()
+                        + ", recover=" + metrics.recoverDecisionCount()
+                        + ", bridgeAttempts=" + metrics.bridgeAttemptCount()
+                        + ", bridgePlacements=" + metrics.bridgePlacementCount());
     }
 
     private void submitFinish(ActiveDefense defense) {
@@ -1157,6 +1179,7 @@ public final class DefenseSessionManager
         private final Map<UUID, EnemyRole> enemyRolesByLogicalId = new HashMap<>();
         private final Set<Long> chunkTickets = new HashSet<>();
         private final Set<UUID> bossBarViewers = new HashSet<>();
+        private final EnemyPathMetrics pathMetrics = new EnemyPathMetrics();
 
         private long phaseDeadlineTick;
         private long absentSinceTick = -1L;

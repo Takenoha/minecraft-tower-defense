@@ -208,3 +208,11 @@ The first implementation targets these requirement checks directly:
 - `AC-21.7-1`, `AC-21.7-8`
 
 The HP, enemy cleanup, stage-wave, and configuration checks are only partially satisfied where the full requirement also depends on later repair, economy, terrain, AI, or tower work.
+
+## PR #17 Paper path integration and load measurement boundary
+
+PR #17 routes live path inspection through a main-thread Paper integration seam. A Paper read
+failure becomes an unavailable obstacle, and in-memory per-event metrics capture inspection
+latency, path decisions, and builder bridge acknowledgements for load testing. The production
+terrain policy remains disabled; a real Paper test server is still required before claiming
+runtime movement or tick-load validation. See `docs/PAPER_PATH_INTEGRATION_SCOPE.md`.

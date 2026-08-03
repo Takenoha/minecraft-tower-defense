@@ -21,6 +21,16 @@ public record EnemyObstacleFacts(
         targetMaterialKey = requireMaterialKey(targetMaterialKey, "targetMaterialKey");
     }
 
+    /** Returns the fail-closed result used when a Paper world read cannot be completed. */
+    public static EnemyObstacleFacts unavailable() {
+        return new EnemyObstacleFacts(
+                EnemyObstacleClassification.UNAVAILABLE,
+                "minecraft:air",
+                "minecraft:air",
+                false,
+                false);
+    }
+
     /** Whether this classification matches the physical action requested by the event. */
     public boolean permits(EnemyTerrainActionKind action) {
         Objects.requireNonNull(action, "action");
