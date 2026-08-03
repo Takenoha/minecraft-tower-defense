@@ -8,10 +8,14 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,6 +29,8 @@ import java.util.UUID;
  * becoming a usable item before the event has reached a normal terminal state.</p>
  */
 public final class EscrowRepository {
+    static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
+
     private final Database database;
 
     public EscrowRepository(Database database) {
@@ -372,10 +378,26 @@ public final class EscrowRepository {
             UUID terminalOperationId,
             DefensePhase terminalPhase,
             Instant settledAt) {
+        return settleEvent(
+                eventId,
+                terminalOperationId,
+                terminalPhase,
+                settledAt,
+                DEFAULT_TEAM_QUEUE_RETENTION);
+    }
+
+    /** Settles an event with an explicit TEAM queue retention duration. */
+    public OperationOutcome settleEvent(
+            UUID eventId,
+            UUID terminalOperationId,
+            DefensePhase terminalPhase,
+            Instant settledAt,
+            Duration teamQueueRetention) {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(terminalOperationId, "terminalOperationId");
         Objects.requireNonNull(terminalPhase, "terminalPhase");
         Objects.requireNonNull(settledAt, "settledAt");
+        requirePositiveDuration(teamQueueRetention);
         if (terminalPhase != DefensePhase.VICTORY
                 && terminalPhase != DefensePhase.DEFEAT
                 && terminalPhase != DefensePhase.ABORTED) {
@@ -387,7 +409,13 @@ public final class EscrowRepository {
                 if (hasOnlySettledDrops(connection, eventId)) {
                     return OperationOutcome.ALREADY_APPLIED;
                 }
-                settleForTerminal(connection, eventId, terminalOperationId, terminalPhase, settledAt);
+                settleForTerminal(
+                        connection,
+                        eventId,
+                        terminalOperationId,
+                        terminalPhase,
+                        settledAt,
+                        teamQueueRetention);
                 return OperationOutcome.APPLIED;
             });
         } catch (SQLException exception) {
@@ -478,7 +506,7 @@ public final class EscrowRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT queue_id, event_id, scope, recipient_id, item_id, item_payload,
                            quantity, source_drop_id, status, issued_operation_id,
-                           created_at, updated_at
+                           created_at, updated_at, team_claim_deadline
                     FROM event_reward_queue WHERE event_id = ? ORDER BY queue_id
                     """)) {
                 statement.setString(1, eventId.toString());
@@ -492,15 +520,30 @@ public final class EscrowRepository {
         });
     }
 
-    /** Loads pending rows which a currently registered player is allowed to receive. */
+    /** Loads pending rows which a player is currently allowed to receive. */
     public List<RewardQueueEntry> loadPendingRewardQueueForPlayer(UUID playerId) {
+        return loadPendingRewardQueueForPlayer(playerId, Instant.now());
+    }
+
+    /**
+     * Loads pending rows which a player is allowed to receive at a supplied point in time.
+     *
+     * <p>TEAM rows remain claimable by registered event participants indefinitely. Once a
+     * row's retention deadline has passed, the current team owner is also eligible. Legacy
+     * rows without a deadline deliberately remain participant-only.</p>
+     */
+    public List<RewardQueueEntry> loadPendingRewardQueueForPlayer(
+            UUID playerId,
+            Instant at) {
         Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(at, "at");
         return read("load pending rewards for a player", connection -> {
-            List<RewardQueueEntry> entries = new ArrayList<>();
+            Map<UUID, RewardQueueEntry> entries = new HashMap<>();
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT q.queue_id, q.event_id, q.scope, q.recipient_id, q.item_id,
                            q.item_payload, q.quantity, q.source_drop_id, q.status,
-                           q.issued_operation_id, q.created_at, q.updated_at
+                           q.issued_operation_id, q.created_at, q.updated_at,
+                           q.team_claim_deadline
                     FROM event_reward_queue q
                     JOIN defense_events e ON e.event_id = q.event_id
                     WHERE q.status = 'PENDING'
@@ -526,11 +569,40 @@ public final class EscrowRepository {
                 statement.setString(2, playerId.toString());
                 try (ResultSet resultSet = statement.executeQuery()) {
                     while (resultSet.next()) {
-                        entries.add(rewardQueueFromRow(resultSet));
+                        RewardQueueEntry entry = rewardQueueFromRow(resultSet);
+                        entries.put(entry.queueId(), entry);
                     }
                 }
             }
-            return List.copyOf(entries);
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT q.queue_id, q.event_id, q.scope, q.recipient_id, q.item_id,
+                           q.item_payload, q.quantity, q.source_drop_id, q.status,
+                           q.issued_operation_id, q.created_at, q.updated_at,
+                           q.team_claim_deadline
+                    FROM event_reward_queue q
+                    JOIN defense_events e ON e.event_id = q.event_id
+                    JOIN teams t ON t.team_id = e.team_id
+                    WHERE q.status = 'PENDING'
+                      AND q.scope = 'TEAM'
+                      AND q.recipient_id = e.team_id
+                      AND t.owner_player_id = ?
+                      AND q.team_claim_deadline IS NOT NULL
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        RewardQueueEntry entry = rewardQueueFromRow(resultSet);
+                        if (entry.teamClaimDeadline().isPresent()
+                                && !at.isBefore(entry.teamClaimDeadline().orElseThrow())) {
+                            entries.put(entry.queueId(), entry);
+                        }
+                    }
+                }
+            }
+            List<RewardQueueEntry> ordered = new ArrayList<>(entries.values());
+            ordered.sort(Comparator.comparing(RewardQueueEntry::createdAt)
+                    .thenComparing(RewardQueueEntry::queueId));
+            return List.copyOf(ordered);
         });
     }
 
@@ -561,7 +633,7 @@ public final class EscrowRepository {
                 RewardQueueEntry entry = loadRewardQueue(connection, queueId).orElseThrow(
                         () -> new PersistenceConflictException(
                                 "Unknown reward queue row " + queueId));
-                requireAuthorizedRewardRecipient(connection, entry, playerId);
+                requireAuthorizedRewardRecipient(connection, entry, playerId, preparedAt);
                 if (entry.status() == RewardQueueStatus.DELIVERED) {
                     return RewardDeliveryOutcome.ALREADY_DELIVERED;
                 }
@@ -640,7 +712,7 @@ public final class EscrowRepository {
                 RewardQueueEntry entry = loadRewardQueue(connection, queueId).orElseThrow(
                         () -> new PersistenceConflictException(
                                 "Unknown reward queue row " + queueId));
-                requireAuthorizedRewardRecipient(connection, entry, playerId);
+                requireAuthorizedRewardRecipient(connection, entry, playerId, deliveredAt);
                 if (entry.status() == RewardQueueStatus.DELIVERED) {
                     return OperationOutcome.ALREADY_APPLIED;
                 }
@@ -701,7 +773,25 @@ public final class EscrowRepository {
             UUID terminalOperationId,
             DefensePhase terminalPhase,
             Instant settledAt) throws SQLException {
+        settleForTerminal(
+                connection,
+                eventId,
+                terminalOperationId,
+                terminalPhase,
+                settledAt,
+                DEFAULT_TEAM_QUEUE_RETENTION);
+    }
+
+    static void settleForTerminal(
+            Connection connection,
+            UUID eventId,
+            UUID terminalOperationId,
+            DefensePhase terminalPhase,
+            Instant settledAt,
+            Duration teamQueueRetention) throws SQLException {
+        requirePositiveDuration(teamQueueRetention);
         UUID teamId = loadTeamId(connection, eventId);
+        Instant teamClaimDeadline = settledAt.plus(teamQueueRetention);
         List<StoredEscrowDrop> drops = loadDrops(connection, eventId);
         for (StoredEscrowDrop drop : drops) {
             if (drop.status() != EscrowDropStatus.HELD) {
@@ -731,6 +821,7 @@ public final class EscrowRepository {
                         claim.recipientId(),
                         drop,
                         claim.quantity(),
+                        Optional.empty(),
                         settledAt);
             }
             int remaining = drop.remainingQuantity();
@@ -745,6 +836,7 @@ public final class EscrowRepository {
                         teamId,
                         drop,
                         remaining,
+                        Optional.of(teamClaimDeadline),
                         settledAt);
             }
             try (PreparedStatement statement = connection.prepareStatement("""
@@ -807,6 +899,7 @@ public final class EscrowRepository {
             UUID recipientId,
             StoredEscrowDrop drop,
             int quantity,
+            Optional<Instant> teamClaimDeadline,
             Instant issuedAt) throws SQLException {
         if (quantity <= 0) {
             return;
@@ -825,8 +918,9 @@ public final class EscrowRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO event_reward_queue(
                     queue_id, event_id, scope, recipient_id, item_id, item_payload,
-                    quantity, source_drop_id, status, issued_operation_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+                    quantity, source_drop_id, status, issued_operation_id, created_at, updated_at,
+                    team_claim_deadline
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
                 ON CONFLICT(event_id, source_drop_id, scope, recipient_id) DO NOTHING
                 """)) {
             statement.setString(1, deterministicOperation(issueOperationId, "QUEUE", targetId)
@@ -841,6 +935,7 @@ public final class EscrowRepository {
             statement.setString(9, issueOperationId.toString());
             statement.setString(10, issuedAt.toString());
             statement.setString(11, issuedAt.toString());
+            statement.setString(12, teamClaimDeadline.map(Instant::toString).orElse(null));
             statement.executeUpdate();
         }
     }
@@ -894,7 +989,7 @@ public final class EscrowRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT queue_id, event_id, scope, recipient_id, item_id, item_payload,
                        quantity, source_drop_id, status, issued_operation_id,
-                       created_at, updated_at
+                       created_at, updated_at, team_claim_deadline
                 FROM event_reward_queue WHERE queue_id = ?
                 """)) {
             statement.setString(1, queueId.toString());
@@ -920,19 +1015,45 @@ public final class EscrowRepository {
                 RewardQueueStatus.valueOf(resultSet.getString("status")),
                 uuid(resultSet.getString("issued_operation_id")),
                 instant(resultSet.getString("created_at")),
-                instant(resultSet.getString("updated_at")));
+                instant(resultSet.getString("updated_at")),
+                resultSet.getString("team_claim_deadline") == null
+                        ? Optional.empty()
+                        : Optional.of(instant(resultSet.getString("team_claim_deadline"))));
     }
 
     private static void requireAuthorizedRewardRecipient(
             Connection connection,
             RewardQueueEntry entry,
-            UUID playerId) throws SQLException {
+            UUID playerId,
+            Instant at) throws SQLException {
         if (entry.scope() == RewardQueueScope.PLAYER) {
             if (!entry.recipientId().equals(playerId)) {
                 throw new PersistenceConflictException(
                         "Only the personal reward recipient may receive this queue row");
             }
             return;
+        }
+        if (entry.teamClaimDeadline().isPresent()
+                && !at.isBefore(entry.teamClaimDeadline().orElseThrow())) {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT 1
+                    FROM defense_events e
+                    JOIN teams t ON t.team_id = e.team_id
+                    WHERE e.event_id = ?
+                      AND e.team_id = ?
+                      AND t.owner_player_id = ?
+                    """)) {
+                statement.setString(1, entry.eventId().toString());
+                statement.setString(2, entry.recipientId().toString());
+                statement.setString(3, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        return;
+                    }
+                }
+            }
+            throw new PersistenceConflictException(
+                    "Only the current owner of the reward team may receive this expired queue row");
         }
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT 1
@@ -953,6 +1074,13 @@ public final class EscrowRepository {
                             "Only a registered member of the reward team may receive this queue row");
                 }
             }
+        }
+    }
+
+    private static void requirePositiveDuration(Duration duration) {
+        Objects.requireNonNull(duration, "teamQueueRetention");
+        if (duration.isZero() || duration.isNegative()) {
+            throw new IllegalArgumentException("teamQueueRetention must be positive");
         }
     }
 

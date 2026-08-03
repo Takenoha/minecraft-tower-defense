@@ -67,7 +67,9 @@ public final class TowerDefensePlugin extends JavaPlugin {
         }
 
         Database database = new Database(databasePath);
-        DefenseRepository repository = new DefenseRepository(database);
+        DefenseRepository repository = new DefenseRepository(
+                database,
+                settings.rewards().teamQueueRetention());
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
         databaseExecutor = new DatabaseExecutor("tower-defense-db-");
         EscrowRepository escrowRepository = new EscrowRepository(database);

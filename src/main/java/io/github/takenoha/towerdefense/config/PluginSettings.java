@@ -7,14 +7,24 @@ public record PluginSettings(
         CombatSettings combat,
         CoreSettings core,
         EnemySettings enemies,
-        ProtectionSettings protection) {
+        ProtectionSettings protection,
+        RewardSettings rewards) {
 
     /** Keeps direct settings construction source-compatible with the pre-boundary model. */
     public PluginSettings(
             CombatSettings combat,
             CoreSettings core,
             EnemySettings enemies) {
-        this(combat, core, enemies, ProtectionSettings.empty());
+        this(combat, core, enemies, ProtectionSettings.empty(), RewardSettings.defaults());
+    }
+
+    /** Keeps four-field construction source-compatible with the protection-boundary model. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies,
+            ProtectionSettings protection) {
+        this(combat, core, enemies, protection, RewardSettings.defaults());
     }
 
     /**

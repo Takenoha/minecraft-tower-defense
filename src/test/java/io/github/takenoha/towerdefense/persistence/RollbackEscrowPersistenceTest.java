@@ -570,48 +570,15 @@ final class RollbackEscrowPersistenceTest {
                 displayId,
                 escrow.loadDrops(fixture.eventId()).getFirst().displayEntityId().orElseThrow());
 
-        long revision = 1L;
-        for (int wave = 1; wave <= fixture.session().totalWaves(); wave++) {
-            fixture.session().startWave(1L);
-            assertEquals(
-                    OperationOutcome.APPLIED,
-                    fixture.repository().saveTransition(
-                            fixture.session().snapshot(),
-                            revision,
-                            UUID.randomUUID(),
-                            START.plusSeconds(revision)));
-            revision++;
-            fixture.session().spawnPendingEnemies(1L);
-            assertEquals(
-                    OperationOutcome.APPLIED,
-                    fixture.repository().saveSnapshot(
-                            fixture.session().snapshot(), revision, START.plusSeconds(revision)));
-            revision++;
-            fixture.session().recordEnemyDefeated(1L);
-            if (wave < fixture.session().totalWaves()) {
-                assertEquals(
-                        OperationOutcome.APPLIED,
-                        fixture.repository().saveTransition(
-                                fixture.session().snapshot(),
-                                revision,
-                                UUID.randomUUID(),
-                                START.plusSeconds(revision)));
-                revision++;
-            }
-        }
-        assertEquals(DefensePhase.VICTORY, fixture.session().phase());
-        assertEquals(
-                OperationOutcome.APPLIED,
-                fixture.repository().finishEvent(
-                        fixture.session().snapshot(),
-                        revision,
-                        UUID.randomUUID(),
-                        START.plusSeconds(revision)));
+        Instant settledAt = finishVictory(fixture);
         assertEquals(1, escrow.loadRewardQueue(fixture.eventId()).size());
         RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).getFirst();
         assertEquals(RewardQueueScope.TEAM, queue.scope());
         assertEquals(fixture.teamId(), queue.recipientId());
         assertEquals(3, queue.quantity());
+        assertEquals(
+                Optional.of(settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION)),
+                queue.teamClaimDeadline());
         assertEquals(1, escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).size());
         UUID deliveryOperation = UUID.randomUUID();
         assertEquals(
@@ -620,16 +587,76 @@ final class RollbackEscrowPersistenceTest {
                         queue.queueId(),
                         fixture.ownerId(),
                         deliveryOperation,
-                        START.plusSeconds(revision + 1L)));
+                        settledAt.plusSeconds(1L)));
         assertEquals(
                 OperationOutcome.APPLIED,
                 escrow.markRewardDelivered(
                         queue.queueId(),
                         fixture.ownerId(),
                         deliveryOperation,
-                        START.plusSeconds(revision + 2L)));
+                        settledAt.plusSeconds(2L)));
         assertEquals(RewardQueueStatus.DELIVERED, escrow.findRewardQueue(queue.queueId())
                 .orElseThrow().status());
+    }
+
+    @Test
+    void teamRewardFallsBackToCurrentOwnerOnlyAfterRetentionDeadline() {
+        UUID fallbackOwnerId = UUID.randomUUID();
+        Fixture fixture = activeFixture(
+                "team-reward-fallback.sqlite", Optional.of(fallbackOwnerId));
+        EscrowRepository escrow = new EscrowRepository(fixture.database());
+        EscrowDrop drop = new EscrowDrop(
+                fixture.eventId(),
+                UUID.randomUUID(),
+                DropSourceKind.BLOCK,
+                UUID.randomUUID(),
+                "defense_shard",
+                "{\"schema\":1}",
+                2,
+                Optional.empty());
+        escrow.prepare(drop, UUID.randomUUID(), START);
+
+        Instant settledAt = finishVictory(fixture);
+        assertEquals(
+                ManagementOutcome.APPLIED,
+                fixture.repository().transferTeamOwnership(
+                        fixture.teamId(),
+                        fixture.ownerId(),
+                        fallbackOwnerId,
+                        UUID.randomUUID(),
+                        settledAt.plusSeconds(1L)).outcome());
+
+        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).getFirst();
+        Instant deadline = settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION);
+        assertTrue(escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline.minusNanos(1L))
+                .isEmpty());
+        assertEquals(
+                List.of(queue),
+                escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline));
+        assertTrue(escrow.loadPendingRewardQueueForPlayer(UUID.randomUUID(), deadline).isEmpty());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> escrow.prepareRewardDelivery(
+                        queue.queueId(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        deadline));
+
+        UUID deliveryOperation = UUID.randomUUID();
+        assertEquals(
+                RewardDeliveryOutcome.ACQUIRED,
+                escrow.prepareRewardDelivery(
+                        queue.queueId(),
+                        fallbackOwnerId,
+                        deliveryOperation,
+                        deadline));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                escrow.markRewardDelivered(
+                        queue.queueId(),
+                        fallbackOwnerId,
+                        deliveryOperation,
+                        deadline));
     }
 
     @Test
@@ -734,11 +761,25 @@ final class RollbackEscrowPersistenceTest {
     }
 
     private Fixture activeFixture(String fileName) {
+        return activeFixture(fileName, Optional.empty());
+    }
+
+    private Fixture activeFixture(String fileName, Optional<UUID> additionalMemberId) {
         Database database = new Database(temporaryDirectory.resolve(fileName));
         DefenseRepository repository = new DefenseRepository(database);
         UUID teamId = UUID.randomUUID();
         UUID ownerId = UUID.randomUUID();
         repository.createSoloTeam(teamId, ownerId, START.minusSeconds(10L));
+        if (additionalMemberId.isPresent()) {
+            assertEquals(
+                    ManagementOutcome.APPLIED,
+                    repository.addTeamMember(
+                            teamId,
+                            ownerId,
+                            additionalMemberId.orElseThrow(),
+                            UUID.randomUUID(),
+                            START.minusSeconds(9L)).outcome());
+        }
         CoreRecord core = new CoreRecord(
                 UUID.randomUUID(),
                 teamId,
@@ -766,6 +807,48 @@ final class RollbackEscrowPersistenceTest {
                 OperationOutcome.APPLIED,
                 repository.saveTransition(active.snapshot(), 0L, UUID.randomUUID(), START));
         return new Fixture(database, repository, teamId, ownerId, active);
+    }
+
+    private Instant finishVictory(Fixture fixture) {
+        long revision = 1L;
+        for (int wave = 1; wave <= fixture.session().totalWaves(); wave++) {
+            fixture.session().startWave(1L);
+            assertEquals(
+                    OperationOutcome.APPLIED,
+                    fixture.repository().saveTransition(
+                            fixture.session().snapshot(),
+                            revision,
+                            UUID.randomUUID(),
+                            START.plusSeconds(revision)));
+            revision++;
+            fixture.session().spawnPendingEnemies(1L);
+            assertEquals(
+                    OperationOutcome.APPLIED,
+                    fixture.repository().saveSnapshot(
+                            fixture.session().snapshot(), revision, START.plusSeconds(revision)));
+            revision++;
+            fixture.session().recordEnemyDefeated(1L);
+            if (wave < fixture.session().totalWaves()) {
+                assertEquals(
+                        OperationOutcome.APPLIED,
+                        fixture.repository().saveTransition(
+                                fixture.session().snapshot(),
+                                revision,
+                                UUID.randomUUID(),
+                                START.plusSeconds(revision)));
+                revision++;
+            }
+        }
+        assertEquals(DefensePhase.VICTORY, fixture.session().phase());
+        Instant settledAt = START.plusSeconds(revision);
+        assertEquals(
+                OperationOutcome.APPLIED,
+                fixture.repository().finishEvent(
+                        fixture.session().snapshot(),
+                        revision,
+                        UUID.randomUUID(),
+                        settledAt));
+        return settledAt;
     }
 
     private record Fixture(

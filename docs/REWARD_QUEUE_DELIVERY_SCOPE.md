@@ -22,13 +22,17 @@ not enable enemy terrain mutation or create new reward sources.
   copy. The receipt is removed after the idempotent database acknowledgement.
 - Full inventories, invalid payloads, offline players, and transient database failures leave the
   queue row pending for a later retry.
+- TEAM rows issued after the PR #11 migration carry a configurable retention deadline. Registered
+  event participants remain eligible throughout, and after the deadline the current team owner is
+  also eligible as a bounded fallback for an abandoned handoff.
+- The owner fallback is evaluated from the persisted team owner at delivery time, not from the
+  historical participant set. A legacy TEAM row without a deadline remains participant-only.
 - Technical recovery never schedules delivery; its existing atomic escrow void path remains in
   force.
 
 ## Deliberately not included
 
 - Public reward configuration, custom item catalogs, research progression, or team GUI.
-- Retention-period owner fallback for an abandoned team queue.
 - Protected-region validation, role-specific terrain AI, or Paper load and TPS tests. Tile payload
   capture and protected-target synchronization are added by PR #9.
 - Production activation of `TerrainMutationPolicy`; the plugin still keeps enemy block changes

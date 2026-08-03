@@ -17,6 +17,7 @@ public final class PaperSettingsLoader {
         values.put("core", sectionValues(configuration, "core"));
         values.put("enemies", sectionValues(configuration, "enemies"));
         values.put("protection", sectionValues(configuration, "protection"));
+        values.put("rewards", sectionValues(configuration, "rewards"));
         return PluginSettings.from(values);
     }
 

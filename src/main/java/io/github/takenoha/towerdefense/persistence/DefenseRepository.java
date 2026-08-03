@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -30,11 +31,21 @@ import java.util.UUID;
 public final class DefenseRepository {
     private static final String TERMINAL_PHASES_SQL =
             "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')";
+    private static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
 
     private final Database database;
+    private final Duration teamQueueRetention;
 
     public DefenseRepository(Database database) {
+        this(database, DEFAULT_TEAM_QUEUE_RETENTION);
+    }
+
+    public DefenseRepository(Database database, Duration teamQueueRetention) {
         this.database = Objects.requireNonNull(database, "database");
+        this.teamQueueRetention = Objects.requireNonNull(teamQueueRetention, "teamQueueRetention");
+        if (teamQueueRetention.isZero() || teamQueueRetention.isNegative()) {
+            throw new IllegalArgumentException("teamQueueRetention must be positive");
+        }
     }
 
     /** Creates a one-player team and its mandatory owner membership atomically. */
@@ -1392,7 +1403,8 @@ public final class DefenseRepository {
                         terminalSnapshot.eventId(),
                         operationId,
                         terminalSnapshot.phase(),
-                        occurredAt);
+                        occurredAt,
+                        teamQueueRetention);
                 markEnemiesDespawned(
                         connection, terminalSnapshot.eventId(), occurredAt);
                 markTerminal(

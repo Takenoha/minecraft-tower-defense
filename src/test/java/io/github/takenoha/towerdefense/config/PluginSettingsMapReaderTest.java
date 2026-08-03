@@ -23,6 +23,32 @@ class PluginSettingsMapReaderTest {
         assertEquals(new CoreSettings(1_000, 20), settings.core());
         assertEquals(new EnemySettings(120, 8, 4, 2, 4.0, 1.0), settings.enemies());
         assertEquals(ProtectionSettings.empty(), settings.protection());
+        assertEquals(RewardSettings.defaults(), settings.rewards());
+    }
+
+    @Test
+    void readsTeamRewardRetentionFromTheOptionalRewardsSection() {
+        Map<String, Object> values = validValues();
+        values.put("rewards", Map.of("team-queue-retention-seconds", 3_600));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(new RewardSettings(3_600), settings.rewards());
+        assertEquals(java.time.Duration.ofHours(1), settings.rewards().teamQueueRetention());
+    }
+
+    @Test
+    void rejectsNonPositiveTeamRewardRetention() {
+        Map<String, Object> values = validValues();
+        values.put("rewards", Map.of("team-queue-retention-seconds", 0));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                () -> PluginSettings.from(values));
+
+        assertEquals(
+                List.of("rewards.team-queue-retention-seconds: must be > 0 (was 0)"),
+                exception.violations());
     }
 
     @Test

@@ -35,6 +35,7 @@ public final class PluginSettingsValidator {
         validateCore(settings.core(), unreadablePaths, violations);
         validateEnemies(settings.enemies(), unreadablePaths, violations);
         validateProtection(settings.protection(), unreadablePaths, violations);
+        validateRewards(settings.rewards(), unreadablePaths, violations);
         return List.copyOf(violations);
     }
 
@@ -253,6 +254,23 @@ public final class PluginSettingsValidator {
                 violations.add(path + ": requires min-x <= max-x and min-z <= max-z");
             }
         }
+    }
+
+    private static void validateRewards(
+            RewardSettings rewards,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (rewards == null) {
+            if (!unreadablePaths.contains("rewards")) {
+                violations.add("rewards: section is required");
+            }
+            return;
+        }
+        requirePositive(
+                "rewards.team-queue-retention-seconds",
+                rewards.teamQueueRetentionSeconds(),
+                unreadablePaths,
+                violations);
     }
 
     private static void requirePositive(

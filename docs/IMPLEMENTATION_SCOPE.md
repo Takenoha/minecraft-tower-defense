@@ -124,8 +124,8 @@ disabled:
   failures leave the row pending for a later retry.
 
 Technical recovery still voids the queue atomically and does not schedule delivery. Custom reward
-catalogs, research progression, team-queue retention fallback, protected-region checks,
-role-specific terrain AI, and production terrain activation remain future work. PR #9 adds the
+catalogs, research progression, protected-region checks, role-specific terrain AI, and production
+terrain activation remain future work. PR #9 adds the
 Tile NBT API projection and protected-target synchronization. See
 `docs/REWARD_QUEUE_DELIVERY_SCOPE.md`.
 
@@ -159,6 +159,15 @@ start transaction, while the session manager repeats it before activation as a d
 guard. Third-party region-plugin integration, role-specific terrain AI, Paper load testing, and
 production terrain activation remain future work. See
 `docs/PROTECTION_BOUNDARIES_SCOPE.md`.
+
+## PR #11 TEAM reward retention and owner fallback boundary
+
+PR #11 adds schema v10's nullable TEAM claim deadline and the validated
+`rewards.team-queue-retention-seconds` setting. Registered event participants remain eligible for
+TEAM rows, while the current team owner becomes an additional eligible recipient only after the
+persisted retention deadline. Legacy rows without a deadline remain participant-only. Existing
+delivery reservations, PDC receipts, and technical-recovery voiding are unchanged. See
+`docs/TEAM_REWARD_FALLBACK_SCOPE.md`.
 
 ## Acceptance mapping
 

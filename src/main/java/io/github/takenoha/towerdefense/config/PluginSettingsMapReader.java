@@ -17,7 +17,8 @@ final class PluginSettingsMapReader {
                 reader.combat(),
                 reader.core(),
                 reader.enemies(),
-                reader.protection());
+                reader.protection(),
+                reader.rewards());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -95,6 +96,19 @@ final class PluginSettingsMapReader {
             return new ProtectionSettings(
                     forbiddenWorlds(values),
                     forbiddenRegions(values));
+        }
+
+        private RewardSettings rewards() {
+            Object raw = root.get("rewards");
+            if (raw == null) {
+                return RewardSettings.defaults();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("rewards", "must be a map");
+                return RewardSettings.defaults();
+            }
+            return new RewardSettings(
+                    integer(values, "rewards", "team-queue-retention-seconds"));
         }
 
         private Set<String> forbiddenWorlds(Map<?, ?> section) {

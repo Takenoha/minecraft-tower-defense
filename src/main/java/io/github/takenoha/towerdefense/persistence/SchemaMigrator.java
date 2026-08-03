@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 9;
+    public static final int CURRENT_VERSION = 10;
 
     private SchemaMigrator() {
     }
@@ -59,6 +59,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 9) {
                     applyVersionNine(connection);
                     recordMigration(connection, 9);
+                }
+                if (installedVersion < 10) {
+                    applyVersionTen(connection);
+                    recordMigration(connection, 10);
                 }
                 return null;
             });
@@ -638,6 +642,17 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     ALTER TABLE event_block_changes
                     ADD COLUMN expected_after_tile_nbt TEXT NOT NULL DEFAULT ''
+                    """);
+        }
+    }
+
+    private static void applyVersionTen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "ALTER TABLE event_reward_queue ADD COLUMN team_claim_deadline TEXT");
+            statement.executeUpdate("""
+                    CREATE INDEX event_reward_queue_team_deadline_idx
+                    ON event_reward_queue(scope, status, team_claim_deadline)
                     """);
         }
     }
