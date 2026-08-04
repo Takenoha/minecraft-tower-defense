@@ -3,6 +3,7 @@ package io.github.takenoha.towerdefense.persistence;
 import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -28,7 +29,8 @@ public final class TowerRepository {
             List<TowerRecord> towers = new ArrayList<>();
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
-                           tower_type, individual_level, entity_id, created_at, updated_at
+                           tower_type, individual_level, target_priority,
+                           entity_id, created_at, updated_at
                     FROM towers
                     ORDER BY tower_id
                     """);
@@ -44,6 +46,50 @@ public final class TowerRepository {
     public Optional<TowerRecord> findTower(UUID towerId) {
         Objects.requireNonNull(towerId, "towerId");
         return read("load a tower", connection -> loadTower(connection, towerId));
+    }
+
+    /** Updates one tower's target-selection mode after validating team membership. */
+    public TowerRecord updateTargetPriority(
+            UUID towerId,
+            UUID actorId,
+            TowerTargetPriority targetPriority,
+            Instant updatedAt) {
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(targetPriority, "targetPriority");
+        Objects.requireNonNull(updatedAt, "updatedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                TowerRecord current = loadTower(connection, towerId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The tower to update does not exist"));
+                requireTeamMember(connection, current.teamId(), actorId);
+                if (current.targetPriority() == targetPriority) {
+                    return current;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE towers
+                        SET target_priority = ?, updated_at = ?
+                        WHERE tower_id = ?
+                        """)) {
+                    statement.setString(1, targetPriority.id());
+                    statement.setString(2, updatedAt.toString());
+                    statement.setString(3, towerId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The tower target priority update affected no rows");
+                    }
+                }
+                return loadTower(connection, towerId).orElseThrow(
+                        () -> new SQLException(
+                                "The tower disappeared after target priority update"));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower target priority is invalid", exception);
+            }
+            throw failure("update a tower target priority", exception);
+        }
     }
 
     /** Loads physical tower identities whose item handoff may have been interrupted. */
@@ -68,6 +114,7 @@ public final class TowerRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT operation_id, tower_id, actor_id, team_id, world_id,
                            block_x, block_y, block_z, tower_type, individual_level,
+                           target_priority,
                            state, prepared_at, applied_at, rolled_back_at
                     FROM tower_placement_operations
                     WHERE state = 'PREPARED'
@@ -334,6 +381,7 @@ public final class TowerRepository {
                         placement.blockZ(),
                         placement.type(),
                         placement.individualLevel(),
+                        placement.targetPriority(),
                         entityId,
                         appliedAt,
                         appliedAt);
@@ -396,6 +444,7 @@ public final class TowerRepository {
                         placement.blockZ(),
                         placement.type(),
                         placement.individualLevel(),
+                        placement.targetPriority(),
                         TowerPlacementState.ROLLED_BACK,
                         placement.preparedAt(),
                         null,
@@ -441,7 +490,8 @@ public final class TowerRepository {
             int blockZ) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
-                       tower_type, individual_level, entity_id, created_at, updated_at
+                       tower_type, individual_level, target_priority,
+                       entity_id, created_at, updated_at
                 FROM towers
                 WHERE world_id = ? AND block_x = ? AND block_y = ? AND block_z = ?
                 """)) {
@@ -459,7 +509,8 @@ public final class TowerRepository {
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
-                       tower_type, individual_level, entity_id, created_at, updated_at
+                       tower_type, individual_level, target_priority,
+                       entity_id, created_at, updated_at
                 FROM towers WHERE tower_id = ?
                 """)) {
             statement.setString(1, towerId.toString());
@@ -515,6 +566,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, tower_id, actor_id, team_id, world_id,
                        block_x, block_y, block_z, tower_type, individual_level,
+                       target_priority,
                        state, prepared_at, applied_at, rolled_back_at
                 FROM tower_placement_operations WHERE operation_id = ?
                 """)) {
@@ -610,8 +662,8 @@ public final class TowerRepository {
                 INSERT INTO tower_placement_operations(
                     operation_id, tower_id, actor_id, team_id, world_id,
                     block_x, block_y, block_z, tower_type, individual_level,
-                    state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    target_priority, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, placement.operationId().toString());
             statement.setString(2, placement.towerId().toString());
@@ -623,7 +675,8 @@ public final class TowerRepository {
             statement.setInt(8, placement.blockZ());
             statement.setString(9, placement.type().id());
             statement.setInt(10, placement.individualLevel());
-            statement.setString(11, placement.preparedAt().toString());
+            statement.setString(11, placement.targetPriority().id());
+            statement.setString(12, placement.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -632,8 +685,9 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO towers(
                     tower_id, team_id, world_id, block_x, block_y, block_z,
-                    tower_type, individual_level, entity_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tower_type, individual_level, target_priority,
+                    entity_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             statement.setString(1, tower.id().toString());
             statement.setString(2, tower.teamId().toString());
@@ -643,9 +697,10 @@ public final class TowerRepository {
             statement.setInt(6, tower.blockZ());
             statement.setString(7, tower.type().id());
             statement.setInt(8, tower.individualLevel());
-            statement.setString(9, tower.entityId().toString());
-            statement.setString(10, tower.createdAt().toString());
-            statement.setString(11, tower.updatedAt().toString());
+            statement.setString(9, tower.targetPriority().id());
+            statement.setString(10, tower.entityId().toString());
+            statement.setString(11, tower.createdAt().toString());
+            statement.setString(12, tower.updatedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -685,6 +740,7 @@ public final class TowerRepository {
                 resultSet.getInt("block_z"),
                 TowerType.fromId(resultSet.getString("tower_type")),
                 resultSet.getInt("individual_level"),
+                TowerTargetPriority.fromId(resultSet.getString("target_priority")),
                 uuid(resultSet.getString("entity_id")),
                 instant(resultSet.getString("created_at")),
                 instant(resultSet.getString("updated_at")));
@@ -702,6 +758,7 @@ public final class TowerRepository {
                 resultSet.getInt("block_z"),
                 TowerType.fromId(resultSet.getString("tower_type")),
                 resultSet.getInt("individual_level"),
+                TowerTargetPriority.fromId(resultSet.getString("target_priority")),
                 TowerPlacementState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
                 nullableInstant(resultSet.getString("applied_at")),
@@ -785,7 +842,8 @@ public final class TowerRepository {
                 || existing.blockY() != requested.blockY()
                 || existing.blockZ() != requested.blockZ()
                 || existing.type() != requested.type()
-                || existing.individualLevel() != requested.individualLevel()) {
+                || existing.individualLevel() != requested.individualLevel()
+                || existing.targetPriority() != requested.targetPriority()) {
             throw new PersistenceConflictException(
                     "The tower placement operation UUID is already assigned to another payload");
         }

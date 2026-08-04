@@ -1,9 +1,11 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.takenoha.towerdefense.config.TowerSettings;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -120,6 +122,70 @@ final class TowerPersistenceTest {
         assertEquals(installed, towers.findTower(installed.id()).orElseThrow());
         assertTrue(towers.loadPendingTowerRemovals().isEmpty());
         assertTrue(towers.loadAppliedTowerRemovals().isEmpty());
+    }
+
+    @Test
+    void targetPrioritySurvivesPlacementUpdateAndReload() {
+        Path databaseFile = temporaryDirectory.resolve("priority.sqlite");
+        Database database = new Database(databaseFile);
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        TowerPlacement placement = TowerPlacement.prepared(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                ownerId,
+                teamId,
+                UUID.randomUUID(),
+                5,
+                65,
+                5,
+                TowerType.ARROW,
+                1,
+                TowerTargetPriority.BOSS,
+                NOW);
+        towers.prepareTowerPlacement(placement, TowerSettings.defaults());
+        TowerRecord installed = towers.applyTowerPlacement(
+                placement.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                NOW.plusSeconds(1L));
+        assertEquals(TowerTargetPriority.BOSS, installed.targetPriority());
+
+        TowerRecord updated = towers.updateTargetPriority(
+                installed.id(),
+                ownerId,
+                TowerTargetPriority.HEALTH_LOW,
+                NOW.plusSeconds(2L));
+        assertEquals(TowerTargetPriority.HEALTH_LOW, updated.targetPriority());
+        assertEquals(
+                TowerTargetPriority.HEALTH_LOW,
+                new TowerRepository(new Database(databaseFile))
+                        .findTower(installed.id())
+                        .orElseThrow()
+                        .targetPriority());
+    }
+
+    @Test
+    void targetPriorityUpdateRequiresTeamMembership() {
+        Database database = new Database(temporaryDirectory.resolve("priority-auth.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.updateTargetPriority(
+                        installed.id(),
+                        UUID.randomUUID(),
+                        TowerTargetPriority.BOSS,
+                        NOW.plusSeconds(2L)));
     }
 
     private static TowerRecord installTower(

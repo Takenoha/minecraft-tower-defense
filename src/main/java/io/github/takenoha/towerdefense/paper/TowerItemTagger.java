@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.paper;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -24,6 +25,7 @@ public final class TowerItemTagger {
     private final NamespacedKey towerIdKey;
     private final NamespacedKey typeKey;
     private final NamespacedKey levelKey;
+    private final NamespacedKey targetPriorityKey;
 
     public TowerItemTagger(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
@@ -32,6 +34,7 @@ public final class TowerItemTagger {
         towerIdKey = new NamespacedKey(plugin, "tower_id");
         typeKey = new NamespacedKey(plugin, "tower_type");
         levelKey = new NamespacedKey(plugin, "tower_level");
+        targetPriorityKey = new NamespacedKey(plugin, "tower_target_priority");
     }
 
     /** Template used by the first Arrow tower recipe; a craft event fills its UUID. */
@@ -43,14 +46,27 @@ public final class TowerItemTagger {
         data.set(versionKey, PersistentDataType.INTEGER, ITEM_VERSION);
         data.set(typeKey, PersistentDataType.STRING, TowerType.ARROW.id());
         data.set(levelKey, PersistentDataType.INTEGER, 1);
-        setDisplay(meta, TowerType.ARROW, 1);
+        data.set(
+                targetPriorityKey,
+                PersistentDataType.STRING,
+                TowerTargetPriority.CORE_NEAREST.id());
+        setDisplay(meta, TowerType.ARROW, 1, TowerTargetPriority.CORE_NEAREST);
         item.setItemMeta(meta);
         return item;
     }
 
     public ItemStack create(UUID towerId, TowerType type, int individualLevel) {
+        return create(towerId, type, individualLevel, TowerTargetPriority.CORE_NEAREST);
+    }
+
+    public ItemStack create(
+            UUID towerId,
+            TowerType type,
+            int individualLevel,
+            TowerTargetPriority targetPriority) {
         Objects.requireNonNull(towerId, "towerId");
         Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(targetPriority, "targetPriority");
         if (individualLevel <= 0) {
             throw new IllegalArgumentException("individualLevel must be positive");
         }
@@ -62,7 +78,8 @@ public final class TowerItemTagger {
         data.set(towerIdKey, PersistentDataType.STRING, towerId.toString());
         data.set(typeKey, PersistentDataType.STRING, type.id());
         data.set(levelKey, PersistentDataType.INTEGER, individualLevel);
-        setDisplay(meta, type, individualLevel);
+        data.set(targetPriorityKey, PersistentDataType.STRING, targetPriority.id());
+        setDisplay(meta, type, individualLevel, targetPriority);
         item.setItemMeta(meta);
         item.setAmount(1);
         return item;
@@ -110,17 +127,28 @@ public final class TowerItemTagger {
             return Optional.empty();
         }
         try {
+            String priority = data.get(targetPriorityKey, PersistentDataType.STRING);
             return Optional.of(new TowerItemIdentity(
-                    UUID.fromString(towerId), TowerType.fromId(type), level));
+                    UUID.fromString(towerId),
+                    TowerType.fromId(type),
+                    level,
+                    priority == null
+                            ? TowerTargetPriority.CORE_NEAREST
+                            : TowerTargetPriority.fromId(priority)));
         } catch (IllegalArgumentException invalidIdentity) {
             return Optional.empty();
         }
     }
 
-    private static void setDisplay(ItemMeta meta, TowerType type, int level) {
+    private static void setDisplay(
+            ItemMeta meta,
+            TowerType type,
+            int level,
+            TowerTargetPriority targetPriority) {
         meta.displayName(Component.text(type.displayName() + "タワー", NamedTextColor.GREEN));
         meta.lore(List.of(
                 Component.text("個体Lv" + level, NamedTextColor.GRAY),
+                Component.text("対象優先: " + targetPriority.displayName(), NamedTextColor.GRAY),
                 Component.text("設置後に自動でイベント敵を攻撃します", NamedTextColor.GRAY),
                 Component.text("固有ID付き・1個のみ", NamedTextColor.DARK_GRAY)));
     }

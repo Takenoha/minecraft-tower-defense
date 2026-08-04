@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 14;
+    public static final int CURRENT_VERSION = 15;
 
     private SchemaMigrator() {
     }
@@ -79,6 +79,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 14) {
                     applyVersionFourteen(connection);
                     recordMigration(connection, 14);
+                }
+                if (installedVersion < 15) {
+                    applyVersionFifteen(connection);
+                    recordMigration(connection, 15);
                 }
                 return null;
             });
@@ -836,6 +840,25 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_removal_operations_state_idx
                     ON tower_removal_operations(state, prepared_at)
+                    """);
+        }
+    }
+
+    private static void applyVersionFifteen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE towers
+                    ADD COLUMN target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                    CHECK (target_priority IN (
+                        'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                    ))
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE tower_placement_operations
+                    ADD COLUMN target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                    CHECK (target_priority IN (
+                        'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                    ))
                     """);
         }
     }

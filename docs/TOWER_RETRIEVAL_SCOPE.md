@@ -20,6 +20,8 @@ the player can place it at another valid location.
 - The returned item keeps the tower UUID, type, and individual level. Existing placement checks
   continue to enforce team membership, core combat area, world border, capacity, and duplicate
   UUID protection.
+- The management GUI exposes core-nearest, nearest, high-health, low-health, and boss-first target
+  priorities. The selected priority is persisted with the tower and preserved by retrieval.
 - `tower_removal_operations` schema version 14 with `PREPARED`, `APPLIED`, and `ROLLED_BACK`
   states. The item is secured before the durable tower row is deleted; retries use the operation
   UUID and cannot delete a second tower.
@@ -29,7 +31,7 @@ the player can place it at another valid location.
 
 ## Deliberate follow-up slices
 
-- Direct atomic move confirmation, target-priority selection, upgrades, research, HP/repair, and
-  the six remaining tower types are outside this slice.
+- Direct atomic move confirmation, upgrades, research, HP/repair, and the six remaining tower types
+  are outside this slice.
 - This environment still lacks a Minecraft client bot, so manual two-player GUI verification is
   not included in automated validation.

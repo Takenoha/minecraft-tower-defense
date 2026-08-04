@@ -3,6 +3,8 @@ package io.github.takenoha.towerdefense.paper;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
+import io.github.takenoha.towerdefense.domain.EnemyRole;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
@@ -89,6 +91,7 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final NamespacedKey towerDamageKey;
     private final Set<UUID> placementInFlight = new HashSet<>();
     private final Set<UUID> removalInFlight = new HashSet<>();
+    private final Set<UUID> priorityInFlight = new HashSet<>();
     private final Set<UUID> pendingRemovalTowerIds = new HashSet<>();
     private final Set<UUID> appliedTowerIds;
     private final Map<UUID, CoreAttackSchedule> attackSchedules = new HashMap<>();
@@ -256,8 +259,12 @@ public final class TowerManager implements Listener, AutoCloseable {
                 || !(event.getWhoClicked() instanceof Player player)) {
             return;
         }
+        Optional<TowerTargetPriority> targetPriority =
+                TowerManagementGui.priorityAt(event.getRawSlot());
         if (event.getRawSlot() == TowerManagementGui.CLOSE_SLOT) {
             player.closeInventory();
+        } else if (targetPriority.isPresent()) {
+            setTargetPriority(player, holder.towerId(), targetPriority.orElseThrow());
         } else if (event.getRawSlot() == TowerManagementGui.REMOVE_SLOT) {
             beginRemoval(player, holder.towerId());
         }
@@ -415,10 +422,62 @@ public final class TowerManager implements Listener, AutoCloseable {
         }));
     }
 
+    private void setTargetPriority(
+            Player player,
+            UUID towerId,
+            TowerTargetPriority targetPriority) {
+        if (pendingRemovalTowerIds.contains(towerId) || removalInFlight.contains(towerId)) {
+            player.sendMessage(Component.text(
+                    "タワー回収処理中のため対象優先を変更できません。", NamedTextColor.YELLOW));
+            return;
+        }
+        if (!priorityInFlight.add(towerId)) {
+            player.sendMessage(Component.text("対象優先を保存中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        player.sendMessage(Component.text("対象優先を保存しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> repository.updateTargetPriority(
+                        towerId,
+                        player.getUniqueId(),
+                        targetPriority,
+                        Instant.now()))
+                .whenComplete((updated, failure) -> runOnMainThread(() -> {
+                    priorityInFlight.remove(towerId);
+                    if (failure != null) {
+                        player.sendMessage(Component.text(
+                                "対象優先を変更できません: " + rootMessage(failure),
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    towers.replace(updated);
+                    Object openHolder = player.getOpenInventory().getTopInventory().getHolder();
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (!(openHolder instanceof TowerManagementInventoryHolder holder)
+                            || !holder.towerId().equals(towerId)) {
+                        return;
+                    }
+                    boolean canRemove = !sessions.hasActiveSession();
+                    player.openInventory(TowerManagementGui.create(
+                            updated,
+                            canRemove,
+                            canRemove ? "" : "防衛戦開始後は回収・移設できません。"));
+                    player.sendMessage(Component.text(
+                            "対象優先を「" + updated.targetPriority().displayName() + "」に変更しました。",
+                            NamedTextColor.GREEN));
+                }));
+    }
+
     private void beginRemoval(Player player, UUID towerId) {
         if (sessions.hasActiveSession()) {
             player.sendMessage(Component.text(
                     "防衛戦開始後はタワーを回収・移設できません。", NamedTextColor.RED));
+            return;
+        }
+        if (priorityInFlight.contains(towerId)) {
+            player.sendMessage(Component.text(
+                    "対象優先の保存中はタワーを回収できません。", NamedTextColor.YELLOW));
             return;
         }
         if (!removalInFlight.add(towerId)) {
@@ -456,7 +515,10 @@ public final class TowerManager implements Listener, AutoCloseable {
                     }
                     removeMatchingItems(towerId);
                     if (!giveOrDrop(player, itemTagger.create(
-                            tower.id(), tower.type(), tower.individualLevel()))) {
+                            tower.id(),
+                            tower.type(),
+                            tower.individualLevel(),
+                            tower.targetPriority()))) {
                         rollbackRemoval(
                                 player,
                                 prepared,
@@ -603,6 +665,7 @@ public final class TowerManager implements Listener, AutoCloseable {
                 target.getZ(),
                 identity.type(),
                 identity.individualLevel(),
+                identity.targetPriority(),
                 Instant.now());
         return repository.prepareTowerPlacement(placement, settings.towers());
     }
@@ -762,6 +825,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         double range = settings.towers().arrowRange();
         List<LivingEntity> candidates = new ArrayList<>();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        Map<UUID, TaggedEnemy> eventTags = new HashMap<>();
         for (Entity entity : stand.getWorld().getNearbyEntities(
                 stand.getLocation(), range, range, range)) {
             if (!(entity instanceof Monster monster)
@@ -776,6 +840,7 @@ public final class TowerManager implements Listener, AutoCloseable {
                     tagged.orElseThrow(), tower.teamId())) {
                 continue;
             }
+            tagged.ifPresent(value -> eventTags.put(entity.getUniqueId(), value));
             candidates.add(monster);
         }
         Optional<io.github.takenoha.towerdefense.persistence.CoreRecord> core =
@@ -785,13 +850,30 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
         double coreX = core.orElseThrow().blockX() + 0.5d;
         double coreZ = core.orElseThrow().blockZ() + 0.5d;
-        candidates.sort(Comparator
-                .comparingDouble((LivingEntity candidate) ->
-                        Math.pow(candidate.getX() - coreX, 2.0d)
-                                + Math.pow(candidate.getZ() - coreZ, 2.0d))
-                .thenComparingDouble(candidate ->
-                        candidate.getLocation().distanceSquared(stand.getLocation()))
-                .thenComparing(candidate -> candidate.getUniqueId().toString()));
+        Comparator<LivingEntity> coreDistance = Comparator.comparingDouble(candidate ->
+                Math.pow(candidate.getX() - coreX, 2.0d)
+                        + Math.pow(candidate.getZ() - coreZ, 2.0d));
+        Comparator<LivingEntity> towerDistance = Comparator.comparingDouble(candidate ->
+                candidate.getLocation().distanceSquared(stand.getLocation()));
+        Comparator<LivingEntity> stableId = Comparator.comparing(
+                candidate -> candidate.getUniqueId().toString());
+        Comparator<LivingEntity> fallback = coreDistance.thenComparing(towerDistance)
+                .thenComparing(stableId);
+        Comparator<LivingEntity> priorityComparator = switch (tower.targetPriority()) {
+            case CORE_NEAREST -> fallback;
+            case NEAREST -> towerDistance.thenComparing(coreDistance).thenComparing(stableId);
+            case HEALTH_HIGH -> Comparator.comparingDouble(LivingEntity::getHealth)
+                    .reversed()
+                    .thenComparing(fallback);
+            case HEALTH_LOW -> Comparator.comparingDouble(LivingEntity::getHealth)
+                    .thenComparing(fallback);
+            case BOSS -> Comparator.comparing(
+                            (LivingEntity candidate) -> eventTags.containsKey(candidate.getUniqueId())
+                                    && eventTags.get(candidate.getUniqueId()).role() == EnemyRole.BOSS)
+                    .reversed()
+                    .thenComparing(fallback);
+        };
+        candidates.sort(priorityComparator);
         return candidates.stream().findFirst();
     }
 

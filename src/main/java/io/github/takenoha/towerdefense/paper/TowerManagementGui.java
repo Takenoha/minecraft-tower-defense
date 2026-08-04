@@ -1,8 +1,10 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -12,11 +14,16 @@ import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
-/** Builds the first tower-management screen for inspection and retrieval. */
+/** Builds the tower-management screen for inspection, targeting, and retrieval. */
 public final class TowerManagementGui {
     public static final int SIZE = 27;
-    public static final int REMOVE_SLOT = 11;
-    public static final int CLOSE_SLOT = 15;
+    public static final int PRIORITY_START_SLOT = 9;
+    public static final int REMOVE_SLOT = 20;
+    public static final int HELP_SLOT = 22;
+    public static final int CLOSE_SLOT = 26;
+
+    private static final List<TowerTargetPriority> PRIORITIES =
+            List.of(TowerTargetPriority.values());
 
     private TowerManagementGui() {
     }
@@ -39,10 +46,24 @@ public final class TowerManagementGui {
                 tower.type().displayName() + "タワー",
                 List.of(
                         "個体Lv: " + tower.individualLevel(),
+                        "対象優先: " + tower.targetPriority().displayName(),
                         "座標: " + tower.blockX() + ", " + tower.blockY()
                                 + ", " + tower.blockZ(),
                         "右クリックしたタワーの操作画面"),
                 NamedTextColor.AQUA));
+        for (int index = 0; index < PRIORITIES.size(); index++) {
+            TowerTargetPriority priority = PRIORITIES.get(index);
+            boolean selected = priority == tower.targetPriority();
+            inventory.setItem(
+                    PRIORITY_START_SLOT + index,
+                    item(
+                            priorityMaterial(priority),
+                            (selected ? "▶ " : "") + priority.displayName(),
+                            selected
+                                    ? List.of("現在の対象優先", "クリックで変更できます")
+                                    : List.of("クリックで対象優先を変更"),
+                            selected ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+        }
         inventory.setItem(REMOVE_SLOT, item(
                 canRemove ? Material.EMERALD : Material.GRAY_DYE,
                 canRemove ? "回収・移設" : "回収・移設（現在不可）",
@@ -58,14 +79,33 @@ public final class TowerManagementGui {
                 "閉じる",
                 List.of(),
                 NamedTextColor.RED));
-        inventory.setItem(22, item(
+        inventory.setItem(HELP_SLOT, item(
                 Material.BOOK,
                 "操作方法",
                 List.of(
                         "回収したアイテムは個体Lvを保持します。",
+                        "対象優先は回収・再設置後も保持します。",
                         "プレイヤー採掘・爆発・ピストンでは移動しません。"),
                 NamedTextColor.YELLOW));
         return inventory;
+    }
+
+    public static Optional<TowerTargetPriority> priorityAt(int slot) {
+        int index = slot - PRIORITY_START_SLOT;
+        if (index < 0 || index >= PRIORITIES.size()) {
+            return Optional.empty();
+        }
+        return Optional.of(PRIORITIES.get(index));
+    }
+
+    private static Material priorityMaterial(TowerTargetPriority priority) {
+        return switch (priority) {
+            case CORE_NEAREST -> Material.COMPASS;
+            case NEAREST -> Material.CLOCK;
+            case HEALTH_HIGH -> Material.DIAMOND;
+            case HEALTH_LOW -> Material.REDSTONE;
+            case BOSS -> Material.BEACON;
+        };
     }
 
     private static ItemStack item(

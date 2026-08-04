@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -17,6 +18,7 @@ public record TowerPlacement(
         int blockZ,
         TowerType type,
         int individualLevel,
+        TowerTargetPriority targetPriority,
         TowerPlacementState state,
         Instant preparedAt,
         Instant appliedAt,
@@ -28,6 +30,7 @@ public record TowerPlacement(
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(targetPriority, "targetPriority");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(preparedAt, "preparedAt");
         if (individualLevel <= 0) {
@@ -69,6 +72,7 @@ public record TowerPlacement(
                 blockZ,
                 type,
                 1,
+                TowerTargetPriority.CORE_NEAREST,
                 preparedAt);
     }
 
@@ -84,6 +88,34 @@ public record TowerPlacement(
             TowerType type,
             int individualLevel,
             Instant preparedAt) {
+        return prepared(
+                operationId,
+                towerId,
+                actorId,
+                teamId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                type,
+                individualLevel,
+                TowerTargetPriority.CORE_NEAREST,
+                preparedAt);
+    }
+
+    public static TowerPlacement prepared(
+            UUID operationId,
+            UUID towerId,
+            UUID actorId,
+            UUID teamId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            TowerType type,
+            int individualLevel,
+            TowerTargetPriority targetPriority,
+            Instant preparedAt) {
         return new TowerPlacement(
                 operationId,
                 towerId,
@@ -95,6 +127,7 @@ public record TowerPlacement(
                 blockZ,
                 type,
                 individualLevel,
+                targetPriority,
                 TowerPlacementState.PREPARED,
                 preparedAt,
                 null,
