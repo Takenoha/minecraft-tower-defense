@@ -21,8 +21,9 @@ transaction.
 ## Deliberate boundary
 
 Only stage 1 is selectable in this walking skeleton. Stage-specific recipes, the full stage
-selector, research crystals, tower placement/upgrades, and invitation/member-management GUI are
-later slices. Terrain mutation remains fail-closed and its three activation flags are unchanged.
+selector, research crystals, and tower placement/upgrades are later slices. The first team
+management GUI is documented in `docs/TEAM_MANAGEMENT_GUI_SCOPE.md`. Terrain mutation remains
+fail-closed and its three activation flags are unchanged.
 
 ## Verification
 

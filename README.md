@@ -72,9 +72,14 @@ Enemies that reach the core remain in the encounter and attack it every configur
 The public core placement boundary is now available as a separate Paper interaction: craft the
 initial diamond/nether-star core item, then right-click a validated ordinary Overworld block to
 replace it with a tagged beacon. Placement is owner-only, blocked during an active defense, and
-protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, towers,
-research, start items, and team GUI remain later backlog; see
+protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, and the
+first nearby-player team-management GUI are available as follow-on slices. Stage-specific start
+items, towers, and research remain later backlog; see
 [`docs/PUBLIC_CORE_PLACEMENT_SCOPE.md`](docs/PUBLIC_CORE_PLACEMENT_SCOPE.md).
+
+The team GUI is intentionally bounded to one nearby online invitation target plus confirmed member
+removal, ownership transfer, and leave operations. See
+[`docs/TEAM_MANAGEMENT_GUI_SCOPE.md`](docs/TEAM_MANAGEMENT_GUI_SCOPE.md).
 
 ## Build
 
