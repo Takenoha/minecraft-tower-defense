@@ -55,6 +55,31 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsConfiguredCannonValues() {
+        Map<String, Object> values = validValues();
+        values.put("towers", Map.of(
+                "base-limit", 8,
+                "limit-increment", 2,
+                "hard-cap", 40,
+                "arrow", Map.of(
+                        "damage", 4,
+                        "range", 16.0,
+                        "attack-interval-ticks", 20),
+                "cannon", Map.of(
+                        "damage", 12,
+                        "range", 15.0,
+                        "attack-interval-ticks", 50,
+                        "splash-radius", 3.0)));
+
+        TowerSettings settings = PluginSettings.from(values).towers();
+
+        assertEquals(12, settings.cannonDamage());
+        assertEquals(15.0, settings.cannonRange());
+        assertEquals(50, settings.cannonAttackIntervalTicks());
+        assertEquals(3.0, settings.cannonSplashRadius());
+    }
+
+    @Test
     void rejectsANonPositiveCoreAttackInterval() {
         Map<String, Object> values = validValues();
         mutableSection(values, "core").put("attack-interval-ticks", 0);

@@ -143,7 +143,7 @@ final class TowerPersistenceTest {
                 5,
                 65,
                 5,
-                TowerType.ARROW,
+                TowerType.CANNON,
                 1,
                 TowerTargetPriority.BOSS,
                 NOW);
@@ -153,6 +153,7 @@ final class TowerPersistenceTest {
                 UUID.randomUUID(),
                 TowerSettings.defaults(),
                 NOW.plusSeconds(1L));
+        assertEquals(TowerType.CANNON, installed.type());
         assertEquals(TowerTargetPriority.BOSS, installed.targetPriority());
 
         TowerRecord updated = towers.updateTargetPriority(

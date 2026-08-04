@@ -56,6 +56,12 @@ towers:
     damage: 4
     range: 16.0
     attack-interval-ticks: 20
+  # Provisional second type: slow, high-damage area attack around the selected target.
+  cannon:
+    damage: 8
+    range: 14.0
+    attack-interval-ticks: 40
+    splash-radius: 2.5
 
 # Enemy terrain mutation is fail-closed. Set each flag only after the reviewed Paper integration
 # and recovery procedure has produced evidence for this server profile.

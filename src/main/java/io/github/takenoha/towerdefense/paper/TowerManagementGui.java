@@ -42,7 +42,7 @@ public final class TowerManagementGui {
         holder.attach(inventory);
 
         inventory.setItem(4, item(
-                Material.BOW,
+                TowerItemTagger.materialFor(tower.type()),
                 tower.type().displayName() + "タワー",
                 List.of(
                         "個体Lv: " + tower.individualLevel(),

@@ -7,7 +7,7 @@ created: 2026-08-04
 
 # Tower retrieval scope
 
-This slice adds the first player-facing management operation for the Arrow tower foundation:
+This slice adds the first player-facing management operation for the tower foundation:
 right-clicking a registered tower opens a GUI, and the GUI returns the same unique tower item so
 the player can place it at another valid location.
 
@@ -31,7 +31,7 @@ the player can place it at another valid location.
 
 ## Deliberate follow-up slices
 
-- Direct atomic move confirmation, upgrades, research, HP/repair, and the six remaining tower types
+- Direct atomic move confirmation, upgrades, research, HP/repair, and the five remaining tower types
   are outside this slice.
 - This environment still lacks a Minecraft client bot, so manual two-player GUI verification is
   not included in automated validation.

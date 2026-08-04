@@ -133,15 +133,25 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
     }
 
-    /** Registers the provisional first-slice Arrow recipe. */
+    /** Registers the provisional Arrow and Cannon recipes. */
     public void registerRecipe() {
-        NamespacedKey key = new NamespacedKey(plugin, "tower_arrow");
-        ShapedRecipe recipe = new ShapedRecipe(key, itemTagger.recipeTemplate());
-        recipe.shape("IRI", "RDR", "IRI");
-        recipe.setIngredient('I', Material.IRON_INGOT);
-        recipe.setIngredient('R', Material.REDSTONE);
-        recipe.setIngredient('D', Material.DIAMOND);
-        Bukkit.addRecipe(recipe);
+        NamespacedKey arrowKey = new NamespacedKey(plugin, "tower_arrow");
+        ShapedRecipe arrowRecipe = new ShapedRecipe(
+                arrowKey, itemTagger.recipeTemplate(TowerType.ARROW));
+        arrowRecipe.shape("IRI", "RDR", "IRI");
+        arrowRecipe.setIngredient('I', Material.IRON_INGOT);
+        arrowRecipe.setIngredient('R', Material.REDSTONE);
+        arrowRecipe.setIngredient('D', Material.DIAMOND);
+        Bukkit.addRecipe(arrowRecipe);
+
+        NamespacedKey cannonKey = new NamespacedKey(plugin, "tower_cannon");
+        ShapedRecipe cannonRecipe = new ShapedRecipe(
+                cannonKey, itemTagger.recipeTemplate(TowerType.CANNON));
+        cannonRecipe.shape("CGC", "GIG", "CGC");
+        cannonRecipe.setIngredient('C', Material.COBBLESTONE);
+        cannonRecipe.setIngredient('G', Material.GUNPOWDER);
+        cannonRecipe.setIngredient('I', Material.IRON_INGOT);
+        Bukkit.addRecipe(cannonRecipe);
     }
 
     /** Restores only known prepared operations; unknown physical states remain fail-closed. */
@@ -197,7 +207,8 @@ public final class TowerManager implements Listener, AutoCloseable {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCraft(CraftItemEvent event) {
         ItemStack result = event.getCurrentItem();
-        if (!itemTagger.isRecipeTemplate(result)) {
+        Optional<TowerType> recipeType = itemTagger.recipeType(result);
+        if (recipeType.isEmpty()) {
             return;
         }
         if (event.isShiftClick()) {
@@ -206,7 +217,7 @@ public final class TowerManager implements Listener, AutoCloseable {
                     "タワーは1個ずつクラフトしてください。", NamedTextColor.YELLOW));
             return;
         }
-        event.setCurrentItem(itemTagger.create(UUID.randomUUID(), TowerType.ARROW, 1));
+        event.setCurrentItem(itemTagger.create(UUID.randomUUID(), recipeType.orElseThrow(), 1));
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -714,8 +725,8 @@ public final class TowerManager implements Listener, AutoCloseable {
         stand.customName(Component.text(
                 placement.type().displayName() + "タワー", NamedTextColor.GREEN));
         stand.setCustomNameVisible(true);
-        ItemStack bow = new ItemStack(Material.BOW);
-        Objects.requireNonNull(stand.getEquipment(), "tower equipment").setHelmet(bow);
+        ItemStack display = new ItemStack(TowerItemTagger.materialFor(placement.type()));
+        Objects.requireNonNull(stand.getEquipment(), "tower equipment").setHelmet(display);
     }
 
     private void finishPlacement(Player player, TowerRecord tower, UUID towerId) {
@@ -805,24 +816,26 @@ public final class TowerManager implements Listener, AutoCloseable {
                             .orElse(true)) {
                 continue;
             }
-            if (tower.type() != TowerType.ARROW) {
-                continue;
-            }
             Optional<LivingEntity> target = findTarget(tower, stand);
             if (target.isEmpty()) {
                 continue;
             }
             CoreAttackSchedule schedule = attackSchedules.computeIfAbsent(
                     tower.id(), ignored -> new CoreAttackSchedule(
-                            settings.towers().arrowAttackIntervalTicks()));
+                            settings.towers().attackIntervalTicksFor(tower.type())));
             if (schedule.tryClaim(currentTick)) {
-                target.orElseThrow().damage(settings.towers().arrowDamage(), stand);
+                if (tower.type() == TowerType.ARROW) {
+                    target.orElseThrow().damage(
+                            settings.towers().damageFor(tower.type()), stand);
+                } else if (tower.type() == TowerType.CANNON) {
+                    damageCannonTargets(tower, stand, target.orElseThrow());
+                }
             }
         }
     }
 
     private Optional<LivingEntity> findTarget(TowerRecord tower, ArmorStand stand) {
-        double range = settings.towers().arrowRange();
+        double range = settings.towers().rangeFor(tower.type());
         List<LivingEntity> candidates = new ArrayList<>();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         Map<UUID, TaggedEnemy> eventTags = new HashMap<>();
@@ -832,6 +845,7 @@ public final class TowerManager implements Listener, AutoCloseable {
                     || !monster.isValid()
                     || monster.isDead()
                     || entityTagger.read(entity).isPresent()
+                    || entity.getLocation().distanceSquared(stand.getLocation()) > range * range
                     || !stand.hasLineOfSight(entity)) {
                 continue;
             }
@@ -875,6 +889,31 @@ public final class TowerManager implements Listener, AutoCloseable {
         };
         candidates.sort(priorityComparator);
         return candidates.stream().findFirst();
+    }
+
+    private void damageCannonTargets(
+            TowerRecord tower,
+            ArmorStand stand,
+            LivingEntity center) {
+        double radius = settings.towers().cannonSplashRadius();
+        EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        for (Entity entity : center.getWorld().getNearbyEntities(
+                center.getLocation(), radius, radius, radius)) {
+            if (!(entity instanceof Monster monster)
+                    || !monster.isValid()
+                    || monster.isDead()
+                    || entityTagger.read(entity).isPresent()
+                    || entity.getLocation().distanceSquared(center.getLocation()) > radius * radius
+                    || !stand.hasLineOfSight(entity)) {
+                continue;
+            }
+            Optional<TaggedEnemy> tagged = eventTagger.read(entity);
+            if (tagged.isPresent() && !sessions.mayAffectFromTower(
+                    tagged.orElseThrow(), tower.teamId())) {
+                continue;
+            }
+            monster.damage(settings.towers().cannonDamage(), stand);
+        }
     }
 
     private boolean touchesTower(Block block) {

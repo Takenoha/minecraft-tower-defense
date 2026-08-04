@@ -189,6 +189,10 @@ final class PluginSettingsMapReader {
             if (arrow == null) {
                 arrow = Map.of();
             }
+            Map<?, ?> cannon = nestedSection(values, "towers", "cannon");
+            if (cannon == null) {
+                cannon = Map.of();
+            }
             return new TowerSettings(
                     integerOrDefault(
                             values,
@@ -219,7 +223,27 @@ final class PluginSettingsMapReader {
                             arrow,
                             "towers.arrow",
                             "attack-interval-ticks",
-                            TowerSettings.DEFAULT_ARROW_ATTACK_INTERVAL_TICKS));
+                            TowerSettings.DEFAULT_ARROW_ATTACK_INTERVAL_TICKS),
+                    integerOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "damage",
+                            TowerSettings.DEFAULT_CANNON_DAMAGE),
+                    decimalOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "range",
+                            TowerSettings.DEFAULT_CANNON_RANGE),
+                    integerOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "attack-interval-ticks",
+                            TowerSettings.DEFAULT_CANNON_ATTACK_INTERVAL_TICKS),
+                    decimalOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "splash-radius",
+                            TowerSettings.DEFAULT_CANNON_SPLASH_RADIUS));
         }
 
         private Map<?, ?> nestedSection(Map<?, ?> parent, String parentPath, String name) {
