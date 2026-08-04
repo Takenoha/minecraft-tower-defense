@@ -5,7 +5,8 @@ import java.util.Objects;
 
 /** Stable tower kind identifiers stored in the item PDC and SQLite rows. */
 public enum TowerType {
-    ARROW("arrow", "アロー");
+    ARROW("arrow", "アロー"),
+    CANNON("cannon", "キャノン");
 
     private final String id;
     private final String displayName;

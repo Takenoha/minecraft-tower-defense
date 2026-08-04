@@ -1,9 +1,11 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.takenoha.towerdefense.config.TowerSettings;
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -72,5 +74,143 @@ final class TowerPersistenceTest {
 
         assertEquals(TowerPlacementState.ROLLED_BACK, rolledBack.state());
         assertTrue(towers.loadAllTowers().isEmpty());
+    }
+
+    @Test
+    void preparedRemovalIsIdempotentlyAppliedAndReloadable() {
+        Database database = new Database(temporaryDirectory.resolve("removal.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+        TowerRemoval removal = TowerRemoval.prepared(
+                UUID.randomUUID(), installed, ownerId, NOW.plusSeconds(2L));
+
+        assertEquals(removal, towers.prepareTowerRemoval(removal));
+        assertEquals(removal, towers.prepareTowerRemoval(removal));
+
+        TowerRemoval applied = towers.applyTowerRemoval(
+                removal.operationId(), NOW.plusSeconds(3L));
+        assertEquals(applied, towers.applyTowerRemoval(
+                removal.operationId(), NOW.plusSeconds(4L)));
+        assertTrue(towers.findTower(installed.id()).isEmpty());
+        assertTrue(towers.loadPendingTowerRemovals().isEmpty());
+        assertEquals(java.util.List.of(applied), towers.loadAppliedTowerRemovals());
+    }
+
+    @Test
+    void rolledBackRemovalKeepsInstalledTower() {
+        Database database = new Database(temporaryDirectory.resolve("removal-rollback.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+        TowerRemoval removal = TowerRemoval.prepared(
+                UUID.randomUUID(), installed, ownerId, NOW.plusSeconds(2L));
+        towers.prepareTowerRemoval(removal);
+
+        TowerRemoval rolledBack = towers.rollbackTowerRemoval(
+                removal.operationId(), NOW.plusSeconds(3L)).orElseThrow();
+
+        assertEquals(TowerRemovalState.ROLLED_BACK, rolledBack.state());
+        assertEquals(installed, towers.findTower(installed.id()).orElseThrow());
+        assertTrue(towers.loadPendingTowerRemovals().isEmpty());
+        assertTrue(towers.loadAppliedTowerRemovals().isEmpty());
+    }
+
+    @Test
+    void targetPrioritySurvivesPlacementUpdateAndReload() {
+        Path databaseFile = temporaryDirectory.resolve("priority.sqlite");
+        Database database = new Database(databaseFile);
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        TowerPlacement placement = TowerPlacement.prepared(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                ownerId,
+                teamId,
+                UUID.randomUUID(),
+                5,
+                65,
+                5,
+                TowerType.CANNON,
+                1,
+                TowerTargetPriority.BOSS,
+                NOW);
+        towers.prepareTowerPlacement(placement, TowerSettings.defaults());
+        TowerRecord installed = towers.applyTowerPlacement(
+                placement.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                NOW.plusSeconds(1L));
+        assertEquals(TowerType.CANNON, installed.type());
+        assertEquals(TowerTargetPriority.BOSS, installed.targetPriority());
+
+        TowerRecord updated = towers.updateTargetPriority(
+                installed.id(),
+                ownerId,
+                TowerTargetPriority.HEALTH_LOW,
+                NOW.plusSeconds(2L));
+        assertEquals(TowerTargetPriority.HEALTH_LOW, updated.targetPriority());
+        assertEquals(
+                TowerTargetPriority.HEALTH_LOW,
+                new TowerRepository(new Database(databaseFile))
+                        .findTower(installed.id())
+                        .orElseThrow()
+                        .targetPriority());
+    }
+
+    @Test
+    void targetPriorityUpdateRequiresTeamMembership() {
+        Database database = new Database(temporaryDirectory.resolve("priority-auth.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.updateTargetPriority(
+                        installed.id(),
+                        UUID.randomUUID(),
+                        TowerTargetPriority.BOSS,
+                        NOW.plusSeconds(2L)));
+    }
+
+    private static TowerRecord installTower(
+            TowerRepository towers,
+            UUID teamId,
+            UUID ownerId,
+            Instant preparedAt) {
+        TowerPlacement placement = TowerPlacement.prepared(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                ownerId,
+                teamId,
+                UUID.randomUUID(),
+                10,
+                65,
+                -4,
+                TowerType.ARROW,
+                1,
+                preparedAt);
+        towers.prepareTowerPlacement(placement, TowerSettings.defaults());
+        return towers.applyTowerPlacement(
+                placement.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                preparedAt.plusSeconds(1L));
     }
 }

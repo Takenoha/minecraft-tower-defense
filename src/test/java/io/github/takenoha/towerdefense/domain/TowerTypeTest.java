@@ -13,6 +13,12 @@ final class TowerTypeTest {
     }
 
     @Test
+    void cannonHasStablePersistenceId() {
+        assertEquals(TowerType.CANNON, TowerType.fromId("CANNON"));
+        assertEquals("cannon", TowerType.CANNON.id());
+    }
+
+    @Test
     void unknownTypeIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> TowerType.fromId("unknown"));
     }

@@ -79,6 +79,31 @@ public final class PluginSettingsValidator {
                 towers.arrowAttackIntervalTicks(),
                 unreadablePaths,
                 violations);
+        requirePositive("towers.cannon.damage", towers.cannonDamage(), unreadablePaths, violations);
+        requireFinite("towers.cannon.range", towers.cannonRange(), unreadablePaths, violations);
+        if (isReadable("towers.cannon.range", unreadablePaths)
+                && Double.isFinite(towers.cannonRange())
+                && towers.cannonRange() <= 0.0d) {
+            violations.add(
+                    "towers.cannon.range: must be > 0 (was " + towers.cannonRange() + ")");
+        }
+        requirePositive(
+                "towers.cannon.attack-interval-ticks",
+                towers.cannonAttackIntervalTicks(),
+                unreadablePaths,
+                violations);
+        requireFinite(
+                "towers.cannon.splash-radius",
+                towers.cannonSplashRadius(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.cannon.splash-radius", unreadablePaths)
+                && Double.isFinite(towers.cannonSplashRadius())
+                && towers.cannonSplashRadius() <= 0.0d) {
+            violations.add(
+                    "towers.cannon.splash-radius: must be > 0 (was "
+                            + towers.cannonSplashRadius() + ")");
+        }
     }
 
     private static void validateTerrainMutation(

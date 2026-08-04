@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.util.List;
 import java.util.Objects;
@@ -24,6 +25,7 @@ public final class TowerItemTagger {
     private final NamespacedKey towerIdKey;
     private final NamespacedKey typeKey;
     private final NamespacedKey levelKey;
+    private final NamespacedKey targetPriorityKey;
 
     public TowerItemTagger(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
@@ -32,29 +34,49 @@ public final class TowerItemTagger {
         towerIdKey = new NamespacedKey(plugin, "tower_id");
         typeKey = new NamespacedKey(plugin, "tower_type");
         levelKey = new NamespacedKey(plugin, "tower_level");
+        targetPriorityKey = new NamespacedKey(plugin, "tower_target_priority");
     }
 
     /** Template used by the first Arrow tower recipe; a craft event fills its UUID. */
     public ItemStack recipeTemplate() {
-        ItemStack item = new ItemStack(Material.BOW);
+        return recipeTemplate(TowerType.ARROW);
+    }
+
+    /** Creates a recipe result template for the supplied tower type. */
+    public ItemStack recipeTemplate(TowerType type) {
+        Objects.requireNonNull(type, "type");
+        ItemStack item = new ItemStack(materialFor(type));
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(markerKey, PersistentDataType.BYTE, (byte) 1);
         data.set(versionKey, PersistentDataType.INTEGER, ITEM_VERSION);
-        data.set(typeKey, PersistentDataType.STRING, TowerType.ARROW.id());
+        data.set(typeKey, PersistentDataType.STRING, type.id());
         data.set(levelKey, PersistentDataType.INTEGER, 1);
-        setDisplay(meta, TowerType.ARROW, 1);
+        data.set(
+                targetPriorityKey,
+                PersistentDataType.STRING,
+                TowerTargetPriority.CORE_NEAREST.id());
+        setDisplay(meta, type, 1, TowerTargetPriority.CORE_NEAREST);
         item.setItemMeta(meta);
         return item;
     }
 
     public ItemStack create(UUID towerId, TowerType type, int individualLevel) {
+        return create(towerId, type, individualLevel, TowerTargetPriority.CORE_NEAREST);
+    }
+
+    public ItemStack create(
+            UUID towerId,
+            TowerType type,
+            int individualLevel,
+            TowerTargetPriority targetPriority) {
         Objects.requireNonNull(towerId, "towerId");
         Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(targetPriority, "targetPriority");
         if (individualLevel <= 0) {
             throw new IllegalArgumentException("individualLevel must be positive");
         }
-        ItemStack item = new ItemStack(Material.BOW);
+        ItemStack item = new ItemStack(materialFor(type));
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(markerKey, PersistentDataType.BYTE, (byte) 1);
@@ -62,36 +84,53 @@ public final class TowerItemTagger {
         data.set(towerIdKey, PersistentDataType.STRING, towerId.toString());
         data.set(typeKey, PersistentDataType.STRING, type.id());
         data.set(levelKey, PersistentDataType.INTEGER, individualLevel);
-        setDisplay(meta, type, individualLevel);
+        data.set(targetPriorityKey, PersistentDataType.STRING, targetPriority.id());
+        setDisplay(meta, type, individualLevel, targetPriority);
         item.setItemMeta(meta);
         item.setAmount(1);
         return item;
     }
 
     public Optional<TowerItemIdentity> read(ItemStack item) {
-        if (item == null || item.getType() != Material.BOW || item.getAmount() != 1) {
+        if (item == null || item.getAmount() != 1) {
             return Optional.empty();
         }
         ItemMeta meta = item.getItemMeta();
-        return meta == null ? Optional.empty() : read(meta.getPersistentDataContainer());
+        if (meta == null) {
+            return Optional.empty();
+        }
+        Optional<TowerType> type = readType(meta.getPersistentDataContainer());
+        return type.isPresent() && item.getType() == materialFor(type.orElseThrow())
+                ? read(meta.getPersistentDataContainer())
+                : Optional.empty();
     }
 
     public boolean isRecipeTemplate(ItemStack item) {
-        if (item == null || item.getType() != Material.BOW || item.getAmount() != 1) {
-            return false;
+        return recipeType(item).isPresent();
+    }
+
+    /** Returns the type encoded in a recipe template, if it is still a valid template. */
+    public Optional<TowerType> recipeType(ItemStack item) {
+        if (item == null || item.getAmount() != 1) {
+            return Optional.empty();
         }
         ItemMeta meta = item.getItemMeta();
         if (meta == null) {
-            return false;
+            return Optional.empty();
         }
         PersistentDataContainer data = meta.getPersistentDataContainer();
-        return data.get(markerKey, PersistentDataType.BYTE) != null
-                && data.get(markerKey, PersistentDataType.BYTE) == 1
-                && data.get(versionKey, PersistentDataType.INTEGER) != null
-                && data.get(versionKey, PersistentDataType.INTEGER) == ITEM_VERSION
-                && data.get(towerIdKey, PersistentDataType.STRING) == null
-                && data.get(typeKey, PersistentDataType.STRING) != null
-                && data.get(levelKey, PersistentDataType.INTEGER) != null;
+        if (data.get(markerKey, PersistentDataType.BYTE) == null
+                || data.get(markerKey, PersistentDataType.BYTE) != 1
+                || data.get(versionKey, PersistentDataType.INTEGER) == null
+                || data.get(versionKey, PersistentDataType.INTEGER) != ITEM_VERSION
+                || data.get(towerIdKey, PersistentDataType.STRING) != null
+                || data.get(levelKey, PersistentDataType.INTEGER) == null) {
+            return Optional.empty();
+        }
+        Optional<TowerType> type = readType(data);
+        return type.isPresent() && item.getType() == materialFor(type.orElseThrow())
+                ? type
+                : Optional.empty();
     }
 
     public boolean hasTowerId(ItemStack item, UUID towerId) {
@@ -110,17 +149,47 @@ public final class TowerItemTagger {
             return Optional.empty();
         }
         try {
+            String priority = data.get(targetPriorityKey, PersistentDataType.STRING);
             return Optional.of(new TowerItemIdentity(
-                    UUID.fromString(towerId), TowerType.fromId(type), level));
+                    UUID.fromString(towerId),
+                    TowerType.fromId(type),
+                    level,
+                    priority == null
+                            ? TowerTargetPriority.CORE_NEAREST
+                            : TowerTargetPriority.fromId(priority)));
         } catch (IllegalArgumentException invalidIdentity) {
             return Optional.empty();
         }
     }
 
-    private static void setDisplay(ItemMeta meta, TowerType type, int level) {
+    private Optional<TowerType> readType(PersistentDataContainer data) {
+        String type = data.get(typeKey, PersistentDataType.STRING);
+        if (type == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(TowerType.fromId(type));
+        } catch (IllegalArgumentException invalidType) {
+            return Optional.empty();
+        }
+    }
+
+    public static Material materialFor(TowerType type) {
+        return switch (Objects.requireNonNull(type, "type")) {
+            case ARROW -> Material.BOW;
+            case CANNON -> Material.DISPENSER;
+        };
+    }
+
+    private static void setDisplay(
+            ItemMeta meta,
+            TowerType type,
+            int level,
+            TowerTargetPriority targetPriority) {
         meta.displayName(Component.text(type.displayName() + "タワー", NamedTextColor.GREEN));
         meta.lore(List.of(
                 Component.text("個体Lv" + level, NamedTextColor.GRAY),
+                Component.text("対象優先: " + targetPriority.displayName(), NamedTextColor.GRAY),
                 Component.text("設置後に自動でイベント敵を攻撃します", NamedTextColor.GRAY),
                 Component.text("固有ID付き・1個のみ", NamedTextColor.DARK_GRAY)));
     }

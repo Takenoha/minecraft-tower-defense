@@ -7,9 +7,9 @@ created: 2026-08-04
 
 # Tower foundation scope
 
-This slice adds the common durable tower boundary and one usable tower type: the Arrow tower.
-It is intentionally bounded so the remaining balance and research decisions do not get hidden in
-an incomplete seven-type implementation.
+This document records the common durable tower boundary and the first usable tower type: Arrow.
+The later Cannon extension is documented separately so the remaining balance and research
+decisions do not get hidden in an incomplete seven-type implementation.
 
 ## Included
 
@@ -34,9 +34,10 @@ an incomplete seven-type implementation.
 
 ## Deliberate follow-up slices
 
-The six other initial types (Cannon, Frost, Lightning, Support, Sniper, Flame), target-priority
-GUI, tower removal/move, upgrades, research gates, enemy destruction, economy/rewards, and full
-manual multi-player verification are not part of this PR. The item recipe and Arrow balance values
-are configuration-backed and can be reviewed before the next type is added.
+The five other initial types (Frost, Lightning, Support, Sniper, Flame), upgrades, research
+gates, enemy destruction, economy/rewards, and full manual multi-player verification are not part
+of the foundation slice. Target-priority GUI and tower removal/move are covered by the retrieval
+slice, while Cannon is covered by `TOWER_CANNON_SCOPE.md`. The item recipes and tower balance
+values are configuration-backed.
 
 The three terrain-mutation flags remain `false`; this slice performs no world block mutation.
