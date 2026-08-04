@@ -8,6 +8,8 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
 import io.github.takenoha.towerdefense.persistence.TowerPlacement;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
+import io.github.takenoha.towerdefense.persistence.TowerRemoval;
+import io.github.takenoha.towerdefense.persistence.TowerRemovalState;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.CoreAttackSchedule;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
@@ -58,6 +60,8 @@ import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -69,7 +73,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.persistence.PersistentDataType;
 
-/** Main-thread physical bridge and combat loop for the first Arrow tower slice. */
+/** Main-thread physical bridge, management flow, and combat loop for installed towers. */
 public final class TowerManager implements Listener, AutoCloseable {
     private final JavaPlugin plugin;
     private final PluginSettings settings;
@@ -84,6 +88,8 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final CombatArea combatArea;
     private final NamespacedKey towerDamageKey;
     private final Set<UUID> placementInFlight = new HashSet<>();
+    private final Set<UUID> removalInFlight = new HashSet<>();
+    private final Set<UUID> pendingRemovalTowerIds = new HashSet<>();
     private final Set<UUID> appliedTowerIds;
     private final Map<UUID, CoreAttackSchedule> attackSchedules = new HashMap<>();
 
@@ -119,6 +125,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                 settings.combat().coreGap());
         towerDamageKey = new NamespacedKey(plugin, "tower_damage_touched");
         appliedTowerIds = new HashSet<>(repository.loadAppliedTowerIds());
+        for (TowerRemoval removal : repository.loadPendingTowerRemovals()) {
+            pendingRemovalTowerIds.add(removal.towerId());
+        }
     }
 
     /** Registers the provisional first-slice Arrow recipe. */
@@ -139,6 +148,39 @@ public final class TowerManager implements Listener, AutoCloseable {
                 databaseExecutor.execute(() -> repository.rollbackTowerPlacement(
                         placement.operationId(), Instant.now()));
             }
+        }
+    }
+
+    /** Rolls back removal reservations left before their physical item handoff completed. */
+    public void recoverPreparedRemovals() {
+        for (TowerRemoval removal : repository.loadPendingTowerRemovals()) {
+            pendingRemovalTowerIds.add(removal.towerId());
+            databaseExecutor.submit(() -> repository.rollbackTowerRemoval(
+                            removal.operationId(), Instant.now()))
+                    .whenComplete((result, failure) -> runOnMainThread(() -> {
+                        if (failure != null || result.isEmpty()) {
+                            plugin.getLogger().log(
+                                    java.util.logging.Level.SEVERE,
+                                    "Could not recover prepared tower removal "
+                                            + removal.operationId(),
+                                    failure);
+                            return;
+                        }
+                        TowerRemoval outcome = result.orElseThrow();
+                        if (outcome.state() == TowerRemovalState.ROLLED_BACK) {
+                            removeMatchingItems(removal.towerId());
+                            pendingRemovalTowerIds.remove(removal.towerId());
+                        } else if (outcome.state() == TowerRemovalState.APPLIED) {
+                            finishAppliedRemoval(outcome);
+                        }
+                    }));
+        }
+    }
+
+    /** Finishes the physical side of removals that committed immediately before a restart. */
+    public void recoverAppliedRemovals() {
+        for (TowerRemoval removal : repository.loadAppliedTowerRemovals()) {
+            removePhysicalEntity(removal.entityId(), removal.towerId());
         }
     }
 
@@ -167,6 +209,9 @@ public final class TowerManager implements Listener, AutoCloseable {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
         reconcileAppliedItems(event.getPlayer());
+        for (UUID towerId : pendingRemovalTowerIds) {
+            removeMatchingItemsFromPlayer(event.getPlayer(), towerId);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -187,7 +232,41 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteractEntity(PlayerInteractEntityEvent event) {
-        if (entityTagger.read(event.getRightClicked()).isPresent()) {
+        Optional<TowerEntityIdentity> identity = entityTagger.read(event.getRightClicked());
+        if (identity.isEmpty()) {
+            return;
+        }
+        event.setCancelled(true);
+        if (event.getHand() == EquipmentSlot.HAND) {
+            openTowerGui(
+                    event.getPlayer(),
+                    identity.orElseThrow(),
+                    event.getRightClicked().getUniqueId());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getView().getTopInventory().getHolder()
+                instanceof TowerManagementInventoryHolder holder)) {
+            return;
+        }
+        event.setCancelled(true);
+        if (event.getRawSlot() >= event.getView().getTopInventory().getSize()
+                || !(event.getWhoClicked() instanceof Player player)) {
+            return;
+        }
+        if (event.getRawSlot() == TowerManagementGui.CLOSE_SLOT) {
+            player.closeInventory();
+        } else if (event.getRawSlot() == TowerManagementGui.REMOVE_SLOT) {
+            beginRemoval(player, holder.towerId());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (event.getView().getTopInventory().getHolder()
+                instanceof TowerManagementInventoryHolder) {
             event.setCancelled(true);
         }
     }
@@ -291,6 +370,180 @@ public final class TowerManager implements Listener, AutoCloseable {
                 }
             });
         }
+    }
+
+    private void openTowerGui(
+            Player player,
+            TowerEntityIdentity identity,
+            UUID physicalEntityId) {
+        TowerRecord cached = towers.find(identity.towerId()).orElse(null);
+        if (cached == null || !cached.entityId().equals(physicalEntityId)) {
+            if (cached == null) {
+                player.sendMessage(Component.text(
+                        "このタワーは永続データに存在しません。", NamedTextColor.RED));
+            }
+            return;
+        }
+        databaseExecutor.submit(() -> {
+            TowerRecord tower = repository.findTower(identity.towerId()).orElseThrow(
+                    () -> new IllegalStateException("このタワーは永続データに存在しません"));
+            if (!tower.entityId().equals(physicalEntityId)) {
+                throw new IllegalStateException("タワー本体の識別情報が一致しません");
+            }
+            var team = defenseRepository.findTeam(tower.teamId()).orElseThrow(
+                    () -> new IllegalStateException("タワーのチームが永続データに存在しません"));
+            if (!team.members().contains(player.getUniqueId())) {
+                throw new IllegalStateException("このタワーを操作できるチームメンバーではありません");
+            }
+            return tower;
+        }).whenComplete((tower, failure) -> runOnMainThread(() -> {
+            if (failure != null || !player.isOnline()) {
+                if (failure == null) {
+                    return;
+                }
+                player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            boolean canRemove = !sessions.hasActiveSession();
+            String reason = canRemove
+                    ? ""
+                    : "防衛戦開始後は回収・移設できません。";
+            player.openInventory(TowerManagementGui.create(
+                    tower,
+                    canRemove,
+                    reason));
+        }));
+    }
+
+    private void beginRemoval(Player player, UUID towerId) {
+        if (sessions.hasActiveSession()) {
+            player.sendMessage(Component.text(
+                    "防衛戦開始後はタワーを回収・移設できません。", NamedTextColor.RED));
+            return;
+        }
+        if (!removalInFlight.add(towerId)) {
+            player.sendMessage(Component.text("タワー回収を処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        TowerRecord tower = towers.find(towerId).orElse(null);
+        if (tower == null || !currentTowerEntityMatches(tower)) {
+            removalInFlight.remove(towerId);
+            player.sendMessage(Component.text(
+                    "タワー本体を確認できないため回収を中止しました。", NamedTextColor.RED));
+            return;
+        }
+        player.closeInventory();
+        TowerRemoval request = TowerRemoval.prepared(
+                UUID.randomUUID(), tower, player.getUniqueId(), Instant.now());
+        player.sendMessage(Component.text(
+                "タワー回収を準備しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> repository.prepareTowerRemoval(request))
+                .whenComplete((prepared, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        finishRemoval(player, towerId,
+                                "タワーを回収できません: " + rootMessage(failure));
+                        return;
+                    }
+                    if (prepared.state() != TowerRemovalState.PREPARED
+                            || sessions.hasActiveSession()
+                            || !currentTowerEntityMatches(tower)
+                            || !player.isOnline()) {
+                        rollbackRemoval(
+                                player,
+                                prepared,
+                                "回収前に対象または防衛フェーズが変わったため取り消しました。");
+                        return;
+                    }
+                    removeMatchingItems(towerId);
+                    if (!giveOrDrop(player, itemTagger.create(
+                            tower.id(), tower.type(), tower.individualLevel()))) {
+                        rollbackRemoval(
+                                player,
+                                prepared,
+                                "回収アイテムを返却できなかったため取り消しました。");
+                        return;
+                    }
+                    pendingRemovalTowerIds.add(towerId);
+                    databaseExecutor.submit(() -> repository.applyTowerRemoval(
+                                    prepared.operationId(), Instant.now()))
+                            .whenComplete((applied, applyFailure) -> runOnMainThread(() -> {
+                                if (applyFailure != null) {
+                                    rollbackRemoval(
+                                            player,
+                                            prepared,
+                                            "回収を永続化できなかったため取り消しました: "
+                                                    + rootMessage(applyFailure));
+                                    return;
+                                }
+                                finishAppliedRemoval(applied);
+                                player.sendMessage(Component.text(
+                                        "タワーを回収しました。アイテムを別の場所へ設置できます。",
+                                        NamedTextColor.GREEN));
+                            }));
+                }));
+    }
+
+    private void rollbackRemoval(
+            Player player,
+            TowerRemoval removal,
+            String message) {
+        databaseExecutor.submit(() -> repository.rollbackTowerRemoval(
+                        removal.operationId(), Instant.now()))
+                .whenComplete((result, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.SEVERE,
+                                "Could not roll back tower removal " + removal.operationId(),
+                                failure);
+                        player.sendMessage(Component.text(
+                                "タワー回収の復旧を保留しています。管理者へ連絡してください。",
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (result.isEmpty()) {
+                        plugin.getLogger().severe(
+                                "Tower removal operation disappeared: " + removal.operationId());
+                        player.sendMessage(Component.text(
+                                "タワー回収の復旧状態を確認できません。管理者へ連絡してください。",
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    TowerRemoval outcome = result.orElseThrow();
+                    if (outcome.state() == TowerRemovalState.APPLIED) {
+                        finishAppliedRemoval(outcome);
+                        player.sendMessage(Component.text(
+                                "タワー回収は完了しています。アイテムを保持してください。",
+                                NamedTextColor.GREEN));
+                        return;
+                    }
+                    removeMatchingItems(removal.towerId());
+                    pendingRemovalTowerIds.remove(removal.towerId());
+                    removalInFlight.remove(removal.towerId());
+                    player.sendMessage(Component.text(message, NamedTextColor.RED));
+                }));
+    }
+
+    private void finishAppliedRemoval(TowerRemoval removal) {
+        removePhysicalEntity(removal.entityId(), removal.towerId());
+        towers.unregister(removal.towerId());
+        appliedTowerIds.remove(removal.towerId());
+        attackSchedules.remove(removal.towerId());
+        pendingRemovalTowerIds.remove(removal.towerId());
+        removalInFlight.remove(removal.towerId());
+    }
+
+    private void finishRemoval(Player player, UUID towerId, String message) {
+        removalInFlight.remove(towerId);
+        player.sendMessage(Component.text(message, NamedTextColor.RED));
+    }
+
+    private boolean currentTowerEntityMatches(TowerRecord tower) {
+        Entity entity = Bukkit.getEntity(tower.entityId());
+        return entity != null && entityTagger.read(entity).map(identity ->
+                identity.towerId().equals(tower.id())
+                        && identity.teamId().equals(tower.teamId())
+                        && identity.type() == tower.type()
+                        && identity.individualLevel() == tower.individualLevel()).orElse(false);
     }
 
     private void beginPlacement(
@@ -566,6 +819,23 @@ public final class TowerManager implements Listener, AutoCloseable {
         return true;
     }
 
+    private void removePhysicalEntity(UUID entityId, UUID towerId) {
+        Entity direct = Bukkit.getEntity(entityId);
+        if (direct != null && entityTagger.read(direct).map(identity ->
+                identity.towerId().equals(towerId)).orElse(false)) {
+            direct.remove();
+            return;
+        }
+        for (World world : Bukkit.getWorlds()) {
+            for (Entity entity : world.getEntities()) {
+                if (entityTagger.read(entity).map(identity ->
+                        identity.towerId().equals(towerId)).orElse(false)) {
+                    entity.remove();
+                }
+            }
+        }
+    }
+
     private void reconcileAppliedItems(Player player) {
         for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
             ItemStack item = player.getInventory().getItem(slot);
@@ -579,6 +849,7 @@ public final class TowerManager implements Listener, AutoCloseable {
     private void removeMatchingItems(UUID towerId) {
         for (Player player : Bukkit.getOnlinePlayers()) {
             reconcileAppliedItems(player);
+            removeMatchingItemsFromPlayer(player, towerId);
         }
         for (World world : Bukkit.getWorlds()) {
             for (Item item : world.getEntitiesByClass(Item.class)) {
@@ -587,6 +858,26 @@ public final class TowerManager implements Listener, AutoCloseable {
                 }
             }
         }
+    }
+
+    private void removeMatchingItemsFromPlayer(Player player, UUID towerId) {
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (itemTagger.hasTowerId(item, towerId)) {
+                player.getInventory().setItem(slot, null);
+            }
+        }
+    }
+
+    private boolean giveOrDrop(Player player, ItemStack item) {
+        if (!player.isOnline()) {
+            return false;
+        }
+        Map<Integer, ItemStack> leftovers = player.getInventory().addItem(item);
+        for (ItemStack leftover : leftovers.values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+        }
+        return true;
     }
 
     private void runOnMainThread(Runnable action) {

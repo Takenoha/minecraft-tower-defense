@@ -134,6 +134,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 towerEntityTagger);
         towerManager.registerRecipe();
         towerManager.recoverPreparedPlacements();
+        towerManager.recoverPreparedRemovals();
+        towerManager.recoverAppliedRemovals();
         getServer().getPluginManager().registerEvents(towerManager, this);
 
         CoreItemListener coreItems = new CoreItemListener(

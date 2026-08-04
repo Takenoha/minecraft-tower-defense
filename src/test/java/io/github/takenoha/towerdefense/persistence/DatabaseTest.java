@@ -43,6 +43,7 @@ final class DatabaseTest {
         assertTrue(columnExists(reopened, "event_block_changes", "expected_after_tile_nbt"));
         assertTrue(columnExists(reopened, "event_reward_queue", "team_claim_deadline"));
         assertTrue(tableExists(reopened, "management_operations"));
+        assertTrue(tableExists(reopened, "tower_removal_operations"));
     }
 
     private static void assertConnectionConfiguration(Database database) throws SQLException {

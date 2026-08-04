@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 13;
+    public static final int CURRENT_VERSION = 14;
 
     private SchemaMigrator() {
     }
@@ -75,6 +75,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 13) {
                     applyVersionThirteen(connection);
                     recordMigration(connection, 13);
+                }
+                if (installedVersion < 14) {
+                    applyVersionFourteen(connection);
+                    recordMigration(connection, 14);
                 }
                 return null;
             });
@@ -796,6 +800,42 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_placement_operations_state_idx
                     ON tower_placement_operations(state, prepared_at)
+                    """);
+        }
+    }
+
+    private static void applyVersionFourteen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE tower_removal_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL UNIQUE,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN ('arrow')),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        entity_id TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_removal_operations_state_idx
+                    ON tower_removal_operations(state, prepared_at)
                     """);
         }
     }
