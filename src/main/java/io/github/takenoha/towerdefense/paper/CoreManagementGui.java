@@ -20,7 +20,9 @@ import org.bukkit.inventory.meta.ItemMeta;
 /** Builds the first player-facing core management GUI. */
 public final class CoreManagementGui {
     public static final int SIZE = 27;
+    public static final int TEAM_SLOT = 0;
     public static final int REPAIR_SLOT = 11;
+    public static final int START_SLOT = 13;
     public static final int RELOCATE_SLOT = 15;
     public static final int CLOSE_SLOT = 22;
 
@@ -60,7 +62,8 @@ public final class CoreManagementGui {
                 .sorted()
                 .map(CoreManagementGui::playerName)
                 .forEach(memberLore::add);
-        inventory.setItem(0, item(Material.PLAYER_HEAD, "チーム", memberLore, NamedTextColor.GREEN));
+        memberLore.add("クリックでチーム管理を開きます。");
+        inventory.setItem(TEAM_SLOT, item(Material.PLAYER_HEAD, "チーム", memberLore, NamedTextColor.GREEN));
 
         if (repairCost == null) {
             inventory.setItem(11, item(
@@ -79,6 +82,14 @@ public final class CoreManagementGui {
                             "クリックで材料を消費して修繕"),
                     NamedTextColor.YELLOW));
         }
+        inventory.setItem(START_SLOT, item(
+                Material.ENDER_EYE,
+                "ステージ1を開始",
+                List.of(
+                        "ステージ1の襲撃の印を1個消費します。",
+                        "防衛範囲内にいるチームメンバーが参加します。",
+                        "クリックで開始します。"),
+                NamedTextColor.GOLD));
         inventory.setItem(15, item(
                 Material.COMPASS,
                 "コアを移設",
