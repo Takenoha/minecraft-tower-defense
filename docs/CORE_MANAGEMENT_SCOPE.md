@@ -23,12 +23,14 @@ membership checks, and idempotent operation UUIDs.
 - Stage-1 `襲撃の印` start-item PDC, craft registration, core GUI/right-click start path, and the
   reserved → physical removal → consumed boundary are implemented in the follow-on
   `docs/RAID_SEAL_START_ITEM_SCOPE.md` slice.
+- The first team-management GUI slice is implemented in the follow-on
+  `docs/TEAM_MANAGEMENT_GUI_SCOPE.md` scope.
 
 ## Deliberate boundary
 
-This slice does not implement tower placement/upgrades, research purchasing or crystal delivery,
-or the complete invitation/member-management GUI. The progression row and management inventory
-remain foundations for those follow-on slices.
+This slice does not implement tower placement/upgrades or research purchasing/crystal delivery.
+The team-management GUI is intentionally a first slice: offline invitation records, team naming,
+chat controls, and arbitrary-player selection remain future work.
 Enemy terrain mutation remains fail-closed and its three activation flags are unchanged.
 
 ## Verification
