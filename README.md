@@ -66,6 +66,15 @@ This is deliberately not advertised as the complete game described by the produc
 The current Paper integration boundary exposes path-inspection and terrain-action counters through
 `/td admin status` and terminal logs for an isolated-server load test. The production terrain
 mutation policy remains disabled; see [the Paper load-test runbook](docs/PAPER_LOAD_TEST_RUNBOOK.md).
+Enemies that reach the core remain in the encounter and attack it every configured
+`core.attack-interval-ticks` ticks (20 ticks by default) until defeated or the event ends.
+
+The public core placement boundary is now available as a separate Paper interaction: craft the
+initial diamond/nether-star core item, then right-click a validated ordinary Overworld block to
+replace it with a tagged beacon. Placement is owner-only, blocked during an active defense, and
+protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, towers,
+research, start items, and team GUI remain later backlog; see
+[`docs/PUBLIC_CORE_PLACEMENT_SCOPE.md`](docs/PUBLIC_CORE_PLACEMENT_SCOPE.md).
 
 ## Build
 

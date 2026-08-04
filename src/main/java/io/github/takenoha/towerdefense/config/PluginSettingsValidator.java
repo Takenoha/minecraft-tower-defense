@@ -155,6 +155,11 @@ public final class PluginSettingsValidator {
                 core.damagePerEnemy(),
                 unreadablePaths,
                 violations);
+        requirePositive(
+                "core.attack-interval-ticks",
+                core.attackIntervalTicks(),
+                unreadablePaths,
+                violations);
     }
 
     private static void validateEnemies(

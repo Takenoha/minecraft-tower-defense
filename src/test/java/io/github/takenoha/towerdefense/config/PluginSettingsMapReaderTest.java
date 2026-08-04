@@ -28,6 +28,30 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsAConfiguredCoreAttackInterval() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "core").put("attack-interval-ticks", 40);
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(new CoreSettings(1_000, 20, 40), settings.core());
+    }
+
+    @Test
+    void rejectsANonPositiveCoreAttackInterval() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "core").put("attack-interval-ticks", 0);
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                () -> PluginSettings.from(values));
+
+        assertEquals(
+                List.of("core.attack-interval-ticks: must be > 0 (was 0)"),
+                exception.violations());
+    }
+
+    @Test
     void readsTeamRewardRetentionFromTheOptionalRewardsSection() {
         Map<String, Object> values = validValues();
         values.put("rewards", Map.of("team-queue-retention-seconds", 3_600));

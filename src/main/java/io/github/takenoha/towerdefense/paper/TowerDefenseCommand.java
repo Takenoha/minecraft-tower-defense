@@ -385,6 +385,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                         + " enemies=" + value.aliveEnemies() + "+" + value.pendingEnemies()
                         + " core=" + value.coreHitPoints() + "/" + value.coreMaximumHitPoints()
                         + (value.ending() ? " ending" : "")
+                        + " coreAttackers=" + value.coreAttackers()
+                        + " coreAttacks=" + value.coreAttackCount()
                         + " pathInspections=" + value.pathMetrics().inspectionCount()
                         + " pathFailures=" + value.pathMetrics().inspectionFailureCount()
                         + " pathAvgNanos=" + value.pathMetrics().averageInspectionNanos()

@@ -243,3 +243,13 @@ are true. Missing values remain false, malformed values reject configuration loa
 mandatory code-owned protected-material policy is unchanged. The checked-in defaults remain
 disabled because a real Paper server and tick/recovery test are still required. See
 `docs/TERRAIN_MUTATION_ACTIVATION_SCOPE.md`.
+
+## Public core physical-placement boundary
+
+The public core slice connects a unique shaped-recipe item to a protected Paper block replacement.
+It validates the ordinary Overworld target through the existing combat-area and third-party region
+checks, requires the team owner, rejects an active event, tags the resulting beacon, and records a
+schema-v11 `PREPARED`/`APPLIED`/`ROLLED_BACK` operation so startup recovery cannot leave an
+unaccounted physical replacement. A zero-health persisted core can be rebuilt with the same core
+UUID at a new valid position. Bound-core itemization/relocation, repair costs, towers, research,
+start items, and team GUI remain future slices. See `docs/PUBLIC_CORE_PLACEMENT_SCOPE.md`.

@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -23,11 +24,15 @@ final class DefenseRuntimeStatusTest {
                 3L,
                 100L,
                 100L,
+                2,
+                7L,
                 false,
                 null,
                 metrics);
 
         assertSame(metrics, status.pathMetrics());
+        assertEquals(2, status.coreAttackers());
+        assertEquals(7L, status.coreAttackCount());
     }
 
     @Test
