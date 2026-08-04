@@ -1165,6 +1165,45 @@ public final class DefenseRepository {
      * inserted when another event owns the lock.
      */
     public StartOutcome tryStart(StartRequest request) {
+        return tryStart(request, true);
+    }
+
+    /**
+     * Creates an event while leaving a supplied raid seal RESERVED. The Paper caller removes the
+     * matching physical item on the main thread and must then call
+     * {@link #consumeReservedStartSeal(UUID, UUID, Instant)}. A failed or interrupted event is
+     * eligible for the normal technical-refund transaction.
+     */
+    public StartOutcome tryStartReserved(StartRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (request.raidSealId().isEmpty()) {
+            throw new IllegalArgumentException("A reserved start requires a raid seal");
+        }
+        return tryStart(request, false);
+    }
+
+    /** Consumes the reservation after the corresponding physical token has been removed. */
+    public OperationOutcome consumeReservedStartSeal(
+            UUID eventId,
+            UUID sealId,
+            Instant consumedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(sealId, "sealId");
+        Objects.requireNonNull(consumedAt, "consumedAt");
+        try {
+            return database.inImmediateTransaction(connection ->
+                    RaidSealRepository.consumeReservedForStart(
+                            connection, eventId, sealId, consumedAt));
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The reserved raid seal conflicts with persisted data", exception);
+            }
+            throw failure("consume the reserved raid seal", exception);
+        }
+    }
+
+    private StartOutcome tryStart(StartRequest request, boolean consumeSeal) {
         Objects.requireNonNull(request, "request");
         try {
             return database.inImmediateTransaction(connection -> {
@@ -1192,7 +1231,11 @@ public final class DefenseRepository {
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
                 }
-                RaidSealRepository.consumeForStart(connection, request);
+                if (consumeSeal) {
+                    RaidSealRepository.consumeForStart(connection, request);
+                } else {
+                    RaidSealRepository.reserveForStart(connection, request);
+                }
                 return StartOutcome.STARTED;
             });
         } catch (SQLException exception) {

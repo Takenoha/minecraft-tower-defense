@@ -20,12 +20,15 @@ membership checks, and idempotent operation UUIDs.
   registry, durable position, and prepared-operation recovery are coordinated as one stop-window.
 - Idempotent relocation apply/rollback and startup recovery that remains `PREPARED` when either
   physical location has an unknown block state.
+- Stage-1 `襲撃の印` start-item PDC, craft registration, core GUI/right-click start path, and the
+  reserved → physical removal → consumed boundary are implemented in the follow-on
+  `docs/RAID_SEAL_START_ITEM_SCOPE.md` slice.
 
 ## Deliberate boundary
 
 This slice does not implement tower placement/upgrades, research purchasing or crystal delivery,
-the `襲撃の印` start-item reservation/consumption flow, or the complete invitation/member-management
-GUI. The progression row and management inventory are foundations for those follow-on slices.
+or the complete invitation/member-management GUI. The progression row and management inventory
+remain foundations for those follow-on slices.
 Enemy terrain mutation remains fail-closed and its three activation flags are unchanged.
 
 ## Verification
