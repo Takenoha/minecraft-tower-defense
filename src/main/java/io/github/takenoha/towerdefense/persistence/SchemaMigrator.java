@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 11;
+    public static final int CURRENT_VERSION = 12;
 
     private SchemaMigrator() {
     }
@@ -67,6 +67,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 11) {
                     applyVersionEleven(connection);
                     recordMigration(connection, 11);
+                }
+                if (installedVersion < 12) {
+                    applyVersionTwelve(connection);
+                    recordMigration(connection, 12);
                 }
                 return null;
             });
@@ -706,6 +710,33 @@ public final class SchemaMigrator {
                     CREATE UNIQUE INDEX core_placement_operations_applied_item_idx
                     ON core_placement_operations(item_id)
                     WHERE state = 'APPLIED'
+                    """);
+        }
+    }
+
+    private static void applyVersionTwelve(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE team_progress (
+                        team_id TEXT PRIMARY KEY REFERENCES teams(team_id) ON DELETE CASCADE,
+                        highest_cleared_level INTEGER NOT NULL CHECK (highest_cleared_level >= 0),
+                        unlocked_level INTEGER NOT NULL CHECK (unlocked_level > 0),
+                        research_points INTEGER NOT NULL CHECK (research_points >= 0),
+                        updated_at TEXT NOT NULL,
+                        CHECK (unlocked_level >= highest_cleared_level + 1
+                               OR highest_cleared_level = 9223372036854775807)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO team_progress(
+                        team_id, highest_cleared_level, unlocked_level, research_points, updated_at
+                    )
+                    SELECT team_id, 0, 1, 0, created_at FROM teams
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE core_placement_operations
+                    ADD COLUMN relocating_existing_core INTEGER NOT NULL DEFAULT 0
+                    CHECK (relocating_existing_core IN (0, 1))
                     """);
         }
     }

@@ -3,6 +3,7 @@ package io.github.takenoha.towerdefense.persistence;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
+import io.github.takenoha.towerdefense.domain.TeamProgress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -73,6 +74,15 @@ public final class DefenseRepository {
                     statement.setString(3, createdAt.toString());
                     statement.executeUpdate();
                 }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO team_progress(
+                            team_id, highest_cleared_level, unlocked_level, research_points, updated_at
+                        ) VALUES (?, 0, 1, 0, ?)
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, createdAt.toString());
+                    statement.executeUpdate();
+                }
                 return new TeamRecord(teamId, ownerPlayerId, Set.of(ownerPlayerId), createdAt);
             });
         } catch (SQLException exception) {
@@ -123,6 +133,16 @@ public final class DefenseRepository {
                 }
             }
         });
+    }
+
+    /** Loads the durable team progression snapshot used by repair quotes and future research. */
+    public TeamProgress loadTeamProgress(UUID teamId) {
+        Objects.requireNonNull(teamId, "teamId");
+        return read(
+                "load team progression",
+                connection -> loadTeamProgress(connection, teamId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Team " + teamId + " has no progression row")));
     }
 
     /** Adds a member when the actor is the owner and no event is active. */
@@ -603,9 +623,26 @@ public final class DefenseRepository {
                 }
                 requireNoActiveEvent(connection, "prepare a core placement");
                 TeamRecord team = requireTeam(connection, placement.teamId());
-                requireTeamOwner(team, placement.actorId());
+                if (placement.relocatingExistingCore()) {
+                    requireTeamMember(connection, placement.teamId(), placement.actorId());
+                } else {
+                    requireTeamOwner(team, placement.actorId());
+                }
                 Optional<CoreRecord> current = loadCoreByTeam(connection, placement.teamId());
-                if (placement.rebuildingDestroyedCore()) {
+                if (placement.relocatingExistingCore()) {
+                    CoreRecord existingCore = current.orElseThrow(
+                            () -> new PersistenceConflictException(
+                                    "The core to relocate does not exist"));
+                    if (!existingCore.id().equals(placement.coreId())
+                            || existingCore.currentHitPoints() != existingCore.maximumHitPoints()) {
+                        throw new PersistenceConflictException(
+                                "Only the team's full-health core can be relocated");
+                    }
+                    if (loadCore(connection, placement.coreId()).isEmpty()) {
+                        throw new PersistenceConflictException(
+                                "The core to relocate has no durable row");
+                    }
+                } else if (placement.rebuildingDestroyedCore()) {
                     CoreRecord existingCore = current.orElseThrow(
                             () -> new PersistenceConflictException(
                                     "The destroyed core to rebuild does not exist"));
@@ -658,9 +695,43 @@ public final class DefenseRepository {
                 }
                 requireNoActiveEvent(connection, "apply a core placement");
                 TeamRecord team = requireTeam(connection, placement.teamId());
-                requireTeamOwner(team, placement.actorId());
+                if (placement.relocatingExistingCore()) {
+                    requireTeamMember(connection, placement.teamId(), placement.actorId());
+                } else {
+                    requireTeamOwner(team, placement.actorId());
+                }
                 CoreRecord core;
-                if (placement.rebuildingDestroyedCore()) {
+                if (placement.relocatingExistingCore()) {
+                    CoreRecord existing = requireCore(connection, placement.coreId());
+                    if (existing.currentHitPoints() != existing.maximumHitPoints()
+                            || !existing.teamId().equals(placement.teamId())) {
+                        throw new PersistenceConflictException(
+                                "The team's core is no longer relocatable");
+                    }
+                    Optional<CoreRecord> nearby = findDistanceConflict(
+                            connection,
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockZ(),
+                            placement.minimumCoreDistance(),
+                            existing.id());
+                    if (nearby.isPresent()) {
+                        throw new PersistenceConflictException(
+                                "Core position is too close to core " + nearby.orElseThrow().id());
+                    }
+                    core = new CoreRecord(
+                            existing.id(),
+                            existing.teamId(),
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockY(),
+                            placement.blockZ(),
+                            existing.currentHitPoints(),
+                            existing.maximumHitPoints(),
+                            existing.createdAt(),
+                            appliedAt);
+                    updateCorePosition(connection, core);
+                } else if (placement.rebuildingDestroyedCore()) {
                     CoreRecord existing = requireCore(connection, placement.coreId());
                     if (existing.currentHitPoints() != 0L
                             || !existing.teamId().equals(placement.teamId())) {
@@ -717,6 +788,7 @@ public final class DefenseRepository {
                         placement.maximumHitPoints(),
                         placement.minimumCoreDistance(),
                         placement.rebuildingDestroyedCore(),
+                        placement.relocatingExistingCore(),
                         placement.previousBlockData(),
                         CorePlacementState.APPLIED,
                         placement.preparedAt(),
@@ -758,6 +830,7 @@ public final class DefenseRepository {
                         loaded.orElseThrow().maximumHitPoints(),
                         loaded.orElseThrow().minimumCoreDistance(),
                         loaded.orElseThrow().rebuildingDestroyedCore(),
+                        loaded.orElseThrow().relocatingExistingCore(),
                         loaded.orElseThrow().previousBlockData(),
                         CorePlacementState.ROLLED_BACK,
                         loaded.orElseThrow().preparedAt(),
@@ -791,6 +864,30 @@ public final class DefenseRepository {
                 }
             }
             return List.copyOf(itemIds);
+        });
+    }
+
+    /** Loads the last applied placement ledger for a core's physical source block. */
+    public Optional<CorePlacement> findAppliedCorePlacementByCore(UUID coreId) {
+        Objects.requireNonNull(coreId, "coreId");
+        return read("load a core's applied placement", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, max_hp, minimum_core_distance,
+                           rebuilding_destroyed_core, relocating_existing_core,
+                           previous_block_data, state, prepared_at, applied_at, rolled_back_at
+                    FROM core_placement_operations
+                    WHERE core_id = ? AND state = 'APPLIED'
+                    ORDER BY applied_at DESC, operation_id DESC
+                    LIMIT 1
+                    """)) {
+                statement.setString(1, coreId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    return resultSet.next()
+                            ? Optional.of(corePlacementFromRow(resultSet))
+                            : Optional.empty();
+                }
+            }
         });
     }
 
@@ -1068,6 +1165,45 @@ public final class DefenseRepository {
      * inserted when another event owns the lock.
      */
     public StartOutcome tryStart(StartRequest request) {
+        return tryStart(request, true);
+    }
+
+    /**
+     * Creates an event while leaving a supplied raid seal RESERVED. The Paper caller removes the
+     * matching physical item on the main thread and must then call
+     * {@link #consumeReservedStartSeal(UUID, UUID, Instant)}. A failed or interrupted event is
+     * eligible for the normal technical-refund transaction.
+     */
+    public StartOutcome tryStartReserved(StartRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (request.raidSealId().isEmpty()) {
+            throw new IllegalArgumentException("A reserved start requires a raid seal");
+        }
+        return tryStart(request, false);
+    }
+
+    /** Consumes the reservation after the corresponding physical token has been removed. */
+    public OperationOutcome consumeReservedStartSeal(
+            UUID eventId,
+            UUID sealId,
+            Instant consumedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(sealId, "sealId");
+        Objects.requireNonNull(consumedAt, "consumedAt");
+        try {
+            return database.inImmediateTransaction(connection ->
+                    RaidSealRepository.consumeReservedForStart(
+                            connection, eventId, sealId, consumedAt));
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The reserved raid seal conflicts with persisted data", exception);
+            }
+            throw failure("consume the reserved raid seal", exception);
+        }
+    }
+
+    private StartOutcome tryStart(StartRequest request, boolean consumeSeal) {
         Objects.requireNonNull(request, "request");
         try {
             return database.inImmediateTransaction(connection -> {
@@ -1095,7 +1231,11 @@ public final class DefenseRepository {
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
                 }
-                RaidSealRepository.consumeForStart(connection, request);
+                if (consumeSeal) {
+                    RaidSealRepository.consumeForStart(connection, request);
+                } else {
+                    RaidSealRepository.reserveForStart(connection, request);
+                }
                 return StartOutcome.STARTED;
             });
         } catch (SQLException exception) {
@@ -1677,6 +1817,25 @@ public final class DefenseRepository {
         }
     }
 
+    private static Optional<TeamProgress> loadTeamProgress(
+            Connection connection, UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, highest_cleared_level, unlocked_level, research_points
+                FROM team_progress WHERE team_id = ?
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new TeamProgress(
+                                uuid(resultSet.getString("team_id")),
+                                resultSet.getLong("highest_cleared_level"),
+                                resultSet.getLong("unlocked_level"),
+                                resultSet.getLong("research_points")))
+                        : Optional.empty();
+            }
+        }
+    }
+
     private static TeamRecord requireTeam(Connection connection, UUID teamId)
             throws SQLException {
         return loadTeam(connection, teamId).orElseThrow(
@@ -1963,7 +2122,8 @@ public final class DefenseRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                            block_x, block_y, block_z, max_hp, minimum_core_distance,
-                           rebuilding_destroyed_core, previous_block_data, state,
+                           rebuilding_destroyed_core, relocating_existing_core,
+                           previous_block_data, state,
                            prepared_at, applied_at, rolled_back_at
                     FROM core_placement_operations
                     WHERE state = ?
@@ -1985,7 +2145,8 @@ public final class DefenseRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                        block_x, block_y, block_z, max_hp, minimum_core_distance,
-                       rebuilding_destroyed_core, previous_block_data, state,
+                       rebuilding_destroyed_core, relocating_existing_core,
+                       previous_block_data, state,
                        prepared_at, applied_at, rolled_back_at
                 FROM core_placement_operations
                 WHERE operation_id = ?
@@ -2005,8 +2166,9 @@ public final class DefenseRepository {
                 INSERT INTO core_placement_operations(
                     operation_id, item_id, core_id, actor_id, team_id, world_id,
                     block_x, block_y, block_z, max_hp, minimum_core_distance,
-                    rebuilding_destroyed_core, previous_block_data, state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    rebuilding_destroyed_core, relocating_existing_core,
+                    previous_block_data, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, placement.operationId().toString());
             statement.setString(2, placement.itemId().toString());
@@ -2020,8 +2182,9 @@ public final class DefenseRepository {
             statement.setLong(10, placement.maximumHitPoints());
             statement.setDouble(11, placement.minimumCoreDistance());
             statement.setInt(12, placement.rebuildingDestroyedCore() ? 1 : 0);
-            statement.setString(13, placement.previousBlockData());
-            statement.setString(14, placement.preparedAt().toString());
+            statement.setInt(13, placement.relocatingExistingCore() ? 1 : 0);
+            statement.setString(14, placement.previousBlockData());
+            statement.setString(15, placement.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -2071,6 +2234,7 @@ public final class DefenseRepository {
                 resultSet.getLong("max_hp"),
                 resultSet.getDouble("minimum_core_distance"),
                 resultSet.getInt("rebuilding_destroyed_core") != 0,
+                resultSet.getInt("relocating_existing_core") != 0,
                 resultSet.getString("previous_block_data"),
                 CorePlacementState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
@@ -2093,6 +2257,7 @@ public final class DefenseRepository {
                                 existing.minimumCoreDistance(), requested.minimumCoreDistance())
                         != 0
                 || existing.rebuildingDestroyedCore() != requested.rebuildingDestroyedCore()
+                || existing.relocatingExistingCore() != requested.relocatingExistingCore()
                 || !existing.previousBlockData().equals(requested.previousBlockData())) {
             throw new PersistenceConflictException(
                     "The operation UUID was reused with a different core placement payload");

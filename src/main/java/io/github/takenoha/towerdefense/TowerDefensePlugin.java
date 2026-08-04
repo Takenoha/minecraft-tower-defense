@@ -5,6 +5,8 @@ import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
 import io.github.takenoha.towerdefense.paper.CoreItemListener;
 import io.github.takenoha.towerdefense.paper.CoreItemTagger;
+import io.github.takenoha.towerdefense.paper.CoreManagementListener;
+import io.github.takenoha.towerdefense.paper.DefenseShardTagger;
 import io.github.takenoha.towerdefense.paper.EscrowDropListener;
 import io.github.takenoha.towerdefense.paper.EscrowDropTagger;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
@@ -13,6 +15,8 @@ import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperSettingsLoader;
 import io.github.takenoha.towerdefense.paper.ProtectedBlockListener;
+import io.github.takenoha.towerdefense.paper.RaidSealListener;
+import io.github.takenoha.towerdefense.paper.RaidSealTagger;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
@@ -23,6 +27,7 @@ import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
 import io.github.takenoha.towerdefense.persistence.Database;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.EscrowRepository;
+import io.github.takenoha.towerdefense.persistence.RaidSealRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
@@ -118,6 +123,37 @@ public final class TowerDefensePlugin extends JavaPlugin {
         coreItems.registerRecipe();
         coreItems.recoverPreparedPlacements();
         getServer().getPluginManager().registerEvents(coreItems, this);
+        RaidSealTagger raidSealTagger = new RaidSealTagger(this);
+        RaidSealRepository raidSealRepository = new RaidSealRepository(database);
+        TowerDefenseCommand commandHandler = new TowerDefenseCommand(
+                this,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                coreRegistry,
+                regionProtection,
+                raidSealTagger);
+        getServer().getPluginManager().registerEvents(
+                new CoreManagementListener(
+                        this,
+                        settings,
+                        repository,
+                        databaseExecutor,
+                        sessions,
+                        coreRegistry,
+                        coreItems,
+                        new DefenseShardTagger(this)),
+                this);
+        RaidSealListener raidSeals = new RaidSealListener(
+                this,
+                raidSealRepository,
+                databaseExecutor,
+                coreRegistry,
+                commandHandler,
+                raidSealTagger);
+        raidSeals.registerRecipe();
+        getServer().getPluginManager().registerEvents(raidSeals, this);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
@@ -134,14 +170,6 @@ public final class TowerDefensePlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(
                 new RewardQueueDeliveryListener(rewardQueues), this);
 
-        TowerDefenseCommand commandHandler = new TowerDefenseCommand(
-                this,
-                settings,
-                repository,
-                databaseExecutor,
-                sessions,
-                coreRegistry,
-                regionProtection);
         PluginCommand command = Objects.requireNonNull(
                 getCommand("td"), "the td command is missing from plugin.yml");
         command.setExecutor(commandHandler);

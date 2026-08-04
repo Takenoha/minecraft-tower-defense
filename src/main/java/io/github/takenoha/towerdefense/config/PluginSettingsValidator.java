@@ -160,6 +160,30 @@ public final class PluginSettingsValidator {
                 core.attackIntervalTicks(),
                 unreadablePaths,
                 violations);
+        if (isReadable("core.repair-material", unreadablePaths)
+                && (core.repairMaterial() == null || core.repairMaterial().isBlank())) {
+            violations.add("core.repair-material: must be a non-blank string");
+        }
+        requirePositive(
+                "core.repair-health-per-unit",
+                core.repairHealthPerUnit(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "core.repair-material-base-cost",
+                core.repairMaterialBaseCost(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "core.repair-shard-base-cost",
+                core.repairShardBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("core.repair-cost-per-clear-level", unreadablePaths)
+                && core.repairCostPerClearLevel() < 0) {
+            violations.add("core.repair-cost-per-clear-level: must be >= 0 (was "
+                    + core.repairCostPerClearLevel() + ")");
+        }
     }
 
     private static void validateEnemies(

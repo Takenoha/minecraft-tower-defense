@@ -118,6 +118,52 @@ final class CorePlacementPersistenceTest {
     }
 
     @Test
+    void fullHealthCoreCanBeRelocatedByAnyTeamMemberWithTheSameIdentity() {
+        Path databaseFile = temporaryDirectory.resolve("relocation.sqlite");
+        DefenseRepository repository = new DefenseRepository(new Database(databaseFile));
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        UUID memberId = UUID.randomUUID();
+        UUID worldId = UUID.randomUUID();
+        UUID coreId = UUID.randomUUID();
+        repository.createSoloTeam(teamId, ownerId, NOW);
+        repository.addTeamMember(teamId, ownerId, memberId, UUID.randomUUID(), NOW);
+        CoreRecord original = new CoreRecord(
+                coreId, teamId, worldId, 0, 64, 0, 1_000L, 1_000L, NOW, NOW);
+        repository.placeCore(original, 192.0D);
+
+        CorePlacement relocation = CorePlacement.preparedRelocation(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                coreId,
+                memberId,
+                teamId,
+                worldId,
+                300,
+                70,
+                0,
+                1_000L,
+                192.0D,
+                "minecraft:stone",
+                NOW.plusSeconds(1L));
+
+        assertEquals(relocation, repository.prepareCorePlacement(relocation));
+        CorePlacementResult applied = repository.applyCorePlacement(
+                relocation.operationId(), NOW.plusSeconds(2L));
+
+        assertEquals(coreId, applied.core().id());
+        assertEquals(300, applied.core().blockX());
+        assertEquals(1_000L, applied.core().currentHitPoints());
+        assertEquals(applied.placement(), repository.findAppliedCorePlacementByCore(coreId).orElseThrow());
+        assertEquals(
+                applied,
+                repository.applyCorePlacement(relocation.operationId(), NOW.plusSeconds(3L)));
+
+        DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
+        assertEquals(applied.core(), reopened.findCore(coreId).orElseThrow());
+    }
+
+    @Test
     void placementRequiresOwnerAndRejectsActiveDefense() {
         DefenseRepository repository = new DefenseRepository(
                 new Database(temporaryDirectory.resolve("authorization.sqlite")));

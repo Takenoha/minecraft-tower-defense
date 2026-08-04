@@ -38,6 +38,23 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsConfiguredCoreRepairEconomy() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "core").putAll(Map.of(
+                "repair-material", "GOLD_INGOT",
+                "repair-health-per-unit", 250,
+                "repair-material-base-cost", 2,
+                "repair-shard-base-cost", 3,
+                "repair-cost-per-clear-level", 4));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(
+                new CoreSettings(1_000, 20, 20, "GOLD_INGOT", 250, 2, 3, 4),
+                settings.core());
+    }
+
+    @Test
     void rejectsANonPositiveCoreAttackInterval() {
         Map<String, Object> values = validValues();
         mutableSection(values, "core").put("attack-interval-ticks", 0);

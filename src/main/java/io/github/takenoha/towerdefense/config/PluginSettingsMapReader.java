@@ -73,7 +73,32 @@ final class PluginSettingsMapReader {
                             values,
                             "core",
                             "attack-interval-ticks",
-                            CoreSettings.DEFAULT_ATTACK_INTERVAL_TICKS));
+                            CoreSettings.DEFAULT_ATTACK_INTERVAL_TICKS),
+                    textOrDefault(
+                            values,
+                            "core",
+                            "repair-material",
+                            CoreSettings.DEFAULT_REPAIR_MATERIAL),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-health-per-unit",
+                            CoreSettings.DEFAULT_REPAIR_HEALTH_PER_UNIT),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-material-base-cost",
+                            CoreSettings.DEFAULT_REPAIR_MATERIAL_BASE_COST),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-shard-base-cost",
+                            CoreSettings.DEFAULT_REPAIR_SHARD_BASE_COST),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-cost-per-clear-level",
+                            CoreSettings.DEFAULT_REPAIR_COST_PER_CLEAR_LEVEL));
         }
 
         private EnemySettings enemies() {
@@ -280,6 +305,23 @@ final class PluginSettingsMapReader {
                 return defaultValue;
             }
             return (int) decimal;
+        }
+
+        private String textOrDefault(
+                Map<?, ?> section,
+                String sectionName,
+                String key,
+                String defaultValue) {
+            String path = sectionName + "." + key;
+            Object value = section.get(key);
+            if (value == null) {
+                return defaultValue;
+            }
+            if (!(value instanceof String text) || text.isBlank()) {
+                addProblem(path, "must be a non-blank string");
+                return defaultValue;
+            }
+            return text;
         }
 
         private double decimal(Map<?, ?> section, String sectionName, String key) {

@@ -129,20 +129,27 @@ public final class CoreItemListener implements Listener {
             return;
         }
         event.setCancelled(true);
-        if (identity.orElseThrow().isBound()) {
-            event.getPlayer().sendMessage(Component.text(
-                    "移設用のコアアイテムは、このスライスではまだ使用できません。",
-                    NamedTextColor.YELLOW));
-            return;
-        }
         Block target = event.getClickedBlock();
         if (target == null) {
             return;
         }
-        beginPlacement(event.getPlayer(), target, identity.orElseThrow());
+        beginPlacement(event.getPlayer(), target, identity.orElseThrow(), true);
     }
 
-    private void beginPlacement(Player player, Block target, CoreItemIdentity identity) {
+    /** Starts a GUI-confirmed relocation without exposing a transient duplicate item. */
+    void beginGuiRelocation(Player player, Block target, CoreRecord core) {
+        CoreItemIdentity identity = new CoreItemIdentity(
+                UUID.randomUUID(),
+                Optional.of(core.teamId()),
+                Optional.of(core.id()));
+        beginPlacement(player, target, identity, false);
+    }
+
+    private void beginPlacement(
+            Player player,
+            Block target,
+            CoreItemIdentity identity,
+            boolean requiresHeldItem) {
         if (sessions.hasActiveSession()) {
             player.sendMessage(Component.text("防衛戦中はコアを設置できません。", NamedTextColor.RED));
             return;
@@ -177,7 +184,12 @@ public final class CoreItemListener implements Listener {
                                 "コアを設置できません: " + rootMessage(failure), NamedTextColor.RED));
                         return;
                     }
-                    applyPhysicalBlock(player, target, placement.orElseThrow(), identity.itemId());
+                    applyPhysicalBlock(
+                            player,
+                            target,
+                            placement.orElseThrow(),
+                            identity.itemId(),
+                            requiresHeldItem);
                 }));
     }
 
@@ -189,15 +201,46 @@ public final class CoreItemListener implements Listener {
             int blockY,
             int blockZ,
             String previousBlockData) {
-        TeamRecord team = repository.findTeamByMember(actorId).orElseGet(
-                () -> repository.createSoloTeam(
-                        soloTeamId(actorId), actorId, Instant.now()));
-        if (!team.ownerId().equals(actorId)) {
-            throw new IllegalStateException("コアの設置者はチームオーナーである必要があります");
+        boolean relocating = identity.isBound();
+        TeamRecord team;
+        Optional<CoreRecord> current;
+        if (relocating) {
+            UUID teamId = identity.teamId().orElseThrow(
+                    () -> new IllegalStateException("移設用コアにチームIDがありません"));
+            team = repository.findTeam(teamId).orElseThrow(
+                    () -> new IllegalStateException("移設用コアのチームが存在しません"));
+            if (!team.members().contains(actorId)) {
+                throw new IllegalStateException("このチームのコアへアクセスできません");
+            }
+            UUID coreId = identity.coreId().orElseGet(() -> repository.findCoreByTeam(team.id())
+                    .map(CoreRecord::id)
+                    .orElseThrow(() -> new IllegalStateException("移設用コアのコアIDがありません")));
+            current = repository.findCore(coreId);
+            if (current.isEmpty() || !current.orElseThrow().teamId().equals(team.id())) {
+                throw new IllegalStateException("移設対象のコアが存在しません");
+            }
+            if (current.orElseThrow().currentHitPoints()
+                    != current.orElseThrow().maximumHitPoints()) {
+                throw new IllegalStateException("コアHPが満タンのときだけ移設できます");
+            }
+        } else {
+            team = repository.findTeamByMember(actorId).orElseGet(
+                    () -> repository.createSoloTeam(
+                            soloTeamId(actorId), actorId, Instant.now()));
+            if (!team.ownerId().equals(actorId)) {
+                throw new IllegalStateException("コアの設置者はチームオーナーである必要があります");
+            }
+            current = repository.findCoreByTeam(team.id());
         }
-        Optional<CoreRecord> current = repository.findCoreByTeam(team.id());
-        boolean rebuilding = current.isPresent() && current.orElseThrow().currentHitPoints() == 0L;
-        UUID coreId = rebuilding ? current.orElseThrow().id() : identity.itemId();
+        boolean rebuilding = !relocating
+                && current.isPresent()
+                && current.orElseThrow().currentHitPoints() == 0L;
+        UUID coreId = relocating
+                ? identity.coreId().orElseThrow()
+                : (rebuilding ? current.orElseThrow().id() : identity.itemId());
+        long maximumHitPoints = relocating
+                ? current.orElseThrow().maximumHitPoints()
+                : settings.core().maxHealth();
         CorePlacement placement = CorePlacement.prepared(
                 UUID.randomUUID(),
                 identity.itemId(),
@@ -208,9 +251,10 @@ public final class CoreItemListener implements Listener {
                 blockX,
                 blockY,
                 blockZ,
-                settings.core().maxHealth(),
+                maximumHitPoints,
                 settings.combat().minimumCoreDistance(),
                 rebuilding,
+                relocating,
                 previousBlockData,
                 Instant.now());
         return Optional.of(repository.prepareCorePlacement(placement));
@@ -220,27 +264,59 @@ public final class CoreItemListener implements Listener {
             Player player,
             Block target,
             CorePlacement placement,
-            UUID expectedItemId) {
+            UUID expectedItemId,
+            boolean requiresHeldItem) {
         UUID actorId = player.getUniqueId();
-        if (!itemTagger.hasItemId(player.getInventory().getItemInMainHand(), expectedItemId)
+        if ((requiresHeldItem
+                && !itemTagger.hasItemId(
+                        player.getInventory().getItemInMainHand(), expectedItemId))
                 || !isStillOriginal(target, placement.previousBlockData())
                 || sessions.hasActiveSession()
                 || !isValidTarget(player, target)) {
-            rollbackPrepared(player, target, placement, "設置前に対象ブロックまたはインベントリが変更されました。");
+            rollbackPrepared(
+                    player,
+                    target,
+                    placement,
+                    null,
+                    "設置前に対象ブロックまたはインベントリが変更されました。");
             return;
+        }
+        RelocationPhysicalState relocationState = null;
+        if (placement.relocatingExistingCore()) {
+            relocationState = detachSourceCore(placement);
+            if (relocationState == null) {
+                rollbackPrepared(
+                        player,
+                        target,
+                        placement,
+                        null,
+                        "移設元のコア状態を確認できないため、移設を取り消しました。");
+                return;
+            }
         }
         target.setType(CORE_BLOCK, false);
         if (!blockTagger.tag(target, placement)) {
             restore(target, placement.previousBlockData());
-            rollbackPrepared(player, target, placement, "このPaperブロックはコア情報を保持できません。");
+            rollbackPrepared(
+                    player,
+                    target,
+                    placement,
+                    relocationState,
+                    "このPaperブロックはコア情報を保持できません。");
             return;
         }
+        RelocationPhysicalState physicalState = relocationState;
         databaseExecutor.submit(() -> repository.applyCorePlacement(
                         placement.operationId(), Instant.now()))
                 .whenComplete((result, failure) -> runOnMainThread(() -> {
                     if (failure != null) {
                         restore(target, placement.previousBlockData());
-                        rollbackPrepared(player, target, placement, "永続化に失敗したため設置を取り消しました。");
+                        rollbackPrepared(
+                                player,
+                                target,
+                                placement,
+                                physicalState,
+                                "永続化に失敗したため設置を取り消しました。");
                         return;
                     }
                     finishPlacement(player, target, placement, result, expectedItemId);
@@ -264,7 +340,9 @@ public final class CoreItemListener implements Listener {
         appliedItemIds.add(itemId);
         removeMatchingItems(itemId);
         player.sendMessage(Component.text(
-                "コアを設置しました。チームの防衛戦拠点として登録されています。",
+                placement.relocatingExistingCore()
+                        ? "コアを移設しました。チームの防衛戦拠点を更新しました。"
+                        : "コアを設置しました。チームの防衛戦拠点として登録されています。",
                 NamedTextColor.GREEN));
     }
 
@@ -272,13 +350,35 @@ public final class CoreItemListener implements Listener {
             Player player,
             Block target,
             CorePlacement placement,
+            RelocationPhysicalState relocationState,
             String message) {
-        if (blockTagger.matches(target, placement)) {
-            restore(target, placement.previousBlockData());
+        boolean targetRestored = true;
+        try {
+            if (blockTagger.matches(target, placement)) {
+                restore(target, placement.previousBlockData());
+            }
+            targetRestored = placement.previousBlockData().equals(
+                    target.getBlockData().getAsString());
+        } catch (RuntimeException failure) {
+            targetRestored = false;
+            plugin.getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Could not restore the target block for failed core placement",
+                    failure);
+        }
+        boolean sourceRestored = true;
+        if (relocationState != null) {
+            sourceRestored = restoreSourceCore(relocationState);
         }
         placementInFlight.remove(player.getUniqueId());
-        databaseExecutor.execute(() -> repository.rollbackCorePlacement(
-                placement.operationId(), Instant.now()));
+        if (targetRestored && sourceRestored) {
+            databaseExecutor.execute(() -> repository.rollbackCorePlacement(
+                    placement.operationId(), Instant.now()));
+        } else {
+            plugin.getLogger().severe(
+                    "Keeping failed core placement " + placement.operationId()
+                            + " PREPARED because its physical state could not be restored");
+        }
         player.sendMessage(Component.text(message, NamedTextColor.RED));
     }
 
@@ -374,6 +474,9 @@ public final class CoreItemListener implements Listener {
     }
 
     private boolean recoverPhysicalPlacement(CorePlacement placement) {
+        if (placement.relocatingExistingCore()) {
+            return recoverPreparedRelocation(placement);
+        }
         World world = Bukkit.getWorld(placement.worldId());
         if (world == null) {
             plugin.getLogger().severe(
@@ -407,6 +510,111 @@ public final class CoreItemListener implements Listener {
                 "Prepared core placement " + placement.operationId()
                         + " has an unknown physical block state; leaving it PREPARED");
         return false;
+    }
+
+    private RelocationPhysicalState detachSourceCore(CorePlacement placement) {
+        CoreRecord core = repository.findCore(placement.coreId()).orElse(null);
+        CorePlacement original = repository.findAppliedCorePlacementByCore(placement.coreId())
+                .orElse(null);
+        if (core == null || original == null) {
+            return null;
+        }
+        World world = Bukkit.getWorld(core.worldId());
+        if (world == null) {
+            return null;
+        }
+        Block source = world.getBlockAt(core.blockX(), core.blockY(), core.blockZ());
+        if (!cores.at(source).map(value -> value.id().equals(core.id())).orElse(false)
+                || !blockTagger.matches(source, original)) {
+            return null;
+        }
+        try {
+            restore(source, original.previousBlockData());
+        } catch (RuntimeException failure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not restore the source block for core relocation",
+                    failure);
+            return null;
+        }
+        if (!original.previousBlockData().equals(source.getBlockData().getAsString())) {
+            return null;
+        }
+        cores.unregister(core.id());
+        return new RelocationPhysicalState(source, original);
+    }
+
+    private boolean restoreSourceCore(RelocationPhysicalState relocationState) {
+        try {
+            relocationState.source().setType(CORE_BLOCK, false);
+            if (!blockTagger.tag(relocationState.source(), relocationState.originalPlacement())) {
+                throw new IllegalStateException("the source beacon could not be tagged");
+            }
+            if (!blockTagger.matches(relocationState.source(), relocationState.originalPlacement())) {
+                throw new IllegalStateException("the source beacon tag could not be verified");
+            }
+            cores.register(repository.findCore(relocationState.originalPlacement().coreId())
+                    .orElseThrow(() -> new IllegalStateException("the source core row is missing")));
+            return true;
+        } catch (RuntimeException failure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Could not restore the source core after relocation failure",
+                    failure);
+            return false;
+        }
+    }
+
+    private boolean recoverPreparedRelocation(CorePlacement placement) {
+        try {
+            CoreRecord core = repository.findCore(placement.coreId()).orElse(null);
+            CorePlacement original = repository.findAppliedCorePlacementByCore(placement.coreId())
+                    .orElse(null);
+            World targetWorld = Bukkit.getWorld(placement.worldId());
+            if (core == null || original == null || targetWorld == null) {
+                plugin.getLogger().severe(
+                        "Cannot recover prepared core relocation " + placement.operationId()
+                                + ": durable source state is incomplete");
+                return false;
+            }
+            Block target = targetWorld.getBlockAt(
+                    placement.blockX(), placement.blockY(), placement.blockZ());
+            if (blockTagger.matches(target, placement)) {
+                restore(target, placement.previousBlockData());
+            } else if (!placement.previousBlockData().equals(target.getBlockData().getAsString())) {
+                plugin.getLogger().severe(
+                        "Prepared core relocation " + placement.operationId()
+                                + " has an unknown target block state");
+                return false;
+            }
+            World sourceWorld = Bukkit.getWorld(core.worldId());
+            if (sourceWorld == null) {
+                return false;
+            }
+            Block source = sourceWorld.getBlockAt(core.blockX(), core.blockY(), core.blockZ());
+            if (blockTagger.matches(source, original)) {
+                return true;
+            }
+            if (!original.previousBlockData().equals(source.getBlockData().getAsString())) {
+                plugin.getLogger().severe(
+                        "Prepared core relocation " + placement.operationId()
+                                + " has an unknown source block state");
+                return false;
+            }
+            source.setType(CORE_BLOCK, false);
+            return blockTagger.tag(source, original);
+        } catch (RuntimeException recoveryFailure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Could not recover prepared core relocation " + placement.operationId(),
+                    recoveryFailure);
+            return false;
+        }
+    }
+
+    private record RelocationPhysicalState(
+            Block source,
+            CorePlacement originalPlacement) {
     }
 
     private record CombatAreaContext(io.github.takenoha.towerdefense.domain.CombatArea value) {
