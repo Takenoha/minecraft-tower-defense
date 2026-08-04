@@ -18,6 +18,7 @@ public record CorePlacement(
         long maximumHitPoints,
         double minimumCoreDistance,
         boolean rebuildingDestroyedCore,
+        boolean relocatingExistingCore,
         String previousBlockData,
         CorePlacementState state,
         Instant preparedAt,
@@ -32,6 +33,10 @@ public record CorePlacement(
         Objects.requireNonNull(worldId, "worldId");
         if (maximumHitPoints <= 0L) {
             throw new IllegalArgumentException("maximumHitPoints must be positive");
+        }
+        if (rebuildingDestroyedCore && relocatingExistingCore) {
+            throw new IllegalArgumentException(
+                    "a placement cannot rebuild and relocate at the same time");
         }
         if (!Double.isFinite(minimumCoreDistance) || minimumCoreDistance <= 0.0d) {
             throw new IllegalArgumentException("minimumCoreDistance must be finite and positive");
@@ -55,6 +60,46 @@ public record CorePlacement(
         }
     }
 
+    /** Compatibility constructor for placements created before the relocation flag existed. */
+    public CorePlacement(
+            UUID operationId,
+            UUID itemId,
+            UUID coreId,
+            UUID actorId,
+            UUID teamId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            long maximumHitPoints,
+            double minimumCoreDistance,
+            boolean rebuildingDestroyedCore,
+            String previousBlockData,
+            CorePlacementState state,
+            Instant preparedAt,
+            Instant appliedAt,
+            Instant rolledBackAt) {
+        this(
+                operationId,
+                itemId,
+                coreId,
+                actorId,
+                teamId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                maximumHitPoints,
+                minimumCoreDistance,
+                rebuildingDestroyedCore,
+                false,
+                previousBlockData,
+                state,
+                preparedAt,
+                appliedAt,
+                rolledBackAt);
+    }
+
     public static CorePlacement prepared(
             UUID operationId,
             UUID itemId,
@@ -70,6 +115,40 @@ public record CorePlacement(
             boolean rebuildingDestroyedCore,
             String previousBlockData,
             Instant preparedAt) {
+        return prepared(
+                operationId,
+                itemId,
+                coreId,
+                actorId,
+                teamId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                maximumHitPoints,
+                minimumCoreDistance,
+                rebuildingDestroyedCore,
+                false,
+                previousBlockData,
+                preparedAt);
+    }
+
+    public static CorePlacement prepared(
+            UUID operationId,
+            UUID itemId,
+            UUID coreId,
+            UUID actorId,
+            UUID teamId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            long maximumHitPoints,
+            double minimumCoreDistance,
+            boolean rebuildingDestroyedCore,
+            boolean relocatingExistingCore,
+            String previousBlockData,
+            Instant preparedAt) {
         return new CorePlacement(
                 operationId,
                 itemId,
@@ -83,10 +162,43 @@ public record CorePlacement(
                 maximumHitPoints,
                 minimumCoreDistance,
                 rebuildingDestroyedCore,
+                relocatingExistingCore,
                 previousBlockData,
                 CorePlacementState.PREPARED,
                 preparedAt,
                 null,
                 null);
+    }
+
+    public static CorePlacement preparedRelocation(
+            UUID operationId,
+            UUID itemId,
+            UUID coreId,
+            UUID actorId,
+            UUID teamId,
+            UUID worldId,
+            int blockX,
+            int blockY,
+            int blockZ,
+            long maximumHitPoints,
+            double minimumCoreDistance,
+            String previousBlockData,
+            Instant preparedAt) {
+        return prepared(
+                operationId,
+                itemId,
+                coreId,
+                actorId,
+                teamId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                maximumHitPoints,
+                minimumCoreDistance,
+                false,
+                true,
+                previousBlockData,
+                preparedAt);
     }
 }

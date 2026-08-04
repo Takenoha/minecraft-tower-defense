@@ -24,11 +24,10 @@ placement path, not enemy terrain mutation.
 
 ## Deliberate boundary
 
-This slice does not yet provide bound-core itemization, GUI-confirmed relocation, repair-cost
-economy, team invitations/member GUI, towers, research, start-item reservation, or enemy terrain
-mutation. Bound items are rejected with an explicit message until the relocation/itemization flow
-has its own physical handoff and recovery ledger. The administrator `/td admin core` command remains
-available for the existing test flow.
+The follow-on core-management slice in `docs/CORE_MANAGEMENT_SCOPE.md` adds the bound-core
+relocation, repair-cost, and first team GUI flows. This document remains the boundary for the
+original craft-and-place slice; towers, research, start-item reservation, and enemy terrain
+mutation remain separate work.
 
 The recipe values and item presentation are an initial implementation choice, not the final game
 economy balance. Core placement still requires the existing minimum core distance and combat-area

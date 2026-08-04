@@ -18,6 +18,12 @@ core:
   damage-per-enemy: 20
   # Each enemy at the core deals this damage once per this many server ticks.
   attack-interval-ticks: 20
+  # Idle repairs consume this vanilla material and the plugin-owned defense shards.
+  repair-material: IRON_INGOT
+  repair-health-per-unit: 100
+  repair-material-base-cost: 1
+  repair-shard-base-cost: 1
+  repair-cost-per-clear-level: 1
 
 enemies:
   max-alive: 120

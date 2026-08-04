@@ -21,6 +21,7 @@ public final class CoreItemTagger {
     private final NamespacedKey versionKey;
     private final NamespacedKey itemIdKey;
     private final NamespacedKey teamIdKey;
+    private final NamespacedKey coreIdKey;
 
     public CoreItemTagger(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
@@ -28,6 +29,7 @@ public final class CoreItemTagger {
         versionKey = new NamespacedKey(plugin, "core_item_version");
         itemIdKey = new NamespacedKey(plugin, "core_item_id");
         teamIdKey = new NamespacedKey(plugin, "core_team_id");
+        coreIdKey = new NamespacedKey(plugin, "core_id");
     }
 
     /** Returns the recipe result template. A craft event replaces its temporary marker with a UUID. */
@@ -46,12 +48,18 @@ public final class CoreItemTagger {
     }
 
     public ItemStack createUnbound(UUID itemId) {
-        return create(itemId, Optional.empty());
+        return create(itemId, Optional.empty(), Optional.empty());
     }
 
     public ItemStack createBound(UUID itemId, UUID teamId) {
         Objects.requireNonNull(teamId, "teamId");
-        return create(itemId, Optional.of(teamId));
+        return create(itemId, Optional.of(teamId), Optional.empty());
+    }
+
+    public ItemStack createBound(UUID itemId, UUID teamId, UUID coreId) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(coreId, "coreId");
+        return create(itemId, Optional.of(teamId), Optional.of(coreId));
     }
 
     public Optional<CoreItemIdentity> read(ItemStack item) {
@@ -85,13 +93,23 @@ public final class CoreItemTagger {
         return read(item).map(identity -> identity.itemId().equals(itemId)).orElse(false);
     }
 
-    private ItemStack create(UUID itemId, Optional<UUID> teamId) {
+    private ItemStack create(
+            UUID itemId,
+            Optional<UUID> teamId,
+            Optional<UUID> coreId) {
         Objects.requireNonNull(itemId, "itemId");
         ItemStack item = recipeTemplate();
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(itemIdKey, PersistentDataType.STRING, itemId.toString());
         teamId.ifPresent(value -> data.set(teamIdKey, PersistentDataType.STRING, value.toString()));
+        coreId.ifPresent(value -> data.set(coreIdKey, PersistentDataType.STRING, value.toString()));
+        if (teamId.isPresent()) {
+            meta.displayName(Component.text("移設用コア", NamedTextColor.AQUA));
+            meta.lore(java.util.List.of(
+                    Component.text("同じチームのコアを別の位置へ移設します", NamedTextColor.GRAY),
+                    Component.text("防衛戦外・コアHP満タン時のみ使用できます", NamedTextColor.GRAY)));
+        }
         item.setItemMeta(meta);
         item.setAmount(1);
         return item;
@@ -107,9 +125,11 @@ public final class CoreItemTagger {
         }
         try {
             String teamId = data.get(teamIdKey, PersistentDataType.STRING);
+            String coreId = data.get(coreIdKey, PersistentDataType.STRING);
             return Optional.of(new CoreItemIdentity(
                     UUID.fromString(itemId),
-                    teamId == null ? Optional.empty() : Optional.of(UUID.fromString(teamId))));
+                    teamId == null ? Optional.empty() : Optional.of(UUID.fromString(teamId)),
+                    coreId == null ? Optional.empty() : Optional.of(UUID.fromString(coreId))));
         } catch (IllegalArgumentException invalidId) {
             return Optional.empty();
         }

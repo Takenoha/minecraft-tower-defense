@@ -5,6 +5,8 @@ import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.paper.CoreProtectionListener;
 import io.github.takenoha.towerdefense.paper.CoreItemListener;
 import io.github.takenoha.towerdefense.paper.CoreItemTagger;
+import io.github.takenoha.towerdefense.paper.CoreManagementListener;
+import io.github.takenoha.towerdefense.paper.DefenseShardTagger;
 import io.github.takenoha.towerdefense.paper.EscrowDropListener;
 import io.github.takenoha.towerdefense.paper.EscrowDropTagger;
 import io.github.takenoha.towerdefense.paper.EventEnemyListener;
@@ -118,6 +120,17 @@ public final class TowerDefensePlugin extends JavaPlugin {
         coreItems.registerRecipe();
         coreItems.recoverPreparedPlacements();
         getServer().getPluginManager().registerEvents(coreItems, this);
+        getServer().getPluginManager().registerEvents(
+                new CoreManagementListener(
+                        this,
+                        settings,
+                        repository,
+                        databaseExecutor,
+                        sessions,
+                        coreRegistry,
+                        coreItems,
+                        new DefenseShardTagger(this)),
+                this);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);
