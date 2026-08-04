@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
+import io.github.takenoha.towerdefense.domain.TeamProgress;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -127,10 +128,67 @@ final class DefenseEventPersistenceTest {
         assertEquals(operationId, stored.terminalOperationId().orElseThrow());
         assertEquals(EnemyStatus.DESPAWNED, repository.loadEnemyLedger(eventId).getFirst().status());
         assertEquals(3, repository.loadTransitions(eventId).size());
+        assertEquals(
+                TeamProgress.initial(fixture.teamId()),
+                repository.loadTeamProgress(fixture.teamId()));
 
         DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
         assertEquals(stored, reopened.findEvent(eventId).orElseThrow());
         assertTrue(reopened.activeEventId().isEmpty());
+    }
+
+    @Test
+    void victoryAdvancesTeamStageUnlockInsideTheTerminalTransaction() {
+        DefenseRepository repository = new DefenseRepository(
+                new Database(temporaryDirectory.resolve("victory-progress.sqlite")));
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        UUID eventId = UUID.randomUUID();
+        StartRequest request = startRequest(fixture, eventId);
+        assertEquals(StartOutcome.STARTED, repository.tryStart(request));
+
+        DefenseSession session = DefenseSession.restore(request.session());
+        session.completeCountdown(Set.of(fixture.ownerId()));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.saveTransition(
+                        session.snapshot(), 0L, UUID.randomUUID(), STARTED_AT.plusSeconds(1L)));
+        long revision = 1L;
+        for (int wave = 1; wave <= session.totalWaves(); wave++) {
+            session.startWave(1L);
+            assertEquals(
+                    OperationOutcome.APPLIED,
+                    repository.saveTransition(
+                            session.snapshot(), revision, UUID.randomUUID(),
+                            STARTED_AT.plusSeconds(wave * 2L)));
+            revision++;
+            session.spawnPendingEnemies(1L);
+            assertTrue(session.recordEnemyDefeated(1L));
+            if (wave < session.totalWaves()) {
+                assertEquals(
+                        OperationOutcome.APPLIED,
+                        repository.saveTransition(
+                                session.snapshot(), revision, UUID.randomUUID(),
+                                STARTED_AT.plusSeconds(wave * 2L + 1L)));
+                revision++;
+            }
+        }
+        assertEquals(DefensePhase.VICTORY, session.phase());
+
+        UUID operationId = UUID.randomUUID();
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), revision, operationId, STARTED_AT.plusSeconds(20L)));
+        assertEquals(
+                new TeamProgress(fixture.teamId(), 1L, 2L, 0L),
+                repository.loadTeamProgress(fixture.teamId()));
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), revision, operationId, STARTED_AT.plusSeconds(21L)));
+        assertEquals(
+                new TeamProgress(fixture.teamId(), 1L, 2L, 0L),
+                repository.loadTeamProgress(fixture.teamId()));
     }
 
     @Test

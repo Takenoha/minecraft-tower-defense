@@ -6,8 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
+import io.github.takenoha.towerdefense.domain.TowerResearch;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -187,6 +191,126 @@ final class TowerPersistenceTest {
                         UUID.randomUUID(),
                         TowerTargetPriority.BOSS,
                         NOW.plusSeconds(2L)));
+    }
+
+    @Test
+    void researchPurchasePersistsCapAndIsIdempotent() throws SQLException {
+        Database database = new Database(temporaryDirectory.resolve("research.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        assertEquals(
+                java.util.List.of(
+                        TowerResearch.initial(teamId, TowerType.ARROW, NOW),
+                        TowerResearch.initial(teamId, TowerType.CANNON, NOW)),
+                towers.loadTowerResearch(teamId));
+        addResearchPoints(database, teamId, 12L);
+        UUID operationId = UUID.randomUUID();
+
+        TowerResearchMutationResult applied = towers.purchaseTowerResearch(
+                teamId,
+                ownerId,
+                TowerType.ARROW,
+                10L,
+                operationId,
+                NOW.plusSeconds(1L));
+        assertEquals(OperationOutcome.APPLIED, applied.outcome());
+        assertEquals(2, applied.research().researchLevel());
+        assertEquals(2L, applied.progress().researchPoints());
+        TowerResearchMutationResult retried = towers.purchaseTowerResearch(
+                teamId,
+                ownerId,
+                TowerType.ARROW,
+                10L,
+                operationId,
+                NOW.plusSeconds(2L));
+        assertEquals(OperationOutcome.ALREADY_APPLIED, retried.outcome());
+        assertEquals(applied.progress(), retried.progress());
+        assertEquals(applied.research(), retried.research());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.purchaseTowerResearch(
+                        teamId,
+                        ownerId,
+                        TowerType.ARROW,
+                        9L,
+                        operationId,
+                        NOW.plusSeconds(3L)));
+    }
+
+    @Test
+    void placementCannotExceedTheTeamResearchCap() throws SQLException {
+        Database database = new Database(temporaryDirectory.resolve("research-gate.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        TowerPlacement placement = TowerPlacement.prepared(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                ownerId,
+                teamId,
+                UUID.randomUUID(),
+                10,
+                65,
+                -4,
+                TowerType.ARROW,
+                2,
+                NOW);
+
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.prepareTowerPlacement(placement, TowerSettings.defaults()));
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 2);
+        assertEquals(placement, towers.prepareTowerPlacement(placement, TowerSettings.defaults()));
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 1);
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.applyTowerPlacement(
+                        placement.operationId(),
+                        UUID.randomUUID(),
+                        TowerSettings.defaults(),
+                        NOW.plusSeconds(1L)));
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 2);
+        assertEquals(
+                TowerType.ARROW,
+                towers.applyTowerPlacement(
+                                placement.operationId(),
+                                UUID.randomUUID(),
+                                TowerSettings.defaults(),
+                                NOW.plusSeconds(2L))
+                        .type());
+    }
+
+    private static void addResearchPoints(Database database, UUID teamId, long points)
+            throws SQLException {
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE team_progress SET research_points = ? WHERE team_id = ?
+                        """)) {
+            statement.setLong(1, points);
+            statement.setString(2, teamId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void setTowerResearchLevel(
+            Database database, UUID teamId, TowerType towerType, int level) throws SQLException {
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_research
+                        SET research_level = ?
+                        WHERE team_id = ? AND tower_type = ?
+                        """)) {
+            statement.setInt(1, level);
+            statement.setString(2, teamId.toString());
+            statement.setString(3, towerType.id());
+            statement.executeUpdate();
+        }
     }
 
     private static TowerRecord installTower(

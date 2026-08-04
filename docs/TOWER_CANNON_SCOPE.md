@@ -32,7 +32,7 @@ research layers are introduced.
 ## Deliberate follow-up slices
 
 - Frost, Lightning, Support, Sniper, and Flame remain separate tower-type slices.
-- Economy/rewards and research gates should be implemented before individual tower upgrades so
-  the upgrade cost and unlock rules have a durable source of truth.
+- The first progression boundary is documented in `docs/TOWER_RESEARCH_SCOPE.md`. Economy/rewards,
+  research crystal delivery, and individual tower upgrades remain separate follow-up slices.
 - HP/repair, direct atomic move confirmation, and Minecraft-client manual GUI verification remain
   outside automated validation.
