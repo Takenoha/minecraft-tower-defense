@@ -317,6 +317,34 @@ public final class DefenseSessionManager
     }
 
     @Override
+    public boolean mayAffectFromTower(TaggedEnemy taggedEnemy, UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(taggedEnemy, "taggedEnemy");
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        return defense != null
+                && !defense.ending
+                && defense.session.phase() == DefensePhase.WAVE_ACTIVE
+                && defense.session.eventId().equals(taggedEnemy.eventId())
+                && defense.session.teamId().equals(teamId)
+                && defense.entitiesByLogicalId.containsKey(taggedEnemy.logicalEnemyId());
+    }
+
+    /** Returns whether a team may install a tower in the current lifecycle window. */
+    public boolean mayPlaceTower(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        if (defense == null) {
+            return true;
+        }
+        return !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
+    }
+
+    @Override
     public boolean mayRemain(TaggedEnemy taggedEnemy, UUID entityId) {
         requireMainThread();
         Objects.requireNonNull(taggedEnemy, "taggedEnemy");

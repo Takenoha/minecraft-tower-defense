@@ -37,7 +37,48 @@ public final class PluginSettingsValidator {
         validateProtection(settings.protection(), unreadablePaths, violations);
         validateRewards(settings.rewards(), unreadablePaths, violations);
         validateTerrainMutation(settings.terrainMutation(), unreadablePaths, violations);
+        validateTowers(settings.towers(), unreadablePaths, violations);
         return List.copyOf(violations);
+    }
+
+    private static void validateTowers(
+            TowerSettings towers,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (towers == null) {
+            if (!unreadablePaths.contains("towers")) {
+                violations.add("towers: section is required");
+            }
+            return;
+        }
+        requirePositive("towers.base-limit", towers.baseLimit(), unreadablePaths, violations);
+        if (isReadable("towers.limit-increment", unreadablePaths)
+                && towers.limitIncrement() < 0) {
+            violations.add(
+                    "towers.limit-increment: must be >= 0 (was "
+                            + towers.limitIncrement() + ")");
+        }
+        requirePositive("towers.hard-cap", towers.hardCap(), unreadablePaths, violations);
+        if (isReadable("towers.base-limit", unreadablePaths)
+                && isReadable("towers.hard-cap", unreadablePaths)
+                && towers.hardCap() < towers.baseLimit()) {
+            violations.add(
+                    "towers.hard-cap: must be >= towers.base-limit (was "
+                            + towers.hardCap() + " < " + towers.baseLimit() + ")");
+        }
+        requirePositive("towers.arrow.damage", towers.arrowDamage(), unreadablePaths, violations);
+        requireFinite("towers.arrow.range", towers.arrowRange(), unreadablePaths, violations);
+        if (isReadable("towers.arrow.range", unreadablePaths)
+                && Double.isFinite(towers.arrowRange())
+                && towers.arrowRange() <= 0.0d) {
+            violations.add(
+                    "towers.arrow.range: must be > 0 (was " + towers.arrowRange() + ")");
+        }
+        requirePositive(
+                "towers.arrow.attack-interval-ticks",
+                towers.arrowAttackIntervalTicks(),
+                unreadablePaths,
+                violations);
     }
 
     private static void validateTerrainMutation(

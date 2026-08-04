@@ -19,7 +19,8 @@ final class PluginSettingsMapReader {
                 reader.enemies(),
                 reader.protection(),
                 reader.rewards(),
-                reader.terrainMutation());
+                reader.terrainMutation(),
+                reader.towers());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -173,6 +174,64 @@ final class PluginSettingsMapReader {
                             "terrain-mutation",
                             "recovery-verified",
                             false));
+        }
+
+        private TowerSettings towers() {
+            Object raw = root.get("towers");
+            if (raw == null) {
+                return TowerSettings.defaults();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("towers", "must be a map");
+                return TowerSettings.defaults();
+            }
+            Map<?, ?> arrow = nestedSection(values, "towers", "arrow");
+            if (arrow == null) {
+                arrow = Map.of();
+            }
+            return new TowerSettings(
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "base-limit",
+                            TowerSettings.DEFAULT_BASE_LIMIT),
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "limit-increment",
+                            TowerSettings.DEFAULT_LIMIT_INCREMENT),
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "hard-cap",
+                            TowerSettings.DEFAULT_HARD_CAP),
+                    integerOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "damage",
+                            TowerSettings.DEFAULT_ARROW_DAMAGE),
+                    decimalOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "range",
+                            TowerSettings.DEFAULT_ARROW_RANGE),
+                    integerOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "attack-interval-ticks",
+                            TowerSettings.DEFAULT_ARROW_ATTACK_INTERVAL_TICKS));
+        }
+
+        private Map<?, ?> nestedSection(Map<?, ?> parent, String parentPath, String name) {
+            Object raw = parent.get(name);
+            if (raw == null) {
+                return null;
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem(parentPath + "." + name, "must be a map");
+                return null;
+            }
+            return values;
         }
 
         private Set<String> forbiddenWorlds(Map<?, ?> section) {

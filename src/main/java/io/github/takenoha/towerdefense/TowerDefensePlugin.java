@@ -21,6 +21,9 @@ import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
+import io.github.takenoha.towerdefense.paper.TowerEntityTagger;
+import io.github.takenoha.towerdefense.paper.TowerItemTagger;
+import io.github.takenoha.towerdefense.paper.TowerManager;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.paper.WorldGuardRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
@@ -29,10 +32,12 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.RaidSealRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
+import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
+import io.github.takenoha.towerdefense.runtime.TowerRegistry;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -51,6 +56,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
     private PaperBlockMutationAdapter blockMutations;
     private PaperEscrowDropManager escrowDrops;
     private RewardQueueDeliveryManager rewardQueues;
+    private TowerManager towerManager;
 
     @Override
     public void onEnable() {
@@ -111,6 +117,25 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 coreRegistry,
                 regionProtection);
 
+        TowerRegistry towerRegistry = new TowerRegistry();
+        TowerRepository towerRepository = new TowerRepository(database);
+        towerRegistry.replaceAll(towerRepository.loadAllTowers());
+        TowerEntityTagger towerEntityTagger = new TowerEntityTagger(this);
+        towerManager = new TowerManager(
+                this,
+                settings,
+                repository,
+                towerRepository,
+                databaseExecutor,
+                sessions,
+                coreRegistry,
+                towerRegistry,
+                new TowerItemTagger(this),
+                towerEntityTagger);
+        towerManager.registerRecipe();
+        towerManager.recoverPreparedPlacements();
+        getServer().getPluginManager().registerEvents(towerManager, this);
+
         CoreItemListener coreItems = new CoreItemListener(
                 this,
                 settings,
@@ -164,7 +189,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         tagger,
                         sessions,
                         sessions,
-                        sessions.terrainAction()),
+                        sessions.terrainAction(),
+                        towerEntityTagger),
                 this);
         getServer().getPluginManager().registerEvents(new EscrowDropListener(escrowDrops), this);
         getServer().getPluginManager().registerEvents(
@@ -175,6 +201,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
         command.setExecutor(commandHandler);
         command.setTabCompleter(commandHandler);
         sessions.startTicking();
+        towerManager.startTicking();
 
         getLogger().info(
                 "Minecraft Tower Defense foundation enabled for Paper 26.2 build 87; "
@@ -184,6 +211,10 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (towerManager != null) {
+            towerManager.close();
+            towerManager = null;
+        }
         if (rewardQueues != null) {
             rewardQueues.close();
             rewardQueues = null;

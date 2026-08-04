@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 12;
+    public static final int CURRENT_VERSION = 13;
 
     private SchemaMigrator() {
     }
@@ -71,6 +71,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 12) {
                     applyVersionTwelve(connection);
                     recordMigration(connection, 12);
+                }
+                if (installedVersion < 13) {
+                    applyVersionThirteen(connection);
+                    recordMigration(connection, 13);
                 }
                 return null;
             });
@@ -737,6 +741,61 @@ public final class SchemaMigrator {
                     ALTER TABLE core_placement_operations
                     ADD COLUMN relocating_existing_core INTEGER NOT NULL DEFAULT 0
                     CHECK (relocating_existing_core IN (0, 1))
+                    """);
+        }
+    }
+
+    private static void applyVersionThirteen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE towers (
+                        tower_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN ('arrow')),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        entity_id TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (world_id, block_x, block_y, block_z)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX towers_team_idx ON towers(team_id, tower_id)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tower_placement_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL UNIQUE,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN ('arrow')),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        entity_id TEXT UNIQUE,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL AND entity_id IS NOT NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL AND entity_id IS NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_placement_operations_state_idx
+                    ON tower_placement_operations(state, prepared_at)
                     """);
         }
     }

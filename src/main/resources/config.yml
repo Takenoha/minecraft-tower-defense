@@ -47,6 +47,16 @@ rewards:
   # may receive the pending row as a safe fallback.
   team-queue-retention-seconds: 604800
 
+towers:
+  # The cap is base + increment * highest-cleared-level, bounded by hard-cap.
+  base-limit: 8
+  limit-increment: 2
+  hard-cap: 40
+  arrow:
+    damage: 4
+    range: 16.0
+    attack-interval-ticks: 20
+
 # Enemy terrain mutation is fail-closed. Set each flag only after the reviewed Paper integration
 # and recovery procedure has produced evidence for this server profile.
 terrain-mutation:

@@ -37,16 +37,19 @@ public final class EventEnemyListener implements Listener {
     private final EnemyLifecycleSink lifecycleSink;
     private final EnemyAccessPolicy accessPolicy;
     private final PaperEnemyTerrainAction terrainAction;
+    private final TowerEntityTagger towerTagger;
 
     public EventEnemyListener(
             EventEnemyTagger tagger,
             EnemyLifecycleSink lifecycleSink,
             EnemyAccessPolicy accessPolicy,
-            PaperEnemyTerrainAction terrainAction) {
+            PaperEnemyTerrainAction terrainAction,
+            TowerEntityTagger towerTagger) {
         this.tagger = Objects.requireNonNull(tagger, "tagger");
         this.lifecycleSink = Objects.requireNonNull(lifecycleSink, "lifecycleSink");
         this.accessPolicy = Objects.requireNonNull(accessPolicy, "accessPolicy");
         this.terrainAction = Objects.requireNonNull(terrainAction, "terrainAction");
+        this.towerTagger = Objects.requireNonNull(towerTagger, "towerTagger");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -55,9 +58,16 @@ public final class EventEnemyListener implements Listener {
             Player player = event instanceof EntityDamageByEntityEvent byEntity
                     ? responsiblePlayer(byEntity)
                     : null;
+            boolean towerAllowed = event instanceof EntityDamageByEntityEvent byEntity
+                    && towerTagger.read(byEntity.getDamager())
+                            .map(identity -> accessPolicy.mayAffectFromTower(
+                                    taggedEnemy, identity.teamId()))
+                            .orElse(false);
             if (!accessPolicy.mayRemain(taggedEnemy, event.getEntity().getUniqueId())
-                    || player == null
-                    || !accessPolicy.mayAffect(taggedEnemy, player.getUniqueId())) {
+                    || (!towerAllowed
+                            && (player == null
+                                    || !accessPolicy.mayAffect(
+                                            taggedEnemy, player.getUniqueId())))) {
                 event.setCancelled(true);
             }
         });
