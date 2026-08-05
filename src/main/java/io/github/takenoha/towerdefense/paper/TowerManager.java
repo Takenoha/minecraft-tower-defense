@@ -11,6 +11,8 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.BattleBoost;
 import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSnapshot;
 import io.github.takenoha.towerdefense.persistence.TowerPlacement;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
 import io.github.takenoha.towerdefense.persistence.TowerDamageMutationResult;
@@ -99,8 +101,7 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final TowerItemTagger itemTagger;
     private final TowerEntityTagger entityTagger;
     private final EventEnemyTagger eventEnemyTagger;
-    private final DefenseShardTagger shardTagger;
-    private final EnhancementCoreTagger enhancementCoreTagger;
+    private final ResourceRepository resources;
     private final CombatArea combatArea;
     private final NamespacedKey towerDamageKey;
     private final Set<UUID> placementInFlight = new HashSet<>();
@@ -129,6 +130,32 @@ public final class TowerManager implements Listener, AutoCloseable {
             TowerRegistry towers,
             TowerItemTagger itemTagger,
             TowerEntityTagger entityTagger) {
+        this(
+                plugin,
+                settings,
+                defenseRepository,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                towers,
+                itemTagger,
+                entityTagger,
+                null);
+    }
+
+    public TowerManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository defenseRepository,
+            TowerRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            TowerRegistry towers,
+            TowerItemTagger itemTagger,
+            TowerEntityTagger entityTagger,
+            ResourceRepository resources) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.defenseRepository = Objects.requireNonNull(defenseRepository, "defenseRepository");
@@ -140,8 +167,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         this.itemTagger = Objects.requireNonNull(itemTagger, "itemTagger");
         this.entityTagger = Objects.requireNonNull(entityTagger, "entityTagger");
         eventEnemyTagger = new EventEnemyTagger(plugin);
-        shardTagger = new DefenseShardTagger(plugin);
-        enhancementCoreTagger = new EnhancementCoreTagger(plugin);
+        this.resources = resources;
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -501,7 +527,16 @@ public final class TowerManager implements Listener, AutoCloseable {
             long battleFunds = eventId.isPresent()
                     ? defenseRepository.loadBattleFunds(eventId.orElseThrow()).balance()
                     : 0L;
-            return new TowerGuiData(tower, research.researchLevel(), eventId, battleFunds, boosts);
+            TeamResourceSnapshot resourceSnapshot = resources == null
+                    ? new TeamResourceSnapshot(tower.teamId(), 0L, 0L, 0L, 0L)
+                    : resources.load(tower.teamId(), player.getUniqueId());
+            return new TowerGuiData(
+                    tower,
+                    research.researchLevel(),
+                    eventId,
+                    battleFunds,
+                    boosts,
+                    resourceSnapshot);
         }).whenComplete((data, failure) -> runOnMainThread(() -> {
             if (failure != null || !player.isOnline()) {
                 if (failure == null) {
@@ -559,7 +594,8 @@ public final class TowerManager implements Listener, AutoCloseable {
                     canSpendBattleFunds,
                     data.tower().currentHitPoints(),
                     data.tower().maximumHitPoints(),
-                    repairCost));
+                    repairCost,
+                    data.resources()));
         }));
     }
 
@@ -786,7 +822,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
         int shardCost = settings.towers().individualUpgradeShardCost(tower.individualLevel());
         int coreCost = settings.towers().individualUpgradeCoreCost(tower.individualLevel());
-        TowerUpgrade request = TowerUpgrade.prepared(
+        TowerUpgrade request = TowerUpgrade.preparedWallet(
                 UUID.randomUUID(),
                 tower,
                 player.getUniqueId(),
@@ -808,31 +844,17 @@ public final class TowerManager implements Listener, AutoCloseable {
                         rollbackUpgrade(
                                 player,
                                 prepared,
-                                null,
                                 "強化前に対象または防衛フェーズが変わったため取り消しました。");
                         return;
                     }
-                    RemovedItems removed = removeUpgradeItems(
-                            player,
-                            prepared.defenseShardCost(),
-                            prepared.enhancementCoreCost());
-                    if (removed == null) {
-                        rollbackUpgrade(
-                                player,
-                                prepared,
-                                null,
-                                "強化に必要な素材が不足しています。");
-                        return;
-                    }
-                    databaseExecutor.submit(() -> repository.applyTowerUpgrade(
+                    databaseExecutor.submit(() -> repository.applyTowerUpgradeFromWallet(
                                     prepared.operationId(), Instant.now()))
                             .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
                                 if (applyFailure != null) {
                                     rollbackUpgrade(
                                             player,
                                             prepared,
-                                            removed,
-                                            "強化を永続化できなかったため素材を返却します: "
+                                            "強化を永続化できなかったためポイントは消費されていません: "
                                                     + rootMessage(applyFailure));
                                     return;
                                 }
@@ -871,7 +893,6 @@ public final class TowerManager implements Listener, AutoCloseable {
     private void rollbackUpgrade(
             Player player,
             TowerUpgrade upgrade,
-            RemovedItems removed,
             String message) {
         databaseExecutor.submit(() -> repository.rollbackTowerUpgrade(
                         upgrade.operationId(), Instant.now()))
@@ -887,16 +908,6 @@ public final class TowerManager implements Listener, AutoCloseable {
                                 NamedTextColor.RED));
                         return;
                     }
-                    if (removed != null
-                            && result.isPresent()
-                            && result.orElseThrow().state() == TowerUpgradeState.ROLLED_BACK) {
-                        for (ItemStack item : removed.items()) {
-                            if (!giveOrDrop(player, item)) {
-                                plugin.getLogger().warning(
-                                        "Could not refund a tower upgrade material");
-                            }
-                        }
-                    }
                     player.sendMessage(Component.text(message, NamedTextColor.RED));
                 }));
     }
@@ -904,48 +915,6 @@ public final class TowerManager implements Listener, AutoCloseable {
     private void finishUpgrade(Player player, UUID towerId, String message) {
         upgradeInFlight.remove(towerId);
         player.sendMessage(Component.text(message, NamedTextColor.RED));
-    }
-
-    private RemovedItems removeUpgradeItems(
-            Player player,
-            int shardCost,
-            int enhancementCoreCost) {
-        int shardsRemaining = shardCost;
-        int coresRemaining = enhancementCoreCost;
-        List<ItemStack> removed = new ArrayList<>();
-        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
-            ItemStack item = player.getInventory().getItem(slot);
-            if (item == null) {
-                continue;
-            }
-            boolean shard = shardTagger.isShard(item);
-            boolean core = enhancementCoreTagger.isEnhancementCore(item);
-            int remaining = shard ? shardsRemaining : (core ? coresRemaining : 0);
-            if (remaining <= 0) {
-                continue;
-            }
-            int quantity = Math.min(item.getAmount(), remaining);
-            ItemStack taken = item.clone();
-            taken.setAmount(quantity);
-            removed.add(taken);
-            int left = item.getAmount() - quantity;
-            player.getInventory().setItem(slot, left == 0 ? null : item.clone());
-            if (left > 0) {
-                player.getInventory().getItem(slot).setAmount(left);
-            }
-            if (shard) {
-                shardsRemaining -= quantity;
-            } else {
-                coresRemaining -= quantity;
-            }
-        }
-        if (shardsRemaining > 0 || coresRemaining > 0) {
-            for (ItemStack item : removed) {
-                giveOrDrop(player, item);
-            }
-            return null;
-        }
-        return new RemovedItems(List.copyOf(removed));
     }
 
     private void beginRemoval(Player player, UUID towerId) {
@@ -1807,10 +1776,8 @@ public final class TowerManager implements Listener, AutoCloseable {
             int researchLevel,
             Optional<UUID> eventId,
             long battleFunds,
-            List<BattleBoost> boosts) {
-    }
-
-    private record RemovedItems(List<ItemStack> items) {
+            List<BattleBoost> boosts,
+            TeamResourceSnapshot resources) {
     }
 
     private record TowerDistance(

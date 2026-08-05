@@ -792,6 +792,12 @@ public final class EscrowRepository {
         requirePositiveDuration(teamQueueRetention);
         UUID teamId = loadTeamId(connection, eventId);
         Instant teamClaimDeadline = settledAt.plus(teamQueueRetention);
+        ResourceRepository.settleForTerminal(
+                connection,
+                eventId,
+                terminalOperationId,
+                terminalPhase,
+                settledAt);
         List<StoredEscrowDrop> drops = loadDrops(connection, eventId);
         for (StoredEscrowDrop drop : drops) {
             if (drop.status() != EscrowDropStatus.HELD) {
@@ -807,6 +813,11 @@ public final class EscrowRepository {
                     drop.drop().dropId().toString(),
                     sha256(drop.drop().dropId() + "|" + terminalPhase),
                     settledAt);
+
+            if (ResourceRepository.isWalletResource(drop.drop().itemId())) {
+                markSettled(connection, drop, settledAt);
+                continue;
+            }
 
             for (EscrowClaim claim : loadClaims(connection, eventId, drop.drop().dropId())) {
                 UUID issueOperationId = deterministicOperation(
@@ -857,6 +868,11 @@ public final class EscrowRepository {
             UUID eventId,
             UUID recoveryOperationId,
             Instant voidedAt) throws SQLException {
+        ResourceRepository.settleForRecovery(
+                connection,
+                eventId,
+                recoveryOperationId,
+                voidedAt);
         for (StoredEscrowDrop drop : loadDrops(connection, eventId)) {
             if (drop.status() != EscrowDropStatus.HELD) {
                 continue;
@@ -887,6 +903,21 @@ public final class EscrowRepository {
                 """)) {
             statement.setString(1, voidedAt.toString());
             statement.setString(2, eventId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void markSettled(
+            Connection connection,
+            StoredEscrowDrop drop,
+            Instant settledAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE event_drop_escrow
+                SET status = 'SETTLED', display_entity_id = NULL, updated_at = ?
+                WHERE drop_id = ? AND status = 'HELD'
+                """)) {
+            statement.setString(1, settledAt.toString());
+            statement.setString(2, drop.drop().dropId().toString());
             statement.executeUpdate();
         }
     }

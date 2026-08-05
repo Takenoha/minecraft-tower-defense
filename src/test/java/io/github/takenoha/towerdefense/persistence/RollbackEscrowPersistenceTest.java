@@ -504,10 +504,12 @@ final class RollbackEscrowPersistenceTest {
         assertEquals(EscrowDropStatus.SETTLED, settled.status());
         assertEquals(2, settled.claimedQuantity());
         assertTrue(settled.displayEntityId().isEmpty());
-        assertEquals(1, escrow.loadRewardQueue(fixture.eventId()).size());
+        assertEquals(0, escrow.loadRewardQueue(fixture.eventId()).size());
         assertEquals(
-                RewardQueueScope.PLAYER,
-                escrow.loadRewardQueue(fixture.eventId()).getFirst().scope());
+                2L,
+                new ResourceRepository(fixture.database())
+                        .load(fixture.teamId(), fixture.ownerId())
+                        .defensePoints());
         assertEquals(
                 OperationOutcome.ALREADY_TERMINAL,
                 fixture.repository().finishEvent(
@@ -515,7 +517,7 @@ final class RollbackEscrowPersistenceTest {
                         1L,
                         UUID.randomUUID(),
                         START.plusSeconds(6L)));
-        assertEquals(1, escrow.loadRewardQueue(fixture.eventId()).size());
+        assertEquals(0, escrow.loadRewardQueue(fixture.eventId()).size());
     }
 
     @Test
@@ -589,7 +591,7 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
-    void victoryMovesUnclaimedEscrowToOneTeamQueue() {
+    void victoryMovesUnclaimedResourceEscrowToTheTeamWallet() {
         Fixture fixture = activeFixture("escrow-victory.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());
         UUID displayId = UUID.randomUUID();
@@ -608,39 +610,17 @@ final class RollbackEscrowPersistenceTest {
                 escrow.loadDrops(fixture.eventId()).getFirst().displayEntityId().orElseThrow());
 
         Instant settledAt = finishVictory(fixture);
-        assertEquals(2, escrow.loadRewardQueue(fixture.eventId()).size());
-        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).stream()
-                .filter(entry -> entry.itemId().equals("defense_shard"))
-                .findFirst()
-                .orElseThrow();
-        assertEquals(RewardQueueScope.TEAM, queue.scope());
-        assertEquals(fixture.teamId(), queue.recipientId());
-        assertEquals(3, queue.quantity());
+        assertTrue(escrow.loadRewardQueue(fixture.eventId()).stream()
+                .noneMatch(entry -> entry.itemId().equals("defense_shard")));
         assertEquals(
-                Optional.of(settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION)),
-                queue.teamClaimDeadline());
-        assertEquals(2, escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).size());
-        UUID deliveryOperation = UUID.randomUUID();
-        assertEquals(
-                RewardDeliveryOutcome.ACQUIRED,
-                escrow.prepareRewardDelivery(
-                        queue.queueId(),
-                        fixture.ownerId(),
-                        deliveryOperation,
-                        settledAt.plusSeconds(1L)));
-        assertEquals(
-                OperationOutcome.APPLIED,
-                escrow.markRewardDelivered(
-                        queue.queueId(),
-                        fixture.ownerId(),
-                        deliveryOperation,
-                        settledAt.plusSeconds(2L)));
-        assertEquals(RewardQueueStatus.DELIVERED, escrow.findRewardQueue(queue.queueId())
-                .orElseThrow().status());
+                3L,
+                new ResourceRepository(fixture.database())
+                        .load(fixture.teamId(), fixture.ownerId())
+                        .defensePoints());
     }
 
     @Test
-    void teamRewardFallsBackToCurrentOwnerOnlyAfterRetentionDeadline() {
+    void resourceWalletSurvivesTeamOwnershipTransfer() {
         UUID fallbackOwnerId = UUID.randomUUID();
         Fixture fixture = activeFixture(
                 "team-reward-fallback.sqlite", Optional.of(fallbackOwnerId));
@@ -658,6 +638,11 @@ final class RollbackEscrowPersistenceTest {
 
         Instant settledAt = finishVictory(fixture);
         assertEquals(
+                2L,
+                new ResourceRepository(fixture.database())
+                        .load(fixture.teamId(), fixture.ownerId())
+                        .defensePoints());
+        assertEquals(
                 ManagementOutcome.APPLIED,
                 fixture.repository().transferTeamOwnership(
                         fixture.teamId(),
@@ -666,42 +651,13 @@ final class RollbackEscrowPersistenceTest {
                         UUID.randomUUID(),
                         settledAt.plusSeconds(1L)).outcome());
 
-        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).stream()
-                .filter(entry -> entry.itemId().equals("defense_shard"))
-                .findFirst()
-                .orElseThrow();
-        Instant deadline = settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION);
-        assertTrue(escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline.minusNanos(1L))
-                .isEmpty());
         assertEquals(
-                List.of(queue),
-                escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline).stream()
-                        .filter(entry -> entry.itemId().equals("defense_shard"))
-                        .toList());
-        assertTrue(escrow.loadPendingRewardQueueForPlayer(UUID.randomUUID(), deadline).isEmpty());
-        assertThrows(
-                PersistenceConflictException.class,
-                () -> escrow.prepareRewardDelivery(
-                        queue.queueId(),
-                        UUID.randomUUID(),
-                        UUID.randomUUID(),
-                        deadline));
-
-        UUID deliveryOperation = UUID.randomUUID();
-        assertEquals(
-                RewardDeliveryOutcome.ACQUIRED,
-                escrow.prepareRewardDelivery(
-                        queue.queueId(),
-                        fallbackOwnerId,
-                        deliveryOperation,
-                        deadline));
-        assertEquals(
-                OperationOutcome.APPLIED,
-                escrow.markRewardDelivered(
-                        queue.queueId(),
-                        fallbackOwnerId,
-                        deliveryOperation,
-                        deadline));
+                2L,
+                new ResourceRepository(fixture.database())
+                        .load(fixture.teamId(), fallbackOwnerId)
+                        .defensePoints());
+        assertTrue(escrow.loadRewardQueue(fixture.eventId()).stream()
+                .noneMatch(entry -> entry.itemId().equals("defense_shard")));
     }
 
     @Test

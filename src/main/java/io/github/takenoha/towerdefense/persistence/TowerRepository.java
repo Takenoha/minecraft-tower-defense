@@ -195,6 +195,18 @@ public final class TowerRepository {
 
     /** Applies the durable level mutation after the Paper materials were removed. */
     public TowerUpgradeResult applyTowerUpgrade(UUID operationId, Instant appliedAt) {
+        return applyTowerUpgrade(operationId, appliedAt, PaymentMode.LEGACY_ITEMS);
+    }
+
+    /** Applies a level mutation and debits the team point wallet atomically. */
+    public TowerUpgradeResult applyTowerUpgradeFromWallet(UUID operationId, Instant appliedAt) {
+        return applyTowerUpgrade(operationId, appliedAt, PaymentMode.POINT_WALLET);
+    }
+
+    private TowerUpgradeResult applyTowerUpgrade(
+            UUID operationId,
+            Instant appliedAt,
+            PaymentMode paymentMode) {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         try {
@@ -202,6 +214,10 @@ public final class TowerRepository {
                 TowerUpgrade upgrade = loadTowerUpgrade(connection, operationId).orElseThrow(
                         () -> new PersistenceConflictException(
                                 "The prepared tower upgrade does not exist"));
+                if (upgrade.paymentMode() != paymentMode) {
+                    throw new PersistenceConflictException(
+                            "The tower upgrade payment mode does not match the request");
+                }
                 if (upgrade.state() == TowerUpgradeState.APPLIED) {
                     return new TowerUpgradeResult(
                             OperationOutcome.ALREADY_APPLIED,
@@ -221,6 +237,30 @@ public final class TowerRepository {
                         || current.individualLevel() != upgrade.fromLevel()) {
                     throw new PersistenceConflictException(
                             "The tower level changed before the upgrade was applied");
+                }
+                if (paymentMode == PaymentMode.POINT_WALLET) {
+                    ResourceRepository.debitInTransaction(
+                            connection,
+                            upgrade.teamId(),
+                            upgrade.actorId(),
+                            ResourceType.DEFENSE_POINTS,
+                            upgrade.defenseShardCost(),
+                            UUID.nameUUIDFromBytes((operationId + "|DEFENSE_POINTS")
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                            operationId.toString(),
+                            upgrade.payloadFingerprint() + "|DEFENSE_POINTS",
+                            appliedAt);
+                    ResourceRepository.debitInTransaction(
+                            connection,
+                            upgrade.teamId(),
+                            upgrade.actorId(),
+                            ResourceType.ENHANCEMENT_POINTS,
+                            upgrade.enhancementCoreCost(),
+                            UUID.nameUUIDFromBytes((operationId + "|ENHANCEMENT_POINTS")
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                            operationId.toString(),
+                            upgrade.payloadFingerprint() + "|ENHANCEMENT_POINTS",
+                            appliedAt);
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
                         UPDATE towers
@@ -298,7 +338,8 @@ public final class TowerRepository {
                         TowerUpgradeState.ROLLED_BACK,
                         upgrade.preparedAt(),
                         null,
-                        rolledBackAt));
+                        rolledBackAt,
+                        upgrade.paymentMode()));
             });
         } catch (SQLException exception) {
             throw failure("roll back a tower upgrade", exception);
@@ -865,7 +906,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, tower_id, actor_id, team_id, from_level, to_level,
                        defense_shard_cost, enhancement_core_cost, payload_fingerprint,
-                       state, prepared_at, applied_at, rolled_back_at
+                       payment_mode, state, prepared_at, applied_at, rolled_back_at
                 FROM tower_upgrade_operations WHERE operation_id = ?
                 """)) {
             statement.setString(1, operationId.toString());
@@ -891,7 +932,8 @@ public final class TowerRepository {
                 TowerUpgradeState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
                 nullableInstant(resultSet.getString("applied_at")),
-                nullableInstant(resultSet.getString("rolled_back_at")));
+                nullableInstant(resultSet.getString("rolled_back_at")),
+                PaymentMode.valueOf(resultSet.getString("payment_mode")));
     }
 
     private static void insertTowerUpgrade(
@@ -901,8 +943,8 @@ public final class TowerRepository {
                 INSERT INTO tower_upgrade_operations(
                     operation_id, tower_id, actor_id, team_id, from_level, to_level,
                     defense_shard_cost, enhancement_core_cost, payload_fingerprint,
-                    state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    payment_mode, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, upgrade.operationId().toString());
             statement.setString(2, upgrade.towerId().toString());
@@ -913,7 +955,8 @@ public final class TowerRepository {
             statement.setInt(7, upgrade.defenseShardCost());
             statement.setInt(8, upgrade.enhancementCoreCost());
             statement.setString(9, upgrade.payloadFingerprint());
-            statement.setString(10, upgrade.preparedAt().toString());
+            statement.setString(10, upgrade.paymentMode().name());
+            statement.setString(11, upgrade.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -932,13 +975,15 @@ public final class TowerRepository {
                 upgrade.state(),
                 upgrade.preparedAt(),
                 upgrade.appliedAt(),
-                upgrade.rolledBackAt());
+                upgrade.rolledBackAt(),
+                upgrade.paymentMode());
     }
 
     private static String upgradeFingerprint(TowerUpgrade upgrade) {
         return upgrade.towerId() + "|" + upgrade.actorId() + "|" + upgrade.teamId()
                 + "|" + upgrade.fromLevel() + "|" + upgrade.toLevel()
-                + "|" + upgrade.defenseShardCost() + "|" + upgrade.enhancementCoreCost();
+                + "|" + upgrade.defenseShardCost() + "|" + upgrade.enhancementCoreCost()
+                + "|" + upgrade.paymentMode();
     }
 
     private static void requireMatchingUpgrade(
@@ -951,6 +996,7 @@ public final class TowerRepository {
                 || existing.toLevel() != requested.toLevel()
                 || existing.defenseShardCost() != requested.defenseShardCost()
                 || existing.enhancementCoreCost() != requested.enhancementCoreCost()
+                || existing.paymentMode() != requested.paymentMode()
                 || !existing.payloadFingerprint().equals(requested.payloadFingerprint())) {
             throw new PersistenceConflictException(
                     "The tower upgrade operation UUID is already assigned to another payload");

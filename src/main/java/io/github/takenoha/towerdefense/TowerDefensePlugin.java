@@ -31,6 +31,7 @@ import io.github.takenoha.towerdefense.persistence.Database;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.RaidSealRepository;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
@@ -80,6 +81,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
         }
 
         Database database = new Database(databasePath);
+        ResourceRepository resources = new ResourceRepository(database);
         DefenseRepository repository = new DefenseRepository(database, settings.rewards());
         ThirdPartyRegionProtectionAdapter regionProtection =
                 WorldGuardRegionProtectionAdapter.discover(this);
@@ -90,7 +92,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 this,
                 escrowRepository,
                 databaseExecutor,
-                new EscrowDropTagger(this));
+                new EscrowDropTagger(this),
+                resources);
         rewardQueues = new RewardQueueDeliveryManager(
                 this,
                 escrowRepository,
@@ -113,7 +116,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 escrowDrops,
                 rewardQueues,
                 coreRegistry,
-                regionProtection);
+                regionProtection,
+                resources);
 
         TowerRegistry towerRegistry = new TowerRegistry();
         TowerRepository towerRepository = new TowerRepository(database);
@@ -129,7 +133,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 coreRegistry,
                 towerRegistry,
                 new TowerItemTagger(this),
-                towerEntityTagger);
+                towerEntityTagger,
+                resources);
         towerManager.registerRecipe();
         towerManager.recoverPreparedPlacements();
         towerManager.recoverPreparedRemovals();
@@ -170,7 +175,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         coreItems,
                         new DefenseShardTagger(this),
                         towerRepository,
-                        new io.github.takenoha.towerdefense.paper.ResearchCrystalTagger(this)),
+                        new io.github.takenoha.towerdefense.paper.ResearchCrystalTagger(this),
+                        resources),
                 this);
         RaidSealListener raidSeals = new RaidSealListener(
                 this,

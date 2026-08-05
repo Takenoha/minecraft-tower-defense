@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 26;
+    public static final int CURRENT_VERSION = 29;
 
     private SchemaMigrator() {
     }
@@ -127,6 +127,18 @@ public final class SchemaMigrator {
                 if (installedVersion < 26) {
                     applyVersionTwentySix(connection);
                     recordMigration(connection, 26);
+                }
+                if (installedVersion < 27) {
+                    applyVersionTwentySeven(connection);
+                    recordMigration(connection, 27);
+                }
+                if (installedVersion < 28) {
+                    applyVersionTwentyEight(connection);
+                    recordMigration(connection, 28);
+                }
+                if (installedVersion < 29) {
+                    applyVersionTwentyNine(connection);
+                    recordMigration(connection, 29);
                 }
                 return null;
             });
@@ -1642,6 +1654,126 @@ public final class SchemaMigrator {
                         applied_at TEXT NOT NULL,
                         UNIQUE (invite_id, operation_kind)
                     )
+                    """);
+        }
+    }
+
+    /** Adds team-scoped point wallets and an idempotent debit/settlement ledger. */
+    private static void applyVersionTwentySeven(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE team_resource_balances (
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        resource_type TEXT NOT NULL CHECK (
+                            resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')
+                        ),
+                        balance INTEGER NOT NULL CHECK (balance >= 0),
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (team_id, resource_type)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO team_resource_balances(team_id, resource_type, balance, updated_at)
+                    SELECT teams.team_id, resources.resource_type, 0, teams.created_at
+                    FROM teams
+                    CROSS JOIN (
+                        SELECT 'DEFENSE_POINTS' AS resource_type
+                        UNION ALL SELECT 'ENHANCEMENT_POINTS'
+                    ) resources
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE team_resource_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        resource_type TEXT NOT NULL CHECK (
+                            resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')
+                        ),
+                        operation_kind TEXT NOT NULL CHECK (
+                            operation_kind IN ('EVENT_SETTLEMENT', 'DEBIT', 'CREDIT')
+                        ),
+                        source_id TEXT NOT NULL,
+                        delta INTEGER NOT NULL,
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        UNIQUE (team_id, resource_type, operation_kind, source_id)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX team_resource_operations_team_idx
+                    ON team_resource_operations(team_id, resource_type, applied_at)
+                    """);
+        }
+    }
+
+    /** Records whether management payments use the new wallet or legacy item path. */
+    private static void applyVersionTwentyEight(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE management_operations
+                    ADD COLUMN payment_mode TEXT NOT NULL DEFAULT 'LEGACY_ITEMS'
+                    CHECK (payment_mode IN ('POINT_WALLET', 'LEGACY_ITEMS'))
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE tower_upgrade_operations
+                    ADD COLUMN payment_mode TEXT NOT NULL DEFAULT 'LEGACY_ITEMS'
+                    CHECK (payment_mode IN ('POINT_WALLET', 'LEGACY_ITEMS'))
+                    """);
+        }
+    }
+
+    /** Adds the prepared receipt boundary for core repairs paid with wallet points. */
+    private static void applyVersionTwentyNine(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE core_repair_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        core_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        actor_id TEXT NOT NULL,
+                        expected_current_hp INTEGER NOT NULL CHECK (expected_current_hp > 0),
+                        repair_amount INTEGER NOT NULL CHECK (repair_amount > 0),
+                        defense_point_cost INTEGER NOT NULL CHECK (defense_point_cost >= 0),
+                        payment_mode TEXT NOT NULL CHECK (
+                            payment_mode IN ('POINT_WALLET', 'LEGACY_ITEMS')
+                        ),
+                        vanilla_material TEXT NOT NULL,
+                        vanilla_material_amount INTEGER NOT NULL CHECK (vanilla_material_amount >= 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX core_repair_operations_actor_state_idx
+                    ON core_repair_operations(actor_id, state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE core_repair_receipts (
+                        operation_id TEXT PRIMARY KEY
+                            REFERENCES core_repair_operations(operation_id) ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        material TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX core_repair_receipts_player_state_idx
+                    ON core_repair_receipts(player_id, state, reserved_at)
                     """);
         }
     }

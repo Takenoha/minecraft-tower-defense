@@ -284,6 +284,58 @@ final class TowerPersistenceTest {
     }
 
     @Test
+    void walletUpgradeDebitsBothPointsAndRaisesTowerExactlyOnce() throws SQLException {
+        Database database = new Database(temporaryDirectory.resolve("upgrade-wallet.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 2);
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                2L,
+                UUID.randomUUID(),
+                "upgrade-defense-funding",
+                NOW);
+        resources.credit(
+                teamId,
+                ResourceType.ENHANCEMENT_POINTS,
+                1L,
+                UUID.randomUUID(),
+                "upgrade-enhancement-funding",
+                NOW);
+
+        UUID operationId = UUID.randomUUID();
+        TowerUpgrade prepared = towers.prepareTowerUpgrade(
+                TowerUpgrade.preparedWallet(
+                        operationId,
+                        installed,
+                        ownerId,
+                        2,
+                        1,
+                        NOW.plusSeconds(2L)));
+        TowerUpgradeResult applied = towers.applyTowerUpgradeFromWallet(
+                prepared.operationId(), NOW.plusSeconds(3L));
+        assertEquals(OperationOutcome.APPLIED, applied.outcome());
+        assertEquals(2, applied.tower().orElseThrow().individualLevel());
+        assertEquals(0L, resources.load(teamId, ownerId).defensePoints());
+        assertEquals(0L, resources.load(teamId, ownerId).enhancementPoints());
+
+        TowerUpgradeResult replay = towers.applyTowerUpgradeFromWallet(
+                prepared.operationId(), NOW.plusSeconds(4L));
+        assertEquals(OperationOutcome.ALREADY_APPLIED, replay.outcome());
+        assertEquals(0L, resources.load(teamId, ownerId).defensePoints());
+        assertEquals(0L, resources.load(teamId, ownerId).enhancementPoints());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.applyTowerUpgrade(prepared.operationId(), NOW.plusSeconds(5L)));
+    }
+
+    @Test
     void preparedUpgradeCanBeRolledBackWithoutChangingTheTower() throws SQLException {
         Database database = new Database(temporaryDirectory.resolve("upgrade-rollback.sqlite"));
         DefenseRepository teams = new DefenseRepository(database);

@@ -22,6 +22,8 @@ import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSettlement;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -96,6 +98,7 @@ public final class DefenseSessionManager
     private final EnemyRoleSchedule enemyRoles;
     private final DefenseShardTagger defenseShards;
     private final EnhancementCoreTagger enhancementCores;
+    private final ResourceRepository resources;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -173,6 +176,30 @@ public final class DefenseSessionManager
             RewardQueueDeliveryManager rewardQueues,
             CoreRegistry coreRegistry,
             ThirdPartyRegionProtectionAdapter regionProtection) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                null);
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -182,6 +209,7 @@ public final class DefenseSessionManager
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
         this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
+        this.resources = resources;
         pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -1071,9 +1099,42 @@ public final class DefenseSessionManager
             escrowDrops.removeEventDisplays(defense.session.eventId());
             if (defense.finishSnapshot.phase() != DefensePhase.RECOVERY) {
                 rewardQueues.onEventSettled(defense.session.eventId());
+                notifyResourceSettlement(defense);
+            } else {
+                broadcast(
+                        defense,
+                        Component.text(
+                                "技術的復旧のため、今回の仮確保ポイントは失効しました。",
+                                NamedTextColor.YELLOW));
             }
             active = null;
         }));
+    }
+
+    private void notifyResourceSettlement(ActiveDefense defense) {
+        if (resources == null || defense.finishSnapshot == null) {
+            return;
+        }
+        UUID eventId = defense.session.eventId();
+        DefensePhase phase = defense.finishSnapshot.phase();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                TeamResourceSettlement settlement = resources.loadTerminalSettlement(eventId, phase);
+                runOnMainThread(() -> broadcast(
+                        defense,
+                        Component.text(
+                                "資源庫へ確定しました。防衛ポイント +"
+                                        + settlement.defensePoints()
+                                        + "P / 強化ポイント +"
+                                        + settlement.enhancementPoints() + "P",
+                                NamedTextColor.GREEN)));
+            } catch (RuntimeException failure) {
+                plugin.getLogger().log(
+                        java.util.logging.Level.WARNING,
+                        "Could not load resource settlement message for " + eventId,
+                        failure);
+            }
+        });
     }
 
     private boolean prepareTerrainSettlement(ActiveDefense defense) {

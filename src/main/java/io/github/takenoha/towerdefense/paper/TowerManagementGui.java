@@ -3,6 +3,8 @@ package io.github.takenoha.towerdefense.paper;
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.persistence.BattleBoost;
 import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
+import io.github.takenoha.towerdefense.persistence.ResourceType;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSnapshot;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
 import java.util.List;
 import java.util.Map;
@@ -86,9 +88,48 @@ public final class TowerManagementGui {
             long currentHitPoints,
             long maximumHitPoints,
             int repairCost) {
+        return create(
+                tower,
+                canRemove,
+                removalReason,
+                researchLevel,
+                shardCost,
+                enhancementCoreCost,
+                canBuyBoost,
+                battleFunds,
+                boosts,
+                powerCost,
+                speedCost,
+                rangeCost,
+                canRepair,
+                currentHitPoints,
+                maximumHitPoints,
+                repairCost,
+                new TeamResourceSnapshot(tower.teamId(), 0L, 0L, 0L, 0L));
+    }
+
+    public static Inventory create(
+            TowerRecord tower,
+            boolean canRemove,
+            String removalReason,
+            int researchLevel,
+            int shardCost,
+            int enhancementCoreCost,
+            boolean canBuyBoost,
+            long battleFunds,
+            Map<BattleBoostKind, BattleBoost> boosts,
+            int powerCost,
+            int speedCost,
+            int rangeCost,
+            boolean canRepair,
+            long currentHitPoints,
+            long maximumHitPoints,
+            int repairCost,
+            TeamResourceSnapshot resources) {
         Objects.requireNonNull(tower, "tower");
         Objects.requireNonNull(removalReason, "removalReason");
         Objects.requireNonNull(boosts, "boosts");
+        Objects.requireNonNull(resources, "resources");
         if (researchLevel <= 0 || shardCost < 0 || enhancementCoreCost < 0) {
             throw new IllegalArgumentException("tower management values are invalid");
         }
@@ -165,21 +206,31 @@ public final class TowerManagementGui {
                                     : List.of("クリックで対象優先を変更"),
                             selected ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
         }
+        boolean enoughWallet = resources.balance(ResourceType.DEFENSE_POINTS) >= shardCost
+                && resources.balance(ResourceType.ENHANCEMENT_POINTS) >= enhancementCoreCost;
         boolean canUpgrade = shardCost > 0
                 && enhancementCoreCost > 0
-                && tower.individualLevel() < researchLevel;
+                && tower.individualLevel() < researchLevel
+                && enoughWallet;
         inventory.setItem(UPGRADE_SLOT, item(
                 canUpgrade ? Material.NETHER_STAR : Material.GRAY_DYE,
                 canUpgrade ? "個体Lvを強化" : "個体Lv強化（現在不可）",
                 canUpgrade
                         ? List.of(
                                 "次の個体Lv: " + (tower.individualLevel() + 1),
-                                "防衛の欠片: " + shardCost,
-                                "強化コア: " + enhancementCoreCost,
-                                "クリックで素材を消費して強化")
+                                "防衛ポイント: " + shardCost + " / 残高 "
+                                        + resources.balance(ResourceType.DEFENSE_POINTS),
+                                "強化ポイント: " + enhancementCoreCost + " / 残高 "
+                                        + resources.balance(ResourceType.ENHANCEMENT_POINTS),
+                                "クリックで資源庫ポイントを消費して強化")
                         : tower.individualLevel() >= researchLevel
                                 ? List.of("チーム研究Lvが上限です。")
-                                : List.of("個体Lv強化は現在利用できません。"),
+                                : List.of(
+                                        "防衛ポイント: " + shardCost + " / 残高 "
+                                                + resources.balance(ResourceType.DEFENSE_POINTS),
+                                        "強化ポイント: " + enhancementCoreCost + " / 残高 "
+                                                + resources.balance(ResourceType.ENHANCEMENT_POINTS),
+                                        "資源庫残高が不足しています。"),
                 canUpgrade ? NamedTextColor.AQUA : NamedTextColor.GRAY));
         inventory.setItem(REMOVE_SLOT, item(
                 canRemove ? Material.EMERALD : Material.GRAY_DYE,

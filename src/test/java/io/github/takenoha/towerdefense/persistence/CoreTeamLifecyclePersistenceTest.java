@@ -210,6 +210,172 @@ final class CoreTeamLifecyclePersistenceTest {
     }
 
     @Test
+    void walletCoreRepairDebitsPointsAndCoreHealthExactlyOnce() {
+        Database database = new Database(temporaryDirectory.resolve("wallet-repair.sqlite"));
+        DefenseRepository repository = new DefenseRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        repository.createSoloTeam(teamId, ownerId, NOW);
+        CoreRecord core = new CoreRecord(
+                UUID.randomUUID(),
+                teamId,
+                UUID.randomUUID(),
+                0,
+                64,
+                0,
+                40L,
+                100L,
+                NOW,
+                NOW);
+        repository.placeCore(core, 192.0D);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                5L,
+                UUID.randomUUID(),
+                "repair-funding",
+                NOW);
+
+        UUID operationId = UUID.randomUUID();
+        CoreMutationResult repaired = repository.repairCore(
+                core.id(),
+                ownerId,
+                20L,
+                3L,
+                PaymentMode.POINT_WALLET,
+                operationId,
+                NOW.plusSeconds(1L));
+        assertEquals(60L, repaired.core().orElseThrow().currentHitPoints());
+        assertEquals(2L, resources.load(teamId, ownerId).defensePoints());
+        assertEquals(
+                ManagementOutcome.ALREADY_APPLIED,
+                repository.repairCore(
+                        core.id(),
+                        ownerId,
+                        20L,
+                        3L,
+                        PaymentMode.POINT_WALLET,
+                        operationId,
+                        NOW.plusSeconds(2L)).outcome());
+        assertEquals(2L, resources.load(teamId, ownerId).defensePoints());
+    }
+
+    @Test
+    void preparedWalletRepairRequiresReceiptAndClearsItAfterApply() {
+        Database database = new Database(temporaryDirectory.resolve("prepared-wallet-repair.sqlite"));
+        DefenseRepository repository = new DefenseRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        repository.createSoloTeam(teamId, ownerId, NOW);
+        CoreRecord core = new CoreRecord(
+                UUID.randomUUID(),
+                teamId,
+                UUID.randomUUID(),
+                0,
+                64,
+                0,
+                40L,
+                100L,
+                NOW,
+                NOW);
+        repository.placeCore(core, 192.0D);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                5L,
+                UUID.randomUUID(),
+                "prepared-repair-funding",
+                NOW);
+        UUID operationId = UUID.randomUUID();
+        CoreRepairOperation prepared = repository.prepareCoreRepair(
+                core.id(),
+                ownerId,
+                20L,
+                3L,
+                PaymentMode.POINT_WALLET,
+                "IRON_INGOT",
+                4L,
+                operationId,
+                NOW.plusSeconds(1L));
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> repository.applyPreparedCoreRepair(
+                        prepared.operationId(), NOW.plusSeconds(2L)));
+
+        repository.reserveCoreRepairReceipt(
+                operationId,
+                ownerId,
+                "IRON_INGOT",
+                4L,
+                NOW.plusSeconds(2L));
+        CoreMutationResult applied = repository.applyPreparedCoreRepair(
+                operationId,
+                NOW.plusSeconds(3L));
+        assertEquals(ManagementOutcome.APPLIED, applied.outcome());
+        assertEquals(60L, applied.core().orElseThrow().currentHitPoints());
+        assertEquals(2L, resources.load(teamId, ownerId).defensePoints());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.clearCoreRepairReceipt(operationId, NOW.plusSeconds(4L)));
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.clearCoreRepairReceipt(operationId, NOW.plusSeconds(5L)));
+        assertEquals(
+                ManagementOutcome.ALREADY_APPLIED,
+                repository.applyPreparedCoreRepair(operationId, NOW.plusSeconds(6L)).outcome());
+        assertEquals(CoreRepairReceiptState.CLEARED,
+                repository.findCoreRepairReceipt(operationId).orElseThrow().state());
+        assertEquals(2L, resources.load(teamId, ownerId).defensePoints());
+    }
+
+    @Test
+    void failedPreparedWalletRepairLeavesCoreAndWalletUnchangedUntilRollback() {
+        Database database = new Database(temporaryDirectory.resolve("prepared-wallet-repair-failure.sqlite"));
+        DefenseRepository repository = new DefenseRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        repository.createSoloTeam(teamId, ownerId, NOW);
+        CoreRecord core = new CoreRecord(
+                UUID.randomUUID(),
+                teamId,
+                UUID.randomUUID(),
+                0,
+                64,
+                0,
+                40L,
+                100L,
+                NOW,
+                NOW);
+        repository.placeCore(core, 192.0D);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                2L,
+                UUID.randomUUID(),
+                "prepared-repair-insufficient-funding",
+                NOW);
+        UUID operationId = UUID.randomUUID();
+        repository.prepareCoreRepair(
+                core.id(), ownerId, 20L, 3L, PaymentMode.POINT_WALLET,
+                "IRON_INGOT", 4L, operationId, NOW.plusSeconds(1L));
+        repository.reserveCoreRepairReceipt(
+                operationId, ownerId, "IRON_INGOT", 4L, NOW.plusSeconds(2L));
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> repository.applyPreparedCoreRepair(operationId, NOW.plusSeconds(3L)));
+        assertEquals(40L, repository.findCore(core.id()).orElseThrow().currentHitPoints());
+        assertEquals(2L, resources.load(teamId, ownerId).defensePoints());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.rollbackPreparedCoreRepair(operationId, NOW.plusSeconds(4L)));
+        assertEquals(CoreRepairReceiptState.RESTORED,
+                repository.findCoreRepairReceipt(operationId).orElseThrow().state());
+    }
+
+    @Test
     void coreMutationsRejectDistanceConflictsAndActiveEvents() {
         DefenseRepository repository = new DefenseRepository(
                 new Database(temporaryDirectory.resolve("core-boundaries.sqlite")));
