@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 16;
+    public static final int CURRENT_VERSION = 17;
 
     private SchemaMigrator() {
     }
@@ -87,6 +87,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 16) {
                     applyVersionSixteen(connection);
                     recordMigration(connection, 16);
+                }
+                if (installedVersion < 17) {
+                    applyVersionSeventeen(connection);
+                    recordMigration(connection, 17);
                 }
                 return null;
             });
@@ -1003,6 +1007,46 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_removal_operations_state_idx
                     ON tower_removal_operations(state, prepared_at)
+                    """);
+        }
+    }
+
+    /** Adds per-team tower research caps and their UUID-idempotent purchase ledger. */
+    private static void applyVersionSeventeen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE tower_research (
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN ('arrow', 'cannon')),
+                        research_level INTEGER NOT NULL CHECK (research_level > 0),
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (team_id, tower_type)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_research(team_id, tower_type, research_level, updated_at)
+                    SELECT team_id, 'arrow', 1, created_at FROM teams
+                    UNION ALL
+                    SELECT team_id, 'cannon', 1, created_at FROM teams
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_research_team_idx
+                    ON tower_research(team_id, tower_type)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tower_research_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        actor_id TEXT NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN ('arrow', 'cannon')),
+                        research_point_cost INTEGER NOT NULL CHECK (research_point_cost > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_research_operations_team_idx
+                    ON tower_research_operations(team_id, applied_at)
                     """);
         }
     }

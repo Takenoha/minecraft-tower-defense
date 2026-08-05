@@ -4,6 +4,7 @@ import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
+import io.github.takenoha.towerdefense.domain.TowerResearch;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -46,6 +47,106 @@ public final class TowerRepository {
     public Optional<TowerRecord> findTower(UUID towerId) {
         Objects.requireNonNull(towerId, "towerId");
         return read("load a tower", connection -> loadTower(connection, towerId));
+    }
+
+    /** Loads all per-type research caps for one team in stable type order. */
+    public List<TowerResearch> loadTowerResearch(UUID teamId) {
+        Objects.requireNonNull(teamId, "teamId");
+        return read("load tower research", connection -> loadTowerResearch(connection, teamId));
+    }
+
+    public Optional<TowerResearch> findTowerResearch(UUID teamId, TowerType towerType) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(towerType, "towerType");
+        return read(
+                "load tower research",
+                connection -> loadTowerResearch(connection, teamId, towerType));
+    }
+
+    /**
+     * Spends team research points for exactly one level of one tower type.
+     *
+     * <p>The caller supplies the cost selected by the active balance/configuration layer. The
+     * operation UUID and payload fingerprint make retries harmless while the global event lock
+     * keeps research changes outside an active defense event.</p>
+     */
+    public TowerResearchMutationResult purchaseTowerResearch(
+            UUID teamId,
+            UUID actorId,
+            TowerType towerType,
+            long researchPointCost,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(towerType, "towerType");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (researchPointCost <= 0L) {
+            throw new IllegalArgumentException("researchPointCost must be positive");
+        }
+        String fingerprint = researchFingerprint(
+                teamId, actorId, towerType, researchPointCost);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<String> existingFingerprint = loadResearchOperationFingerprint(
+                        connection, operationId);
+                if (existingFingerprint.isPresent()) {
+                    if (!existingFingerprint.orElseThrow().equals(fingerprint)) {
+                        throw new PersistenceConflictException(
+                                "The tower research operation UUID is already assigned to a different payload");
+                    }
+                    return new TowerResearchMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireTeamProgress(connection, teamId),
+                            requireTowerResearch(connection, teamId, towerType));
+                }
+
+                requireNoActiveEvent(connection, "purchase tower research");
+                requireTeamMember(connection, teamId, actorId);
+                TeamProgress progress = requireTeamProgress(connection, teamId);
+                TowerResearch current = requireTowerResearch(connection, teamId, towerType);
+                if (progress.researchPoints() < researchPointCost) {
+                    throw new PersistenceConflictException(
+                            "The team does not have enough research points for this purchase");
+                }
+                if (current.researchLevel() == Integer.MAX_VALUE) {
+                    throw new PersistenceConflictException(
+                            "The tower research level has reached its maximum value");
+                }
+
+                int nextLevel = current.researchLevel() + 1;
+                TeamProgress updatedProgress = new TeamProgress(
+                        progress.teamId(),
+                        progress.highestClearedLevel(),
+                        progress.unlockedLevel(),
+                        progress.researchPoints() - researchPointCost);
+                TowerResearch updatedResearch = new TowerResearch(
+                        current.teamId(),
+                        current.towerType(),
+                        nextLevel,
+                        appliedAt);
+                updateTeamResearchPoints(connection, updatedProgress, appliedAt);
+                updateTowerResearch(connection, updatedResearch);
+                insertResearchOperation(
+                        connection,
+                        operationId,
+                        teamId,
+                        actorId,
+                        towerType,
+                        researchPointCost,
+                        fingerprint,
+                        appliedAt);
+                return new TowerResearchMutationResult(
+                        OperationOutcome.APPLIED, updatedProgress, updatedResearch);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower research purchase conflicts with persisted data", exception);
+            }
+            throw failure("purchase tower research", exception);
+        }
     }
 
     /** Updates one tower's target-selection mode after validating team membership. */
@@ -306,6 +407,11 @@ public final class TowerRepository {
                         connection, placement.teamId(), "prepare a tower placement");
                 requireTeamMember(connection, placement.teamId(), placement.actorId());
                 requireTowerCapacity(connection, placement.teamId(), settings);
+                requireTowerResearch(
+                        connection,
+                        placement.teamId(),
+                        placement.type(),
+                        placement.individualLevel());
                 if (loadTower(connection, placement.towerId()).isPresent()) {
                     throw new PersistenceConflictException(
                             "The tower item identity has already been used");
@@ -363,6 +469,11 @@ public final class TowerRepository {
                         connection, placement.teamId(), "apply a tower placement");
                 requireTeamMember(connection, placement.teamId(), placement.actorId());
                 requireTowerCapacity(connection, placement.teamId(), settings);
+                requireTowerResearch(
+                        connection,
+                        placement.teamId(),
+                        placement.type(),
+                        placement.individualLevel());
                 if (loadTower(connection, placement.towerId()).isPresent()) {
                     throw new PersistenceConflictException(
                             "The tower item identity has already been applied");
@@ -466,6 +577,19 @@ public final class TowerRepository {
         if (count >= settings.limitFor(progress.highestClearedLevel())) {
             throw new PersistenceConflictException(
                     "The team's tower limit has been reached (" + count + ")");
+        }
+    }
+
+    private static void requireTowerResearch(
+            Connection connection,
+            UUID teamId,
+            TowerType towerType,
+            int individualLevel) throws SQLException {
+        TowerResearch research = requireTowerResearch(connection, teamId, towerType);
+        if (individualLevel > research.researchLevel()) {
+            throw new PersistenceConflictException(
+                    "The team's " + towerType.id()
+                            + " research only permits tower level " + research.researchLevel());
         }
     }
 
@@ -612,6 +736,141 @@ public final class TowerRepository {
         }
     }
 
+    private static List<TowerResearch> loadTowerResearch(
+            Connection connection,
+            UUID teamId) throws SQLException {
+        List<TowerResearch> research = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, tower_type, research_level, updated_at
+                FROM tower_research
+                WHERE team_id = ?
+                ORDER BY tower_type
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    research.add(towerResearchFromRow(resultSet));
+                }
+            }
+        }
+        return List.copyOf(research);
+    }
+
+    private static Optional<TowerResearch> loadTowerResearch(
+            Connection connection,
+            UUID teamId,
+            TowerType towerType) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, tower_type, research_level, updated_at
+                FROM tower_research
+                WHERE team_id = ? AND tower_type = ?
+                """)) {
+            statement.setString(1, teamId.toString());
+            statement.setString(2, towerType.id());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(towerResearchFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TowerResearch requireTowerResearch(
+            Connection connection,
+            UUID teamId,
+            TowerType towerType) throws SQLException {
+        return loadTowerResearch(connection, teamId, towerType).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team " + teamId + " has no research row for " + towerType.id()));
+    }
+
+    private static TeamProgress requireTeamProgress(
+            Connection connection,
+            UUID teamId) throws SQLException {
+        return loadTeamProgress(connection, teamId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team " + teamId + " has no progression row"));
+    }
+
+    private static Optional<String> loadResearchOperationFingerprint(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT payload_fingerprint
+                FROM tower_research_operations
+                WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(resultSet.getString("payload_fingerprint"))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static void updateTeamResearchPoints(
+            Connection connection,
+            TeamProgress progress,
+            Instant updatedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_progress
+                SET research_points = ?, updated_at = ?
+                WHERE team_id = ?
+                """)) {
+            statement.setLong(1, progress.researchPoints());
+            statement.setString(2, updatedAt.toString());
+            statement.setString(3, progress.teamId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The research point update affected no rows");
+            }
+        }
+    }
+
+    private static void updateTowerResearch(
+            Connection connection,
+            TowerResearch research) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE tower_research
+                SET research_level = ?, updated_at = ?
+                WHERE team_id = ? AND tower_type = ?
+                """)) {
+            statement.setInt(1, research.researchLevel());
+            statement.setString(2, research.updatedAt().toString());
+            statement.setString(3, research.teamId().toString());
+            statement.setString(4, research.towerType().id());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The tower research update affected no rows");
+            }
+        }
+    }
+
+    private static void insertResearchOperation(
+            Connection connection,
+            UUID operationId,
+            UUID teamId,
+            UUID actorId,
+            TowerType towerType,
+            long researchPointCost,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO tower_research_operations(
+                    operation_id, team_id, actor_id, tower_type,
+                    research_point_cost, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, teamId.toString());
+            statement.setString(3, actorId.toString());
+            statement.setString(4, towerType.id());
+            statement.setLong(5, researchPointCost);
+            statement.setString(6, fingerprint);
+            statement.setString(7, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
     private static void requireTeamMember(
             Connection connection,
             UUID teamId,
@@ -746,6 +1005,14 @@ public final class TowerRepository {
                 instant(resultSet.getString("updated_at")));
     }
 
+    private static TowerResearch towerResearchFromRow(ResultSet resultSet) throws SQLException {
+        return new TowerResearch(
+                uuid(resultSet.getString("team_id")),
+                TowerType.fromId(resultSet.getString("tower_type")),
+                resultSet.getInt("research_level"),
+                instant(resultSet.getString("updated_at")));
+    }
+
     private static TowerPlacement placementFromRow(ResultSet resultSet) throws SQLException {
         return new TowerPlacement(
                 uuid(resultSet.getString("operation_id")),
@@ -866,6 +1133,14 @@ public final class TowerRepository {
         return message != null && (message.contains("constraint")
                 || message.contains("UNIQUE")
                 || message.contains("CHECK"));
+    }
+
+    private static String researchFingerprint(
+            UUID teamId,
+            UUID actorId,
+            TowerType towerType,
+            long researchPointCost) {
+        return teamId + "|" + actorId + "|" + towerType.id() + "|" + researchPointCost;
     }
 
     private static UUID uuid(String value) {

@@ -30,4 +30,25 @@ public record TeamProgress(
     public static TeamProgress initial(UUID teamId) {
         return new TeamProgress(teamId, 0L, 1L, 0L);
     }
+
+    /**
+     * Returns the monotonic progression snapshot produced by a stage victory.
+     *
+     * <p>Defeat and technical recovery deliberately do not call this method. The next-stage
+     * unlock is derived from the highest clear and is therefore safe to replay inside the
+     * terminal transaction.</p>
+     */
+    public TeamProgress afterVictory(long stageLevel) {
+        if (stageLevel <= 0L) {
+            throw new IllegalArgumentException("stageLevel must be positive");
+        }
+        long nextUnlocked = stageLevel == Long.MAX_VALUE
+                ? Long.MAX_VALUE
+                : stageLevel + 1L;
+        return new TeamProgress(
+                teamId,
+                Math.max(highestClearedLevel, stageLevel),
+                Math.max(unlockedLevel, nextUnlocked),
+                researchPoints);
+    }
 }

@@ -4,6 +4,7 @@ import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
+import io.github.takenoha.towerdefense.domain.TowerType;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -82,6 +83,18 @@ public final class DefenseRepository {
                     statement.setString(1, teamId.toString());
                     statement.setString(2, createdAt.toString());
                     statement.executeUpdate();
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO tower_research(team_id, tower_type, research_level, updated_at)
+                        VALUES (?, ?, 1, ?)
+                        """)) {
+                    for (TowerType towerType : TowerType.values()) {
+                        statement.setString(1, teamId.toString());
+                        statement.setString(2, towerType.id());
+                        statement.setString(3, createdAt.toString());
+                        statement.addBatch();
+                    }
+                    statement.executeBatch();
                 }
                 return new TeamRecord(teamId, ownerPlayerId, Set.of(ownerPlayerId), createdAt);
             });
@@ -1736,6 +1749,11 @@ public final class DefenseRepository {
                     return OperationOutcome.STATE_MISMATCH;
                 }
 
+                if (terminalSnapshot.phase() == DefensePhase.VICTORY) {
+                    advanceTeamProgressAfterVictory(
+                            connection, terminalSnapshot.teamId(), terminalSnapshot.stageLevel(), occurredAt);
+                }
+
                 BlockChangeRepository.settleAppliedEventBlocks(
                         connection,
                         terminalSnapshot.eventId(),
@@ -1780,6 +1798,33 @@ public final class DefenseRepository {
                         "The terminal operation UUID conflicts with persisted data", exception);
             }
             throw failure("finish a defense event", exception);
+        }
+    }
+
+    private static void advanceTeamProgressAfterVictory(
+            Connection connection,
+            UUID teamId,
+            long stageLevel,
+            Instant updatedAt) throws SQLException {
+        TeamProgress current = loadTeamProgress(connection, teamId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team " + teamId + " has no progression row"));
+        TeamProgress advanced = current.afterVictory(stageLevel);
+        if (advanced.equals(current)) {
+            return;
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_progress
+                SET highest_cleared_level = ?, unlocked_level = ?, updated_at = ?
+                WHERE team_id = ?
+                """)) {
+            statement.setLong(1, advanced.highestClearedLevel());
+            statement.setLong(2, advanced.unlockedLevel());
+            statement.setString(3, updatedAt.toString());
+            statement.setString(4, teamId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The victory progression update affected no rows");
+            }
         }
     }
 
