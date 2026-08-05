@@ -2034,7 +2034,7 @@ public final class SchemaMigrator {
                     CREATE TABLE resource_vouchers (
                         voucher_id TEXT PRIMARY KEY,
                         withdrawal_operation_id TEXT NOT NULL UNIQUE,
-                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
                         resource_type TEXT NOT NULL CHECK (
                             resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')
                         ),
@@ -2076,7 +2076,7 @@ public final class SchemaMigrator {
                     CREATE TABLE resource_voucher_delivery_operations (
                         delivery_operation_id TEXT PRIMARY KEY,
                         voucher_id TEXT NOT NULL REFERENCES resource_vouchers(voucher_id)
-                            ON DELETE RESTRICT,
+                            ON DELETE CASCADE,
                         recipient_player_id TEXT NOT NULL,
                         payload_fingerprint TEXT NOT NULL,
                         state TEXT NOT NULL CHECK (
@@ -2101,8 +2101,8 @@ public final class SchemaMigrator {
                     CREATE TABLE resource_voucher_redeem_operations (
                         operation_id TEXT PRIMARY KEY,
                         voucher_id TEXT NOT NULL REFERENCES resource_vouchers(voucher_id)
-                            ON DELETE RESTRICT,
-                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                            ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
                         actor_id TEXT NOT NULL,
                         resource_type TEXT NOT NULL CHECK (
                             resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')

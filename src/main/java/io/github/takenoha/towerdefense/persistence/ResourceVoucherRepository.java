@@ -380,7 +380,10 @@ public final class ResourceVoucherRepository {
                         null);
                 insertRedeemOperation(connection, operation);
                 updateVoucherReserved(connection, voucherId, preparedAt);
-                return new VoucherRedeemResult(OperationOutcome.APPLIED, voucher, operation);
+                return new VoucherRedeemResult(
+                        OperationOutcome.APPLIED,
+                        loadVoucher(connection, voucherId).orElseThrow(),
+                        operation);
             });
         } catch (SQLException exception) {
             if (isConstraintViolation(exception)) {
