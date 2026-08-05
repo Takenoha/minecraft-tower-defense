@@ -30,6 +30,16 @@ reward-side balance mutation.
 - Advances the schema to version 24: specialist type checks (21), boost state and operation
   ledgers (22), tower HP columns (23), and repair operation ledger (24).
 
+## Enemy tower damage follow-up slice
+
+The first post-PR #17 combat slice now adds configurable destroyer attacks. A tagged event
+destroyer selects the nearest live tower within `enemies.tower-attack-range`, observes the shared
+central tick cadence, and applies `enemies.tower-attack-damage` through an event-scoped UUID ledger.
+HP updates and HP-zero deletion are one SQLite transaction; a deleted tower has no item return and
+its durable individual level/investment row is gone. The Paper bridge removes the tagged ArmorStand
+only after the database mutation succeeds, and stale operation retries return the original result.
+Schema version 25 adds `event_tower_damage_operations` for this boundary.
+
 ## Operation boundaries
 
 - Battle funds are event-scoped and team-shared. Enemy and wave rewards credit the account
@@ -43,10 +53,9 @@ reward-side balance mutation.
 
 ## Deliberate follow-up
 
-- The current slice does not add an enemy-to-tower damage producer; the existing enemy runtime
-  attacks the core, while the durable HP/repair boundary is ready for the later destroyer/tower
-  combat integration. Enemy destruction and item-loss semantics therefore still need a Paper
-  gameplay pass.
+- The current slice does not yet enable terrain mutation. Builder bridge placement and destroyer
+  block mutation remain behind the existing Paper/recovery activation gate until live-server
+  evidence is collected.
 - Minecraft client GUI, recipe, visual, and live combat behavior require manual Paper-server
   verification; automated tests cover the Paper-independent settings and persistence boundaries.
 

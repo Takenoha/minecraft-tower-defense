@@ -124,7 +124,22 @@ final class PluginSettingsMapReader {
                             values,
                             "enemies",
                             "builder-ratio",
-                            EnemySettings.DEFAULT_BUILDER_RATIO));
+                            EnemySettings.DEFAULT_BUILDER_RATIO),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-damage",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_DAMAGE),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-interval-ticks",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_INTERVAL_TICKS),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-range",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_RANGE));
         }
 
         private ProtectionSettings protection() {

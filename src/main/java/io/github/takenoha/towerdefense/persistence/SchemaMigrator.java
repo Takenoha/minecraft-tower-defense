@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 24;
+    public static final int CURRENT_VERSION = 25;
 
     private SchemaMigrator() {
     }
@@ -119,6 +119,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 24) {
                     applyVersionTwentyFour(connection);
                     recordMigration(connection, 24);
+                }
+                if (installedVersion < 25) {
+                    applyVersionTwentyFive(connection);
+                    recordMigration(connection, 25);
                 }
                 return null;
             });
@@ -1545,6 +1549,36 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX event_tower_repair_operations_event_idx
                     ON event_tower_repair_operations(event_id, applied_at)
+                    """);
+        }
+    }
+
+    /** Adds an idempotent event ledger for destroyer damage against installed towers. */
+    private static void applyVersionTwentyFive(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE event_tower_damage_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        attacker_enemy_id TEXT NOT NULL,
+                        tower_id TEXT NOT NULL,
+                        damage INTEGER NOT NULL CHECK (damage > 0),
+                        remaining_hp INTEGER NOT NULL CHECK (remaining_hp >= 0),
+                        destroyed INTEGER NOT NULL CHECK (destroyed IN (0, 1)),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        CHECK ((destroyed = 1 AND remaining_hp = 0)
+                               OR (destroyed = 0 AND remaining_hp > 0))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_tower_damage_operations_event_idx
+                    ON event_tower_damage_operations(event_id, applied_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_tower_damage_operations_tower_idx
+                    ON event_tower_damage_operations(tower_id, applied_at)
                     """);
         }
     }

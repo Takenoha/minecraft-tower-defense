@@ -3,6 +3,7 @@ package io.github.takenoha.towerdefense.paper;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
+import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
@@ -12,6 +13,7 @@ import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
 import io.github.takenoha.towerdefense.persistence.TowerPlacement;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
+import io.github.takenoha.towerdefense.persistence.TowerDamageMutationResult;
 import io.github.takenoha.towerdefense.persistence.TowerRemoval;
 import io.github.takenoha.towerdefense.persistence.TowerRemovalState;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
@@ -23,6 +25,7 @@ import io.github.takenoha.towerdefense.runtime.BattleBoostRegistry;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
+import io.github.takenoha.towerdefense.runtime.DefenseRuntimeStatus;
 import io.github.takenoha.towerdefense.runtime.TaggedEnemy;
 import io.github.takenoha.towerdefense.runtime.TowerRegistry;
 import java.time.Instant;
@@ -95,6 +98,7 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final TowerRegistry towers;
     private final TowerItemTagger itemTagger;
     private final TowerEntityTagger entityTagger;
+    private final EventEnemyTagger eventEnemyTagger;
     private final DefenseShardTagger shardTagger;
     private final EnhancementCoreTagger enhancementCoreTagger;
     private final CombatArea combatArea;
@@ -106,6 +110,8 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final Set<UUID> pendingRemovalTowerIds = new HashSet<>();
     private final Set<UUID> appliedTowerIds;
     private final Map<UUID, CoreAttackSchedule> attackSchedules = new HashMap<>();
+    private final Map<UUID, CoreAttackSchedule> enemyTowerAttackSchedules = new HashMap<>();
+    private final Map<UUID, PendingTowerDamage> towerDamageInFlight = new HashMap<>();
     private final BattleBoostRegistry battleBoosts = new BattleBoostRegistry();
     private final Set<UUID> boostInFlight = new HashSet<>();
 
@@ -133,6 +139,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         this.towers = Objects.requireNonNull(towers, "towers");
         this.itemTagger = Objects.requireNonNull(itemTagger, "itemTagger");
         this.entityTagger = Objects.requireNonNull(entityTagger, "entityTagger");
+        eventEnemyTagger = new EventEnemyTagger(plugin);
         shardTagger = new DefenseShardTagger(plugin);
         enhancementCoreTagger = new EnhancementCoreTagger(plugin);
         combatArea = new CombatArea(
@@ -1267,6 +1274,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         if (!sessions.hasActiveSession() && !battleBoosts.isEmpty()) {
             battleBoosts.clear();
         }
+        processEnemyTowerAttacks();
         for (TowerRecord tower : towers.all()) {
             Entity entity = Bukkit.getEntity(tower.entityId());
             if (!(entity instanceof ArmorStand stand)
@@ -1306,6 +1314,171 @@ public final class TowerManager implements Listener, AutoCloseable {
                     case SUPPORT -> throw new IllegalStateException("support tower reached attack path");
                 }
             }
+        }
+    }
+
+    /** Processes destroyer proximity attacks through the serialized persistence boundary. */
+    private void processEnemyTowerAttacks() {
+        Optional<DefenseRuntimeStatus> status = sessions.status();
+        if (status.isEmpty() || status.orElseThrow().phase() != DefensePhase.WAVE_ACTIVE) {
+            enemyTowerAttackSchedules.clear();
+            towerDamageInFlight.clear();
+            return;
+        }
+        DefenseRuntimeStatus active = status.orElseThrow();
+        Optional<io.github.takenoha.towerdefense.persistence.CoreRecord> core =
+                cores.forTeam(active.teamId());
+        if (core.isEmpty()) {
+            return;
+        }
+        World world = Bukkit.getWorld(core.orElseThrow().worldId());
+        if (world == null) {
+            return;
+        }
+        List<TowerRecord> candidates = towers.all().stream()
+                .filter(tower -> tower.teamId().equals(active.teamId()))
+                .filter(tower -> tower.worldId().equals(world.getUID()))
+                .filter(tower -> tower.currentHitPoints() > 0L)
+                .filter(this::hasLiveTowerEntity)
+                .toList();
+        if (candidates.isEmpty()) {
+            return;
+        }
+        long damage = effectiveEnemyTowerDamage(active.stageLevel());
+        int interval = settings.enemies().towerAttackIntervalTicks();
+        double range = settings.enemies().towerAttackRange();
+        double rangeSquared = range * range;
+        for (Monster monster : world.getEntitiesByClass(Monster.class)) {
+            Optional<TaggedEnemy> tagged = eventEnemyTagger.read(monster);
+            if (tagged.isEmpty()
+                    || tagged.orElseThrow().role() != EnemyRole.DESTROYER
+                    || !sessions.mayAffectFromTower(tagged.orElseThrow(), active.teamId())) {
+                continue;
+            }
+            TaggedEnemy enemy = tagged.orElseThrow();
+            PendingTowerDamage pending = towerDamageInFlight.get(enemy.logicalEnemyId());
+            if (pending != null) {
+                if (!pending.submitted() && currentTick >= pending.retryAtTick()) {
+                    submitTowerDamage(pending);
+                }
+                continue;
+            }
+            TowerRecord target = nearestTower(monster, candidates, rangeSquared).orElse(null);
+            if (target == null) {
+                enemyTowerAttackSchedules.remove(enemy.logicalEnemyId());
+                continue;
+            }
+            CoreAttackSchedule schedule = enemyTowerAttackSchedules.computeIfAbsent(
+                    enemy.logicalEnemyId(),
+                    ignored -> new CoreAttackSchedule(interval));
+            schedule.updateInterval(interval, currentTick);
+            if (!schedule.tryClaim(currentTick)) {
+                continue;
+            }
+            PendingTowerDamage next = new PendingTowerDamage(
+                    UUID.randomUUID(),
+                    active.eventId(),
+                    active.teamId(),
+                    enemy.logicalEnemyId(),
+                    target.id(),
+                    damage,
+                    currentTick,
+                    false);
+            towerDamageInFlight.put(enemy.logicalEnemyId(), next);
+            submitTowerDamage(next);
+        }
+    }
+
+    private Optional<TowerRecord> nearestTower(
+            Monster attacker,
+            List<TowerRecord> candidates,
+            double rangeSquared) {
+        return candidates.stream()
+                .map(tower -> new TowerDistance(
+                        tower,
+                        Bukkit.getEntity(tower.entityId())))
+                .filter(value -> value.entity() instanceof ArmorStand stand
+                        && stand.isValid()
+                        && !stand.isDead())
+                .map(value -> new TowerDistance(
+                        value.tower(),
+                        value.entity(),
+                        value.entity().getLocation().distanceSquared(attacker.getLocation())))
+                .filter(value -> value.distanceSquared() <= rangeSquared)
+                .min(Comparator.comparingDouble(TowerDistance::distanceSquared)
+                        .thenComparing(value -> value.tower().id().toString()))
+                .map(TowerDistance::tower);
+    }
+
+    private boolean hasLiveTowerEntity(TowerRecord tower) {
+        Entity entity = Bukkit.getEntity(tower.entityId());
+        return entity instanceof ArmorStand stand
+                && stand.isValid()
+                && !stand.isDead()
+                && entityTagger.read(stand).map(identity ->
+                        identity.towerId().equals(tower.id())
+                                && identity.teamId().equals(tower.teamId())
+                                && identity.type() == tower.type()
+                                && identity.individualLevel() == tower.individualLevel())
+                        .orElse(false);
+    }
+
+    private long effectiveEnemyTowerDamage(long stageLevel) {
+        long boundedStage = Math.min(stageLevel, 11L);
+        double multiplier = 1.0d + (boundedStage - 1.0d) / 10.0d;
+        double scaled = settings.enemies().towerAttackDamage() * multiplier;
+        if (!Double.isFinite(scaled) || scaled >= Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(1L, (long) Math.ceil(scaled));
+    }
+
+    private void submitTowerDamage(PendingTowerDamage pending) {
+        PendingTowerDamage submitted = pending.withSubmitted(true);
+        towerDamageInFlight.put(pending.logicalEnemyId(), submitted);
+        databaseExecutor.submit(() -> defenseRepository.damageTowerByEnemy(
+                        submitted.eventId(),
+                        submitted.teamId(),
+                        submitted.logicalEnemyId(),
+                        submitted.towerId(),
+                        submitted.damage(),
+                        submitted.operationId(),
+                        Instant.now()))
+                .whenComplete((result, failure) -> runOnMainThread(() -> {
+                    PendingTowerDamage current = towerDamageInFlight.get(
+                            submitted.logicalEnemyId());
+                    if (current == null
+                            || !current.operationId().equals(submitted.operationId())) {
+                        return;
+                    }
+                    if (failure != null) {
+                        towerDamageInFlight.put(
+                                submitted.logicalEnemyId(),
+                                submitted.retryAfter(currentTick));
+                        plugin.getLogger().warning(
+                                "Could not persist enemy tower damage "
+                                        + submitted.operationId() + ": " + rootMessage(failure));
+                        return;
+                    }
+                    towerDamageInFlight.remove(submitted.logicalEnemyId());
+                    applyTowerDamage(result);
+                }));
+    }
+
+    private void applyTowerDamage(TowerDamageMutationResult result) {
+        TowerRecord current = towers.find(result.towerId()).orElse(null);
+        if (result.destroyed()) {
+            if (current != null) {
+                towers.unregister(current.id());
+                attackSchedules.remove(current.id());
+                removePhysicalEntity(current.entityId(), current.id());
+            }
+            return;
+        }
+        if (current != null
+                && result.remainingHitPoints() < current.currentHitPoints()) {
+            towers.replace(current.withCurrentHitPoints(
+                    result.remainingHitPoints(), Instant.now()));
         }
     }
 
@@ -1640,6 +1813,52 @@ public final class TowerManager implements Listener, AutoCloseable {
     private record RemovedItems(List<ItemStack> items) {
     }
 
+    private record TowerDistance(
+            TowerRecord tower,
+            Entity entity,
+            double distanceSquared) {
+        private TowerDistance(TowerRecord tower, Entity entity) {
+            this(tower, entity, Double.NaN);
+        }
+    }
+
+    private record PendingTowerDamage(
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID logicalEnemyId,
+            UUID towerId,
+            long damage,
+            long retryAtTick,
+            boolean submitted) {
+        private PendingTowerDamage withSubmitted(boolean value) {
+            return new PendingTowerDamage(
+                    operationId,
+                    eventId,
+                    teamId,
+                    logicalEnemyId,
+                    towerId,
+                    damage,
+                    retryAtTick,
+                    value);
+        }
+
+        private PendingTowerDamage retryAfter(long currentTick) {
+            long retry = currentTick > Long.MAX_VALUE - 20L
+                    ? Long.MAX_VALUE
+                    : currentTick + 20L;
+            return new PendingTowerDamage(
+                    operationId,
+                    eventId,
+                    teamId,
+                    logicalEnemyId,
+                    towerId,
+                    damage,
+                    retry,
+                    false);
+        }
+    }
+
     @Override
     public void close() {
         if (tickTask != null) {
@@ -1647,6 +1866,8 @@ public final class TowerManager implements Listener, AutoCloseable {
             tickTask = null;
         }
         attackSchedules.clear();
+        enemyTowerAttackSchedules.clear();
+        towerDamageInFlight.clear();
         upgradeInFlight.clear();
     }
 }

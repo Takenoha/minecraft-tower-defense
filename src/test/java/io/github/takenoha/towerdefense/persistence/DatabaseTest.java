@@ -51,6 +51,7 @@ final class DatabaseTest {
         assertTrue(tableExists(reopened, "event_tower_boosts"));
         assertTrue(tableExists(reopened, "event_tower_boost_operations"));
         assertTrue(tableExists(reopened, "event_tower_repair_operations"));
+        assertTrue(tableExists(reopened, "event_tower_damage_operations"));
         assertTrue(tableExists(reopened, "tower_upgrade_operations"));
         assertTrue(columnExists(reopened, "towers", "target_priority"));
         assertTrue(columnExists(reopened, "towers", "current_hp"));

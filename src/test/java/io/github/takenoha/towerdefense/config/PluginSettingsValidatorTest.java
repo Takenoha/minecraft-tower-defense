@@ -112,6 +112,34 @@ class PluginSettingsValidatorTest {
     }
 
     @Test
+    void rejectsInvalidDestroyerTowerAttackValues() {
+        PluginSettings settings = new PluginSettings(
+                new CombatSettings(80.0, 0.0, 80.0, 192.0, 32.0, 1, 1, 1, 1, 1),
+                new CoreSettings(1, 1),
+                new EnemySettings(
+                        1,
+                        1,
+                        1,
+                        0,
+                        1.0,
+                        1.0,
+                        0.15,
+                        0.10,
+                        0,
+                        0,
+                        0.0));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                settings::validated);
+
+        assertContains(exception.violations(),
+                "enemies.tower-attack-damage: must be > 0",
+                "enemies.tower-attack-interval-ticks: must be > 0",
+                "enemies.tower-attack-range: must be > 0");
+    }
+
+    @Test
     void reportsAllMissingRecordSections() {
         PluginSettings settings = new PluginSettings(null, null, null);
 
