@@ -10,6 +10,8 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.OperationOutcome;
 import io.github.takenoha.towerdefense.persistence.StartOutcome;
 import io.github.takenoha.towerdefense.persistence.StartRequest;
+import io.github.takenoha.towerdefense.persistence.TeamInvitation;
+import io.github.takenoha.towerdefense.persistence.TeamInvitationMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
@@ -17,6 +19,7 @@ import io.github.takenoha.towerdefense.runtime.DefenseRuntimeStatus;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
 import io.github.takenoha.towerdefense.runtime.TerrainMutationActivationGate;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -26,6 +29,7 @@ import java.util.concurrent.CompletionException;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
@@ -40,6 +44,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class TowerDefenseCommand implements CommandExecutor, TabCompleter {
     private static final String ADMIN_PERMISSION = "towerdefense.admin";
     private static final long FOUNDATION_STAGE = 1L;
+    private static final Duration INVITATION_RETENTION =
+            DefenseRepository.DEFAULT_INVITATION_RETENTION;
+    private static final int MAX_TEAM_CHAT_LENGTH = 256;
 
     private final JavaPlugin plugin;
     private final PluginSettings settings;
@@ -124,6 +131,9 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Command command,
             String label,
             String[] arguments) {
+        if (arguments.length > 0 && arguments[0].equalsIgnoreCase("team")) {
+            return teamCommand(sender, arguments);
+        }
         if (!sender.hasPermission(ADMIN_PERMISSION)) {
             sender.sendMessage(Component.text("このコマンドを実行する権限がありません。", NamedTextColor.RED));
             return true;
@@ -142,6 +152,238 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 yield true;
             }
         };
+    }
+
+    private boolean teamCommand(CommandSender sender, String[] arguments) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text(
+                    "チームコマンドはプレイヤーから実行してください。", NamedTextColor.RED));
+            return true;
+        }
+        if (arguments.length < 2) {
+            sendTeamUsage(player);
+            return true;
+        }
+        return switch (arguments[1].toLowerCase(java.util.Locale.ROOT)) {
+            case "invite" -> inviteTeamMember(player, arguments);
+            case "invites" -> listTeamInvitations(player);
+            case "accept" -> resolveTeamInvitation(player, arguments, true);
+            case "decline" -> resolveTeamInvitation(player, arguments, false);
+            case "rename" -> renameTeam(player, arguments);
+            case "chat" -> teamChat(player, arguments);
+            default -> {
+                sendTeamUsage(player);
+                yield true;
+            }
+        };
+    }
+
+    private boolean inviteTeamMember(Player player, String[] arguments) {
+        if (arguments.length != 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        if (sessions.hasActiveSession()) {
+            player.sendMessage(Component.text(
+                    "防衛戦中はチームを変更できません。", NamedTextColor.RED));
+            return true;
+        }
+        OfflinePlayer target = Bukkit.getOfflinePlayer(arguments[2]);
+        if (!target.hasPlayedBefore() && !target.isOnline()) {
+            player.sendMessage(Component.text(
+                    "そのプレイヤーはこのサーバーに参加した記録がありません。",
+                    NamedTextColor.YELLOW));
+            return true;
+        }
+        UUID actorId = player.getUniqueId();
+        UUID inviteeId = target.getUniqueId();
+        if (actorId.equals(inviteeId)) {
+            player.sendMessage(Component.text(
+                    "自分自身には招待を送れません。", NamedTextColor.YELLOW));
+            return true;
+        }
+        Instant now = Instant.now();
+        databaseExecutor.submit(() -> {
+            TeamRecord team = repository.findTeamByMember(actorId).orElseThrow(
+                    () -> new IllegalStateException("先にコアを設置してチームを作成してください"));
+            UUID invitationId = UUID.randomUUID();
+            return repository.createTeamInvitation(
+                    team.id(),
+                    actorId,
+                    inviteeId,
+                    invitationId,
+                    UUID.randomUUID(),
+                    now,
+                    now.plus(INVITATION_RETENTION));
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "招待を作成できません: " + rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            TeamInvitation invitation = result.invitation();
+            player.sendMessage(Component.text(
+                    targetName(inviteeId) + "へチーム招待を送りました。招待コード: "
+                            + shortInvitationId(invitation.id()),
+                    NamedTextColor.GREEN));
+            Player onlineTarget = Bukkit.getPlayer(inviteeId);
+            if (onlineTarget != null) {
+                onlineTarget.sendMessage(Component.text(
+                        player.getName() + "からチーム「" + result.team().orElseThrow().displayName()
+                                + "」への招待が届きました。/td team invites で確認してください。",
+                        NamedTextColor.GREEN));
+            }
+        }));
+        return true;
+    }
+
+    private boolean listTeamInvitations(Player player) {
+        UUID playerId = player.getUniqueId();
+        databaseExecutor.submit(() -> repository.findPendingTeamInvitations(playerId, Instant.now()).stream()
+                .map(invitation -> new PendingInvitationView(
+                        invitation,
+                        repository.findTeam(invitation.teamId()).orElse(null)))
+                .toList())
+                .whenComplete((invitations, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        player.sendMessage(Component.text(
+                                "招待を読み込めません: " + rootMessage(failure),
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (invitations.isEmpty()) {
+                        player.sendMessage(Component.text(
+                                "保留中のチーム招待はありません。", NamedTextColor.GRAY));
+                        return;
+                    }
+                    player.sendMessage(Component.text("保留中のチーム招待:", NamedTextColor.AQUA));
+                    for (PendingInvitationView view : invitations) {
+                        TeamInvitation invitation = view.invitation();
+                        String teamName = view.team() == null
+                                ? invitation.teamId().toString()
+                                : view.team().displayName();
+                        player.sendMessage(Component.text(
+                                "- " + shortInvitationId(invitation.id()) + " : 「" + teamName
+                                        + "」 from " + targetName(invitation.inviterId())
+                                        + " /td team accept " + shortInvitationId(invitation.id())
+                                        + "",
+                                NamedTextColor.YELLOW));
+                    }
+                }));
+        return true;
+    }
+
+    private boolean resolveTeamInvitation(
+            Player player, String[] arguments, boolean accept) {
+        if (arguments.length != 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        UUID playerId = player.getUniqueId();
+        String token = arguments[2].toLowerCase(java.util.Locale.ROOT);
+        databaseExecutor.submit(() -> {
+            List<TeamInvitation> invitations = repository.findPendingTeamInvitations(
+                    playerId, Instant.now());
+            List<TeamInvitation> matches = invitations.stream()
+                    .filter(invitation -> invitation.id().toString().startsWith(token))
+                    .toList();
+            if (matches.size() != 1) {
+                throw new IllegalStateException(matches.isEmpty()
+                        ? "招待コードが見つかりません。/td team invites で確認してください"
+                        : "招待コードが複数一致します。より長いコードを指定してください");
+            }
+            TeamInvitation invitation = matches.get(0);
+            return accept
+                    ? repository.acceptTeamInvitation(
+                            invitation.id(), playerId, UUID.randomUUID(), Instant.now())
+                    : repository.declineTeamInvitation(
+                            invitation.id(), playerId, UUID.randomUUID(), Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        (accept ? "招待を承諾できません: " : "招待を辞退できません: ")
+                                + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            String teamName = result.team()
+                    .map(TeamRecord::displayName)
+                    .orElse("チーム");
+            player.sendMessage(Component.text(
+                    accept ? "チーム「" + teamName + "」へ参加しました。"
+                            : "チーム「" + teamName + "」への招待を辞退しました。",
+                    NamedTextColor.GREEN));
+            if (accept) {
+                for (UUID memberId : result.team().orElseThrow().members()) {
+                    Player member = Bukkit.getPlayer(memberId);
+                    if (member != null && !member.getUniqueId().equals(playerId)) {
+                        member.sendMessage(Component.text(
+                                player.getName() + "がチームへ参加しました。", NamedTextColor.AQUA));
+                    }
+                }
+            }
+        }));
+        return true;
+    }
+
+    private boolean renameTeam(Player player, String[] arguments) {
+        if (arguments.length < 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        String displayName = String.join(" ", java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+        UUID actorId = player.getUniqueId();
+        databaseExecutor.submit(() -> {
+            TeamRecord team = repository.findTeamByMember(actorId).orElseThrow(
+                    () -> new IllegalStateException("所属チームがありません"));
+            return repository.renameTeam(
+                    team.id(), actorId, displayName, UUID.randomUUID(), Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "チーム名を変更できません: " + rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            player.sendMessage(Component.text(
+                    "チーム名を「" + result.team().orElseThrow().displayName() + "」に変更しました。",
+                    NamedTextColor.GREEN));
+        }));
+        return true;
+    }
+
+    private boolean teamChat(Player player, String[] arguments) {
+        if (arguments.length < 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        String message = String.join(" ", java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+        if (message.isBlank() || message.codePoints().count() > MAX_TEAM_CHAT_LENGTH
+                || message.codePoints().anyMatch(Character::isISOControl)) {
+            player.sendMessage(Component.text(
+                    "チームチャットは空でない256文字以内の1行で指定してください。", NamedTextColor.YELLOW));
+            return true;
+        }
+        UUID actorId = player.getUniqueId();
+        databaseExecutor.submit(() -> repository.findTeamByMember(actorId).orElseThrow(
+                () -> new IllegalStateException("所属チームがありません")))
+                .whenComplete((team, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        player.sendMessage(Component.text(
+                                "チームチャットを送信できません: " + rootMessage(failure),
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    Component formatted = Component.text(
+                            "[" + team.displayName() + "] " + player.getName() + ": " + message,
+                            NamedTextColor.AQUA);
+                    for (UUID memberId : team.members()) {
+                        Player member = Bukkit.getPlayer(memberId);
+                        if (member != null) {
+                            member.sendMessage(formatted);
+                        }
+                    }
+                }));
+        return true;
     }
 
     private boolean registerCore(CommandSender sender) {
@@ -652,8 +894,24 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
 
     private static void sendUsage(CommandSender sender) {
         sender.sendMessage(Component.text(
-                "/td admin <core|simulate [stage]|status|abort>",
+                "/td admin <core|simulate [stage]|status|abort> または /td team <invite|invites|accept|decline|rename|chat>",
                 NamedTextColor.YELLOW));
+    }
+
+    private static void sendTeamUsage(CommandSender sender) {
+        sender.sendMessage(Component.text(
+                "/td team invite <player> | invites | accept <code> | decline <code>"
+                        + " | rename <name> | chat <message>",
+                NamedTextColor.YELLOW));
+    }
+
+    private static String shortInvitationId(UUID invitationId) {
+        return invitationId.toString().substring(0, 8);
+    }
+
+    private static String targetName(UUID playerId) {
+        OfflinePlayer player = Bukkit.getOfflinePlayer(playerId);
+        return player.getName() == null ? playerId.toString().substring(0, 8) : player.getName();
     }
 
     @Override
@@ -662,11 +920,22 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Command command,
             String alias,
             String[] arguments) {
-        if (!sender.hasPermission(ADMIN_PERMISSION)) {
+        if (arguments.length == 1) {
+            List<String> roots = sender.hasPermission(ADMIN_PERMISSION)
+                    ? List.of("admin", "team")
+                    : List.of("team");
+            return matching(arguments[0], roots);
+        }
+        if (arguments.length >= 2 && arguments[0].equalsIgnoreCase("team")) {
+            if (arguments.length == 2) {
+                return matching(
+                        arguments[1],
+                        List.of("invite", "invites", "accept", "decline", "rename", "chat"));
+            }
             return List.of();
         }
-        if (arguments.length == 1) {
-            return matching(arguments[0], List.of("admin"));
+        if (!sender.hasPermission(ADMIN_PERMISSION)) {
+            return List.of();
         }
         if (arguments.length == 2 && arguments[0].equalsIgnoreCase("admin")) {
             return matching(arguments[1], List.of("core", "simulate", "status", "abort"));
@@ -689,5 +958,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Objects.requireNonNull(team, "team");
             Objects.requireNonNull(core, "core");
         }
+    }
+
+    private record PendingInvitationView(TeamInvitation invitation, TeamRecord team) {
     }
 }

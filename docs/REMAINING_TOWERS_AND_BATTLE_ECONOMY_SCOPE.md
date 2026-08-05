@@ -66,6 +66,6 @@ Schema version 25 adds `event_tower_damage_operations` for this boundary.
 
 ## Verification
 
-`./gradlew.bat test --no-daemon` passes all 178 tests on commit preparation. Persistence coverage
+`./gradlew.bat test --no-daemon` passes all 189 tests on commit preparation. Persistence coverage
 includes schema creation/migration, seven-type research initialization, battle-fund settlement,
 idempotent boost purchase, idempotent repair, HP updates, and terminal boost cleanup.

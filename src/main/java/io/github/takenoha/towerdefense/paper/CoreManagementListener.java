@@ -456,6 +456,13 @@ public final class CoreManagementListener implements Listener {
             beginInvite(player, holder.coreId());
             return;
         }
+        if (rawSlot == TeamManagementGui.RENAME_SLOT) {
+            player.sendMessage(Component.text(
+                    "チーム名変更: /td team rename <名前>（1〜"
+                            + TeamRecord.MAX_DISPLAY_NAME_CODE_POINTS + "文字）",
+                    NamedTextColor.LIGHT_PURPLE));
+            return;
+        }
         if (rawSlot == TeamManagementGui.LEAVE_SLOT) {
             openTeamConfirmation(
                     player,

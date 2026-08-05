@@ -35,6 +35,8 @@ public final class DefenseRepository {
     private static final String TERMINAL_PHASES_SQL =
             "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')";
     private static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
+    public static final int MAX_TEAM_MEMBERS = 8;
+    public static final Duration DEFAULT_INVITATION_RETENTION = Duration.ofDays(7L);
 
     private final Database database;
     private final Duration teamQueueRetention;
@@ -76,12 +78,13 @@ public final class DefenseRepository {
         try {
             return database.inImmediateTransaction(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement("""
-                        INSERT INTO teams(team_id, owner_player_id, created_at)
-                        VALUES (?, ?, ?)
+                        INSERT INTO teams(team_id, owner_player_id, display_name, created_at)
+                        VALUES (?, ?, ?, ?)
                         """)) {
                     statement.setString(1, teamId.toString());
                     statement.setString(2, ownerPlayerId.toString());
-                    statement.setString(3, createdAt.toString());
+                    statement.setString(3, TeamRecord.DEFAULT_DISPLAY_NAME);
+                    statement.setString(4, createdAt.toString());
                     statement.executeUpdate();
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
@@ -152,18 +155,234 @@ public final class DefenseRepository {
     public Optional<TeamRecord> findTeamByMember(UUID playerId) {
         Objects.requireNonNull(playerId, "playerId");
         return read("load a team by member", connection -> {
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    SELECT team_id FROM team_members WHERE player_id = ?
-                    """)) {
-                statement.setString(1, playerId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    if (!resultSet.next()) {
-                        return Optional.empty();
-                    }
-                    return loadTeam(connection, uuid(resultSet.getString("team_id")));
-                }
-            }
+            return findTeamByMember(connection, playerId);
         });
+    }
+
+    /** Renames a team through an owner-authorized, UUID-idempotent profile mutation. */
+    public TeamMutationResult renameTeam(
+            UUID teamId,
+            UUID actorId,
+            String displayName,
+            UUID operationId,
+            Instant renamedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        String normalizedName = TeamRecord.normalizeDisplayName(displayName);
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(renamedAt, "renamedAt");
+        String fingerprint = managementFingerprint(
+                "TEAM_RENAME", teamId, actorId, normalizedName);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamProfileOperation> existing = loadTeamProfileOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamProfileOperation(
+                            existing.orElseThrow(), teamId, actorId, fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "rename a team");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE teams SET display_name = ? WHERE team_id = ?
+                        """)) {
+                    statement.setString(1, normalizedName);
+                    statement.setString(2, teamId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The team rename affected no rows");
+                    }
+                }
+                insertTeamProfileOperation(
+                        connection,
+                        operationId,
+                        teamId,
+                        actorId,
+                        "TEAM_RENAME",
+                        fingerprint,
+                        renamedAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            throw failure("rename a team", exception);
+        }
+    }
+
+    /** Lists unexpired invitations and durably expires stale pending rows for this recipient. */
+    public List<TeamInvitation> findPendingTeamInvitations(UUID inviteeId, Instant now) {
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(now, "now");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                List<TeamInvitation> invitations = new ArrayList<>();
+                List<TeamInvitation> loaded = new ArrayList<>();
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        SELECT invite_id, team_id, inviter_id, invitee_id, state,
+                               created_at, expires_at, resolved_at
+                        FROM team_invites
+                        WHERE invitee_id = ? AND state = 'PENDING'
+                        ORDER BY created_at, invite_id
+                        """)) {
+                    statement.setString(1, inviteeId.toString());
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        while (resultSet.next()) {
+                            loaded.add(teamInvitationFromRow(resultSet));
+                        }
+                    }
+                }
+                for (TeamInvitation invitation : loaded) {
+                    if (invitation.isPendingAt(now)) {
+                        invitations.add(invitation);
+                    } else {
+                        expireInvitation(connection, invitation.id(), now);
+                    }
+                }
+                return List.copyOf(invitations);
+            });
+        } catch (SQLException exception) {
+            throw failure("load pending team invitations", exception);
+        }
+    }
+
+    /** Loads one invitation for reconnect-aware status checks and recovery tooling. */
+    public Optional<TeamInvitation> findTeamInvitation(UUID invitationId) {
+        Objects.requireNonNull(invitationId, "invitationId");
+        return read(
+                "load a team invitation",
+                connection -> loadTeamInvitation(connection, invitationId));
+    }
+
+    /** Creates an owner-authorized invitation that remains valid while both players are offline. */
+    public TeamInvitationMutationResult createTeamInvitation(
+            UUID teamId,
+            UUID actorId,
+            UUID inviteeId,
+            UUID invitationId,
+            UUID operationId,
+            Instant createdAt,
+            Instant expiresAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(invitationId, "invitationId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(createdAt, "createdAt");
+        Objects.requireNonNull(expiresAt, "expiresAt");
+        if (!expiresAt.isAfter(createdAt)) {
+            throw new IllegalArgumentException("Invitation expiration must be after creation");
+        }
+        String fingerprint = managementFingerprint(
+                "TEAM_INVITE_CREATE",
+                teamId,
+                actorId,
+                inviteeId,
+                invitationId,
+                expiresAt);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamInviteOperation(
+                            existing.orElseThrow(),
+                            "TEAM_INVITE_CREATE",
+                            actorId,
+                            fingerprint);
+                    TeamInvitation invitation = requireTeamInvitation(
+                            connection, existing.orElseThrow().inviteId());
+                    return invitationMutation(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            connection,
+                            invitation);
+                }
+                requireNoActiveEvent(connection, "create a team invitation");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                if (actorId.equals(inviteeId)) {
+                    throw new PersistenceConflictException("A team owner cannot invite themselves");
+                }
+                if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                    throw new PersistenceConflictException(
+                            "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
+                }
+                if (findTeamByMember(connection, inviteeId).isPresent()) {
+                    throw new PersistenceConflictException(
+                            "The invited player already belongs to a team");
+                }
+                if (hasPendingInvitation(connection, teamId, inviteeId)) {
+                    throw new PersistenceConflictException(
+                            "This player already has a pending invitation for the team");
+                }
+                TeamInvitation invitation = new TeamInvitation(
+                        invitationId,
+                        teamId,
+                        actorId,
+                        inviteeId,
+                        TeamInvitationState.PENDING,
+                        createdAt,
+                        expiresAt,
+                        null);
+                insertTeamInvitation(connection, invitation, fingerprint);
+                insertTeamInviteOperation(
+                        connection,
+                        operationId,
+                        invitationId,
+                        actorId,
+                        "TEAM_INVITE_CREATE",
+                        fingerprint,
+                        createdAt);
+                return invitationMutation(ManagementOutcome.APPLIED, connection, invitation);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The invitation conflicts with an existing team or invitation", exception);
+            }
+            throw failure("create a team invitation", exception);
+        }
+    }
+
+    /** Accepts a pending invitation for the invited player and adds them atomically. */
+    public TeamInvitationMutationResult acceptTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant acceptedAt) {
+        TeamInvitationMutationResult result = resolveTeamInvitation(
+                invitationId,
+                inviteeId,
+                operationId,
+                acceptedAt,
+                "TEAM_INVITE_ACCEPT",
+                true);
+        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
+            throw new PersistenceConflictException("This invitation has expired");
+        }
+        return result;
+    }
+
+    /** Declines a pending invitation without changing team membership. */
+    public TeamInvitationMutationResult declineTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant declinedAt) {
+        TeamInvitationMutationResult result = resolveTeamInvitation(
+                invitationId,
+                inviteeId,
+                operationId,
+                declinedAt,
+                "TEAM_INVITE_DECLINE",
+                false);
+        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
+            throw new PersistenceConflictException("This invitation has expired");
+        }
+        return result;
     }
 
     /** Loads the durable team progression snapshot used by repair quotes and future research. */
@@ -455,6 +674,10 @@ public final class DefenseRepository {
                     return new TeamMutationResult(
                             ManagementOutcome.APPLIED,
                             loadTeam(connection, teamId));
+                }
+                if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                    throw new PersistenceConflictException(
+                            "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO team_members(team_id, player_id, role, joined_at)
@@ -3278,6 +3501,289 @@ public final class DefenseRepository {
         }
     }
 
+    private TeamInvitationMutationResult resolveTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant resolvedAt,
+            String operationKind,
+            boolean accept) {
+        Objects.requireNonNull(invitationId, "invitationId");
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(resolvedAt, "resolvedAt");
+        String fingerprint = managementFingerprint(operationKind, invitationId, inviteeId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamInviteOperation(
+                            existing.orElseThrow(),
+                            operationKind,
+                            inviteeId,
+                            fingerprint);
+                    TeamInvitation invitation = requireTeamInvitation(
+                            connection, existing.orElseThrow().inviteId());
+                    return invitationMutation(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            connection,
+                            invitation);
+                }
+                requireNoActiveEvent(connection, accept
+                        ? "accept a team invitation"
+                        : "decline a team invitation");
+                TeamInvitation invitation = requireTeamInvitation(connection, invitationId);
+                if (!invitation.inviteeId().equals(inviteeId)) {
+                    throw new PersistenceConflictException(
+                            "This invitation is addressed to another player");
+                }
+                if (invitation.state() != TeamInvitationState.PENDING) {
+                    throw new PersistenceConflictException(
+                            "This invitation is no longer pending");
+                }
+                if (!resolvedAt.isBefore(invitation.expiresAt())) {
+                    expireInvitation(connection, invitationId, resolvedAt);
+                    return invitationMutation(
+                            ManagementOutcome.APPLIED,
+                            connection,
+                            requireTeamInvitation(connection, invitationId));
+                }
+                if (accept) {
+                    TeamRecord team = requireTeam(connection, invitation.teamId());
+                    if (findTeamByMember(connection, inviteeId).isPresent()) {
+                        throw new PersistenceConflictException(
+                                "The invited player already belongs to a team");
+                    }
+                    if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                        throw new PersistenceConflictException(
+                                "The team has reached the maximum of " + MAX_TEAM_MEMBERS
+                                        + " members");
+                    }
+                    try (PreparedStatement statement = connection.prepareStatement("""
+                            INSERT INTO team_members(team_id, player_id, role, joined_at)
+                            VALUES (?, ?, 'MEMBER', ?)
+                            """)) {
+                        statement.setString(1, team.id().toString());
+                        statement.setString(2, inviteeId.toString());
+                        statement.setString(3, resolvedAt.toString());
+                        statement.executeUpdate();
+                    }
+                }
+                updateInvitationState(
+                        connection,
+                        invitationId,
+                        accept ? TeamInvitationState.ACCEPTED : TeamInvitationState.DECLINED,
+                        resolvedAt);
+                insertTeamInviteOperation(
+                        connection,
+                        operationId,
+                        invitationId,
+                        inviteeId,
+                        operationKind,
+                        fingerprint,
+                        resolvedAt);
+                TeamInvitation updated = requireTeamInvitation(connection, invitationId);
+                return invitationMutation(ManagementOutcome.APPLIED, connection, updated);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The invitation cannot change team membership", exception);
+            }
+            throw failure(
+                    accept ? "accept a team invitation" : "decline a team invitation",
+                    exception);
+        }
+    }
+
+    private static TeamInvitationMutationResult invitationMutation(
+            ManagementOutcome outcome,
+            Connection connection,
+            TeamInvitation invitation) throws SQLException {
+        return new TeamInvitationMutationResult(
+                outcome,
+                invitation,
+                loadTeam(connection, invitation.teamId()));
+    }
+
+    private static void insertTeamInvitation(
+            Connection connection,
+            TeamInvitation invitation,
+            String payloadFingerprint) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_invites(
+                    invite_id, team_id, inviter_id, invitee_id, state,
+                    created_at, expires_at, resolved_at, create_payload_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, invitation.id().toString());
+            statement.setString(2, invitation.teamId().toString());
+            statement.setString(3, invitation.inviterId().toString());
+            statement.setString(4, invitation.inviteeId().toString());
+            statement.setString(5, invitation.state().name());
+            statement.setString(6, invitation.createdAt().toString());
+            statement.setString(7, invitation.expiresAt().toString());
+            statement.setString(8, nullableInstantString(invitation.resolvedAt()));
+            statement.setString(9, payloadFingerprint);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void updateInvitationState(
+            Connection connection,
+            UUID invitationId,
+            TeamInvitationState state,
+            Instant resolvedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_invites
+                SET state = ?, resolved_at = ?
+                WHERE invite_id = ? AND state = 'PENDING'
+                """)) {
+            statement.setString(1, state.name());
+            statement.setString(2, resolvedAt.toString());
+            statement.setString(3, invitationId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The invitation state update affected no rows");
+            }
+        }
+    }
+
+    private static void expireInvitation(
+            Connection connection, UUID invitationId, Instant resolvedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_invites
+                SET state = 'EXPIRED', resolved_at = ?
+                WHERE invite_id = ? AND state = 'PENDING'
+                """)) {
+            statement.setString(1, resolvedAt.toString());
+            statement.setString(2, invitationId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static boolean hasPendingInvitation(
+            Connection connection, UUID teamId, UUID inviteeId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_invites
+                WHERE team_id = ? AND invitee_id = ? AND state = 'PENDING'
+                LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            statement.setString(2, inviteeId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    private static Optional<TeamInvitation> loadTeamInvitation(
+            Connection connection, UUID invitationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT invite_id, team_id, inviter_id, invitee_id, state,
+                       created_at, expires_at, resolved_at
+                FROM team_invites WHERE invite_id = ?
+                """)) {
+            statement.setString(1, invitationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(teamInvitationFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TeamInvitation requireTeamInvitation(
+            Connection connection, UUID invitationId) throws SQLException {
+        return loadTeamInvitation(connection, invitationId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team invitation " + invitationId + " does not exist"));
+    }
+
+    private static TeamInvitation teamInvitationFromRow(ResultSet resultSet) throws SQLException {
+        return new TeamInvitation(
+                uuid(resultSet.getString("invite_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("inviter_id")),
+                uuid(resultSet.getString("invitee_id")),
+                TeamInvitationState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("created_at")),
+                instant(resultSet.getString("expires_at")),
+                nullableInstant(resultSet.getString("resolved_at")));
+    }
+
+    private static void insertTeamInviteOperation(
+            Connection connection,
+            UUID operationId,
+            UUID invitationId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_invite_operations(
+                    operation_id, invite_id, actor_id, operation_kind,
+                    payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, invitationId.toString());
+            statement.setString(3, actorId.toString());
+            statement.setString(4, operationKind);
+            statement.setString(5, payloadFingerprint);
+            statement.setString(6, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TeamInviteOperation> loadTeamInviteOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT invite_id, actor_id, operation_kind, payload_fingerprint
+                FROM team_invite_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TeamInviteOperation(
+                        uuid(resultSet.getString("invite_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTeamInviteOperation(
+            TeamInviteOperation operation,
+            String operationKind,
+            UUID actorId,
+            String payloadFingerprint) {
+        if (!operation.actorId().equals(actorId)
+                || !operation.operationKind().equals(operationKind)
+                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The invitation operation UUID is already assigned to a different payload");
+        }
+    }
+
+    private static Optional<TeamRecord> findTeamByMember(
+            Connection connection, UUID playerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id FROM team_members WHERE player_id = ?
+                """)) {
+            statement.setString(1, playerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return loadTeam(connection, uuid(resultSet.getString("team_id")));
+            }
+        }
+    }
+
     private static TeamRecord teamFromRow(Connection connection, ResultSet resultSet)
             throws SQLException {
         UUID teamId = uuid(resultSet.getString("team_id"));
@@ -3294,13 +3800,19 @@ public final class DefenseRepository {
                 }
             }
         }
-        return new TeamRecord(teamId, ownerId, members, createdAt);
+        return new TeamRecord(
+                teamId,
+                ownerId,
+                members,
+                resultSet.getString("display_name"),
+                createdAt);
     }
 
     private static Optional<TeamRecord> loadTeam(Connection connection, UUID teamId)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT team_id, owner_player_id, created_at FROM teams WHERE team_id = ?
+                SELECT team_id, owner_player_id, display_name, created_at
+                FROM teams WHERE team_id = ?
                 """)) {
             statement.setString(1, teamId.toString());
             try (ResultSet resultSet = statement.executeQuery()) {
@@ -3513,6 +4025,64 @@ public final class DefenseRepository {
             if (statement.executeUpdate() != 1) {
                 throw new SQLException("The team delete affected no rows");
             }
+        }
+    }
+
+    private static void insertTeamProfileOperation(
+            Connection connection,
+            UUID operationId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_profile_operations(
+                    operation_id, team_id, actor_id, operation_kind,
+                    payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, teamId.toString());
+            statement.setString(3, actorId.toString());
+            statement.setString(4, operationKind);
+            statement.setString(5, payloadFingerprint);
+            statement.setString(6, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TeamProfileOperation> loadTeamProfileOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, actor_id, operation_kind, payload_fingerprint
+                FROM team_profile_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TeamProfileOperation(
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTeamProfileOperation(
+            TeamProfileOperation operation,
+            UUID teamId,
+            UUID actorId,
+            String payloadFingerprint) {
+        if (!operation.teamId().equals(teamId)
+                || !operation.actorId().equals(actorId)
+                || !operation.operationKind().equals("TEAM_RENAME")
+                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The team profile operation UUID is already assigned to a different payload");
         }
     }
 
@@ -4494,6 +5064,10 @@ public final class DefenseRepository {
         return value == null ? null : Instant.parse(value);
     }
 
+    private static String nullableInstantString(Instant value) {
+        return value == null ? null : value.toString();
+    }
+
     private record ParticipantSets(Set<UUID> registered, Set<UUID> effective) {
     }
 
@@ -4507,6 +5081,20 @@ public final class DefenseRepository {
     private record ManagementOperation(
             String resourceType,
             UUID resourceId,
+            String operationKind,
+            String payloadFingerprint) {
+    }
+
+    private record TeamProfileOperation(
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint) {
+    }
+
+    private record TeamInviteOperation(
+            UUID inviteId,
+            UUID actorId,
             String operationKind,
             String payloadFingerprint) {
     }
