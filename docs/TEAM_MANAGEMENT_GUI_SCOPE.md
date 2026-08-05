@@ -27,7 +27,7 @@ lock, and UUID-idempotent mutations.
 
 This is the first team-management GUI slice. It does not add offline invitation records, team
 names, chat controls, member limits, tower placement, research purchasing, stage selection beyond
-the existing stage-1 flow, or terrain mutation. The invitation target is intentionally limited to
+the initial stage-1-through-10 catalog, or terrain mutation. The invitation target is intentionally limited to
 one nearby online player so the GUI does not need a chat-input or arbitrary-player selector yet.
 
 ## Verification

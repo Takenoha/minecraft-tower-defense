@@ -30,4 +30,16 @@ final class TeamProgressTest {
                 progress,
                 progress.afterVictory(2L));
     }
+
+    @Test
+    void victoryAtTheTechnicalCeilingDoesNotOverflowTheNextUnlock() {
+        UUID teamId = UUID.randomUUID();
+        TeamProgress progress = new TeamProgress(
+                teamId,
+                StageWaveSchedule.MAX_STAGE_LEVEL,
+                StageWaveSchedule.MAX_STAGE_LEVEL,
+                12L);
+
+        assertEquals(progress, progress.afterVictory(StageWaveSchedule.MAX_STAGE_LEVEL));
+    }
 }

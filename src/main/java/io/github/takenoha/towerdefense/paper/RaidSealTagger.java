@@ -1,8 +1,10 @@
 package io.github.takenoha.towerdefense.paper;
 
+import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -34,13 +36,18 @@ public final class RaidSealTagger {
 
     /** Template used by the stage-1 recipe; a craft event replaces its empty UUID marker. */
     public ItemStack recipeTemplate() {
-        return createTemplate();
+        return recipeTemplate(FOUNDATION_STAGE);
+    }
+
+    /** Template used by a stage-specific recipe before craft-time UUID registration. */
+    public ItemStack recipeTemplate(long stageLevel) {
+        return createTemplate(stageLevel);
     }
 
     public ItemStack create(UUID sealId, long stageLevel) {
         Objects.requireNonNull(sealId, "sealId");
         requireStage(stageLevel);
-        ItemStack item = createTemplate();
+        ItemStack item = createTemplate(stageLevel);
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(sealIdKey, PersistentDataType.STRING, sealId.toString());
@@ -64,22 +71,38 @@ public final class RaidSealTagger {
     }
 
     public boolean isRecipeTemplate(ItemStack item) {
+        return templateStage(item).isPresent();
+    }
+
+    /** Reads the stage encoded in a registered recipe result. */
+    public OptionalLong templateStage(ItemStack item) {
         if (item == null || item.getType() != Material.ENDER_EYE || item.getAmount() != 1) {
-            return false;
+            return OptionalLong.empty();
         }
         ItemMeta meta = item.getItemMeta();
         if (meta == null) {
-            return false;
+            return OptionalLong.empty();
         }
         PersistentDataContainer data = meta.getPersistentDataContainer();
         Integer version = data.get(versionKey, PersistentDataType.INTEGER);
         Byte marker = data.get(markerKey, PersistentDataType.BYTE);
-        return marker != null
-                && marker == 1
-                && version != null
-                && version == ITEM_VERSION
-                && data.get(sealIdKey, PersistentDataType.STRING) == null
-                && data.get(stageLevelKey, PersistentDataType.LONG) != null;
+        if (marker == null
+                || marker != 1
+                || version == null
+                || version != ITEM_VERSION
+                || data.get(sealIdKey, PersistentDataType.STRING) != null) {
+            return OptionalLong.empty();
+        }
+        Long stage = data.get(stageLevelKey, PersistentDataType.LONG);
+        if (stage == null) {
+            return OptionalLong.empty();
+        }
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+            return OptionalLong.of(stage);
+        } catch (IllegalArgumentException invalidStage) {
+            return OptionalLong.empty();
+        }
     }
 
     public boolean hasSealId(ItemStack item, UUID sealId) {
@@ -87,17 +110,18 @@ public final class RaidSealTagger {
         return read(item).map(identity -> identity.sealId().equals(sealId)).orElse(false);
     }
 
-    private ItemStack createTemplate() {
+    private ItemStack createTemplate(long stageLevel) {
+        requireStage(stageLevel);
         ItemStack item = new ItemStack(Material.ENDER_EYE, 1);
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(markerKey, PersistentDataType.BYTE, (byte) 1);
         data.set(versionKey, PersistentDataType.INTEGER, ITEM_VERSION);
-        data.set(stageLevelKey, PersistentDataType.LONG, FOUNDATION_STAGE);
+        data.set(stageLevelKey, PersistentDataType.LONG, stageLevel);
         meta.displayName(Component.text("襲撃の印", NamedTextColor.GOLD));
         meta.lore(List.of(
                 Component.text("防衛戦を開始するための印", NamedTextColor.GRAY),
-                Component.text("ステージ1用", NamedTextColor.GRAY)));
+                Component.text("ステージ" + stageLevel + "用", NamedTextColor.GRAY)));
         item.setItemMeta(meta);
         return item;
     }
@@ -108,7 +132,12 @@ public final class RaidSealTagger {
         String sealId = data.get(sealIdKey, PersistentDataType.STRING);
         Long stage = data.get(stageLevelKey, PersistentDataType.LONG);
         if (marker == null || marker != 1 || version == null || version != ITEM_VERSION
-                || sealId == null || stage == null || stage <= 0L) {
+                || sealId == null || stage == null) {
+            return Optional.empty();
+        }
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+        } catch (IllegalArgumentException invalidStage) {
             return Optional.empty();
         }
         try {
@@ -123,9 +152,6 @@ public final class RaidSealTagger {
     }
 
     private static long requireStage(long stageLevel) {
-        if (stageLevel <= 0L) {
-            throw new IllegalArgumentException("stageLevel must be positive");
-        }
-        return stageLevel;
+        return StageWaveSchedule.requireValidStageLevel(stageLevel);
     }
 }

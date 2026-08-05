@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import io.github.takenoha.towerdefense.domain.DefensePhase;
+import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -32,9 +33,7 @@ public final class RaidSealRepository {
         Objects.requireNonNull(sealId, "sealId");
         Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
         Objects.requireNonNull(createdAt, "createdAt");
-        if (stageLevel <= 0L) {
-            throw new IllegalArgumentException("stageLevel must be positive");
-        }
+        StageWaveSchedule.requireValidStageLevel(stageLevel);
         RaidSeal seal = new RaidSeal(
                 sealId,
                 ownerPlayerId,
@@ -535,9 +534,7 @@ public final class RaidSealRepository {
         Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(timestamp, "timestamp");
-        if (stageLevel <= 0L) {
-            throw new IllegalArgumentException("stageLevel must be positive");
-        }
+        StageWaveSchedule.requireValidStageLevel(stageLevel);
     }
 
     private static UUID deterministicOperation(UUID eventId, String kind) {

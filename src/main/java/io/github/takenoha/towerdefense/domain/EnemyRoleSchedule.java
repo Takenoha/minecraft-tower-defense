@@ -20,7 +20,8 @@ public final class EnemyRoleSchedule {
 
     /**
      * Allocates roles for a wave. Special-role ratios grow up to three times their base value as
-     * stage and wave rise, while the total count and boss slot remain fixed.
+     * stage and wave rise, while the total count remains fixed. Every tenth non-final wave has
+     * one intermediate boss; the final wave always has one final boss.
      */
     public List<EnemyRole> forWave(
             long stageLevel,
@@ -37,7 +38,7 @@ public final class EnemyRoleSchedule {
             throw new IllegalArgumentException("totalEnemies must be positive");
         }
 
-        int bossSlots = finalWave ? 1 : 0;
+        int bossSlots = isBossWave(waveIndex, finalWave) ? 1 : 0;
         if (bossSlots > totalEnemies) {
             throw new IllegalArgumentException("a final wave must have at least one enemy");
         }
@@ -56,13 +57,21 @@ public final class EnemyRoleSchedule {
         }
 
         List<EnemyRole> result = new ArrayList<>(totalEnemies);
-        if (finalWave) {
+        if (bossSlots == 1) {
             result.add(EnemyRole.BOSS);
         }
         add(result, EnemyRole.DESTROYER, destroyers);
         add(result, EnemyRole.BUILDER, builders);
         add(result, EnemyRole.NORMAL, regularEnemies - destroyers - builders);
         return List.copyOf(result);
+    }
+
+    /** Returns whether this wave receives the intermediate or final boss slot. */
+    public boolean isBossWave(int waveIndex, boolean finalWave) {
+        if (waveIndex <= 0) {
+            throw new IllegalArgumentException("waveIndex must be positive");
+        }
+        return finalWave || (waveIndex % 10 == 0);
     }
 
     private static int roundedCount(int total, double ratio) {

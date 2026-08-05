@@ -7,9 +7,9 @@ enabled. It does not enable terrain mutation in the production plugin.
 
 - Optional `enemies.destroyer-ratio` and `enemies.builder-ratio` settings with non-negative,
   finite values whose sum cannot exceed one. Existing configurations keep the 0.15/0.10 defaults.
-- A deterministic wave role schedule for normal enemies, destroyers, builders, and a single final
-  wave boss slot. Special-role allocation grows by a bounded stage/wave multiplier and never
-  changes the total logical enemy count.
+- A deterministic wave role schedule for normal enemies, destroyers, builders, intermediate
+  bosses, and a final-wave boss slot. Special-role allocation grows by a bounded stage/wave
+  multiplier and never changes the total logical enemy count.
 - Role metadata in `TaggedEnemy` and the event-enemy PDC. Legacy tags without the role key remain
   readable as normal enemies; malformed role values are rejected.
 - Role-specific navigation speed and persisted ledger types for spawned event enemies.

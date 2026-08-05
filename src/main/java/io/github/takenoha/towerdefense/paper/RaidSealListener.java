@@ -60,14 +60,18 @@ public final class RaidSealListener implements Listener {
         this.tagger = Objects.requireNonNull(tagger, "tagger");
     }
 
-    /** Registers the first stage recipe. Future stage recipes can reuse the same PDC contract. */
+    /** Registers one vanilla-material recipe for each of the first ten stages. */
     public void registerRecipe() {
-        NamespacedKey key = new NamespacedKey(plugin, "raid_seal_stage_1");
-        ShapedRecipe recipe = new ShapedRecipe(key, tagger.recipeTemplate());
-        recipe.shape("GGG", "GNG", "GGG");
-        recipe.setIngredient('G', Material.GOLD_INGOT);
-        recipe.setIngredient('N', Material.NETHER_STAR);
-        Bukkit.addRecipe(recipe);
+        for (long stageLevel : RaidSealCatalog.recipeStages()) {
+            NamespacedKey key = new NamespacedKey(plugin, "raid_seal_stage_" + stageLevel);
+            ShapedRecipe recipe = new ShapedRecipe(key, tagger.recipeTemplate(stageLevel));
+            recipe.shape("GGG", "GNG", "GGG");
+            recipe.setIngredient(
+                    'G',
+                    Material.valueOf(RaidSealCatalog.ingredientNameFor(stageLevel)));
+            recipe.setIngredient('N', Material.NETHER_STAR);
+            Bukkit.addRecipe(recipe);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -86,7 +90,8 @@ public final class RaidSealListener implements Listener {
             return;
         }
         UUID sealId = UUID.randomUUID();
-        long stageLevel = RaidSealTagger.FOUNDATION_STAGE;
+        long stageLevel = tagger.templateStage(event.getCurrentItem()).orElseThrow(
+                () -> new IllegalStateException("raid seal recipe has no valid stage"));
         event.setCurrentItem(tagger.create(sealId, stageLevel));
         databaseExecutor.submit(() -> repository.register(
                         sealId, player.getUniqueId(), stageLevel, Instant.now()))
@@ -134,20 +139,28 @@ public final class RaidSealListener implements Listener {
                 value.sealId());
     }
 
-    /** The first GUI slice exposes stage 1; the physical item remains the authority for payment. */
+    /** Starts the selected stage while the physical item remains the authority for payment. */
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onCoreGuiStart(InventoryClickEvent event) {
         if (!(event.getView().getTopInventory().getHolder()
                 instanceof CoreManagementInventoryHolder holder)
-                || event.getRawSlot() != CoreManagementGui.START_SLOT
+                || (event.getRawSlot() != CoreManagementGui.START_SLOT
+                        && CoreManagementGui.stageLevelAt(event.getRawSlot()).isEmpty())
                 || !(event.getWhoClicked() instanceof Player player)) {
             return;
         }
         event.setCancelled(true);
-        Optional<RaidSealItemIdentity> seal = findSeal(player, RaidSealTagger.FOUNDATION_STAGE);
+        long requestedStage = CoreManagementGui.stageLevelAt(event.getRawSlot())
+                .orElse(0L);
+        Optional<RaidSealItemIdentity> seal = requestedStage > 0L
+                ? findSeal(player, requestedStage)
+                : findHighestSeal(player);
         if (seal.isEmpty()) {
             player.sendMessage(Component.text(
-                    "ステージ1の襲撃の印を持っていません。", NamedTextColor.RED));
+                    requestedStage > 0L
+                            ? "選択したステージの襲撃の印を持っていません。"
+                            : "使用可能な襲撃の印を持っていません。",
+                    NamedTextColor.RED));
             return;
         }
         player.closeInventory();
@@ -168,6 +181,20 @@ public final class RaidSealListener implements Listener {
             }
         }
         return Optional.empty();
+    }
+
+    private Optional<RaidSealItemIdentity> findHighestSeal(Player player) {
+        RaidSealItemIdentity highest = null;
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            Optional<RaidSealItemIdentity> identity = tagger.read(
+                    player.getInventory().getItem(slot));
+            if (identity.isPresent()
+                    && (highest == null
+                            || identity.orElseThrow().stageLevel() > highest.stageLevel())) {
+                highest = identity.orElseThrow();
+            }
+        }
+        return Optional.ofNullable(highest);
     }
 
     private void reconcile(Player player) {

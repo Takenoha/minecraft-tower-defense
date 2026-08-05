@@ -20,8 +20,10 @@ public record TeamProgress(
         if (researchPoints < 0L) {
             throw new IllegalArgumentException("researchPoints must be non-negative");
         }
-        if (unlockedLevel < highestClearedLevel + 1L
-                && highestClearedLevel < Long.MAX_VALUE) {
+        long minimumUnlock = highestClearedLevel >= StageWaveSchedule.MAX_STAGE_LEVEL
+                ? StageWaveSchedule.MAX_STAGE_LEVEL
+                : highestClearedLevel + 1L;
+        if (unlockedLevel < minimumUnlock) {
             throw new IllegalArgumentException(
                     "unlockedLevel must include the next level after the highest clear");
         }
@@ -42,9 +44,8 @@ public record TeamProgress(
         if (stageLevel <= 0L) {
             throw new IllegalArgumentException("stageLevel must be positive");
         }
-        long nextUnlocked = stageLevel == Long.MAX_VALUE
-                ? Long.MAX_VALUE
-                : stageLevel + 1L;
+        long nextUnlocked = StageWaveSchedule.nextStageLevel(stageLevel)
+                .orElse(stageLevel);
         return new TeamProgress(
                 teamId,
                 Math.max(highestClearedLevel, stageLevel),

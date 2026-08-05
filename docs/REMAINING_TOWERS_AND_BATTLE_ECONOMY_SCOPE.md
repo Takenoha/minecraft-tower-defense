@@ -53,6 +53,11 @@ Schema version 25 adds `event_tower_damage_operations` for this boundary.
 
 ## Deliberate follow-up
 
+- Stage progression is now player-selectable for the initial ten wave schedules. Stage 2 has
+  eight waves and later stages use the existing bounded role schedule; administrator simulation
+  accepts every stage at or below the technical ceiling. The initial ten seal recipes use
+  stage-specific vanilla materials. Extending the recipe catalog above stage 10 is a content
+  decision, not a persistence limitation.
 - The current slice does not yet enable terrain mutation. Builder bridge placement and destroyer
   block mutation remain behind the existing Paper/recovery activation gate until live-server
   evidence is collected.

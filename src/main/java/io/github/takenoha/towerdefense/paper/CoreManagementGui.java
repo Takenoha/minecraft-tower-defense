@@ -7,6 +7,7 @@ import io.github.takenoha.towerdefense.persistence.TeamRecord;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalLong;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -103,11 +104,11 @@ public final class CoreManagementGui {
         }
         inventory.setItem(START_SLOT, item(
                 Material.ENDER_EYE,
-                "ステージ1を開始",
+                "所持中の最高ステージを開始",
                 List.of(
-                        "ステージ1の襲撃の印を1個消費します。",
+                        "所持中で最も高いステージの襲撃の印を1個消費します。",
                         "防衛範囲内にいるチームメンバーが参加します。",
-                        "クリックで開始します。"),
+                        "ステージを指定する場合は上段のステージボタンを押します。"),
                 NamedTextColor.GOLD));
         inventory.setItem(15, item(
                 Material.COMPASS,
@@ -122,7 +123,28 @@ public final class CoreManagementGui {
                 "閉じる",
                 List.of(),
                 NamedTextColor.RED));
+
+        for (long stageLevel : RaidSealCatalog.recipeStages()) {
+            boolean unlocked = progress.unlockedLevel() >= stageLevel;
+            inventory.setItem(
+                    RaidSealCatalog.slotForStage(stageLevel),
+                    item(
+                            unlocked ? Material.ENDER_EYE : Material.GRAY_STAINED_GLASS_PANE,
+                            unlocked
+                                    ? "ステージ" + stageLevel
+                                    : "ステージ" + stageLevel + "（未解放）",
+                            unlocked
+                                    ? List.of(
+                                            "ステージ" + stageLevel + "の襲撃の印を消費して開始します。",
+                                            "クリックでこのステージを選択します。")
+                                    : List.of("前のステージを勝利すると解放されます。"),
+                            unlocked ? NamedTextColor.GOLD : NamedTextColor.DARK_GRAY));
+        }
         return inventory;
+    }
+
+    public static OptionalLong stageLevelAt(int rawSlot) {
+        return RaidSealCatalog.stageAtSlot(rawSlot);
     }
 
     private static ItemStack item(
