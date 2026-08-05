@@ -256,7 +256,9 @@ following evidence exists:
 3. Repeat with multiple valid stacks whose total is larger than one stack. Confirm the database
    batch redeemed quantity and team research points increase by the exact total, with no unrelated
    item removed. Click the deposit action again after the batch is exhausted and confirm the clear
-   no-item message.
+   no-item message. Duplicate one delivered stack in a disposable inventory and try both copies;
+   only the first redemption for that issued segment may credit or consume, while the duplicate
+   remains unconsumed. The other legitimately issued segment must remain redeemable.
 4. On a disposable copy, stop the server or plugin at each boundary: receipt tagging, `PREPARED`,
    database `APPLIED`, and physical removal. Reconnect or re-enable the plugin and confirm the
    operation UUID is reconciled exactly once: an applied operation consumes only its matching

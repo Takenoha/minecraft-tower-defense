@@ -822,6 +822,8 @@ public final class CoreManagementListener implements Listener {
                     player.getUniqueId(),
                     candidate.identity().teamId(),
                     candidate.identity().issuedQuantity(),
+                    candidate.identity().segmentOffset(),
+                    candidate.identity().segmentQuantity(),
                     candidate.quantity(),
                     operationId,
                     Instant.now());

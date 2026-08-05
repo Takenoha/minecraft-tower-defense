@@ -462,7 +462,9 @@ final class DefenseEventPersistenceTest {
                 fixture.ownerId(),
                 fixture.teamId(),
                 batch.issuedQuantity(),
-                40,
+                0,
+                64,
+                64,
                 firstRedemptionOperation,
                 STARTED_AT.plusSeconds(21L));
         assertEquals(ResearchCrystalRedemptionState.PREPARED, firstPrepared.state());
@@ -474,15 +476,31 @@ final class DefenseEventPersistenceTest {
                         fixture.ownerId(),
                         fixture.teamId(),
                         batch.issuedQuantity(),
-                        40,
+                        0,
+                        64,
+                        64,
                         firstRedemptionOperation,
                         STARTED_AT.plusSeconds(22L)));
 
         ResearchCrystalRedemptionResult firstApplied = repository.applyResearchCrystalRedemption(
                 firstRedemptionOperation, STARTED_AT.plusSeconds(23L));
         assertEquals(OperationOutcome.APPLIED, firstApplied.outcome());
-        assertEquals(40L, firstApplied.progress().researchPoints());
+        assertEquals(64L, firstApplied.progress().researchPoints());
         assertEquals(ResearchCrystalBatchStatus.ISSUED, firstApplied.batch().status());
+
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> repository.prepareResearchCrystalRedemption(
+                        batch.batchId(),
+                        fixture.core().id(),
+                        fixture.ownerId(),
+                        fixture.teamId(),
+                        batch.issuedQuantity(),
+                        0,
+                        64,
+                        64,
+                        UUID.randomUUID(),
+                        STARTED_AT.plusSeconds(23L)));
 
         UUID secondRedemptionOperation = UUID.randomUUID();
         ResearchCrystalRedemptionResult applied = repository.applyResearchCrystalRedemption(
@@ -492,7 +510,9 @@ final class DefenseEventPersistenceTest {
                         fixture.ownerId(),
                         fixture.teamId(),
                         batch.issuedQuantity(),
-                        60,
+                        64,
+                        36,
+                        36,
                         secondRedemptionOperation,
                         STARTED_AT.plusSeconds(24L)).operationId(),
                 STARTED_AT.plusSeconds(25L));

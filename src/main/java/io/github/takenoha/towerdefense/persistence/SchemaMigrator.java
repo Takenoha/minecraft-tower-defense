@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 36;
+    public static final int CURRENT_VERSION = 37;
 
     private SchemaMigrator() {
     }
@@ -167,6 +167,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 36) {
                     applyVersionThirtySix(connection);
                     recordMigration(connection, 36);
+                }
+                if (installedVersion < 37) {
+                    applyVersionThirtySeven(connection);
+                    recordMigration(connection, 37);
                 }
                 return null;
             });
@@ -2131,6 +2135,54 @@ public final class SchemaMigrator {
                     CREATE INDEX resource_voucher_redeem_actor_idx
                     ON resource_voucher_redeem_operations(actor_id, state, prepared_at)
                     """);
+        }
+    }
+
+    /** Adds per-delivery-segment redemption accounting for research-crystal copy protection. */
+    private static void applyVersionThirtySeven(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE research_crystal_segments (
+                        batch_id TEXT NOT NULL
+                            REFERENCES research_crystal_batches(batch_id) ON DELETE RESTRICT,
+                        segment_offset INTEGER NOT NULL CHECK (segment_offset >= 0),
+                        segment_quantity INTEGER NOT NULL CHECK (segment_quantity > 0),
+                        redeemed_quantity INTEGER NOT NULL DEFAULT 0 CHECK (
+                            redeemed_quantity >= 0 AND redeemed_quantity <= segment_quantity
+                        ),
+                        PRIMARY KEY (batch_id, segment_offset)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX research_crystal_segments_batch_idx
+                    ON research_crystal_segments(batch_id, segment_offset)
+                    """);
+            statement.executeUpdate(
+                    "ALTER TABLE research_crystal_redemptions ADD COLUMN segment_offset INTEGER");
+            statement.executeUpdate(
+                    "ALTER TABLE research_crystal_redemptions ADD COLUMN segment_quantity INTEGER");
+        }
+
+        try (PreparedStatement batches = connection.prepareStatement(
+                "SELECT batch_id, issued_quantity FROM research_crystal_batches");
+                ResultSet resultSet = batches.executeQuery();
+                PreparedStatement segments = connection.prepareStatement("""
+                        INSERT INTO research_crystal_segments(
+                            batch_id, segment_offset, segment_quantity)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(batch_id, segment_offset) DO NOTHING
+                        """)) {
+            while (resultSet.next()) {
+                String batchId = resultSet.getString("batch_id");
+                int issuedQuantity = resultSet.getInt("issued_quantity");
+                for (int offset = 0; offset < issuedQuantity; offset += 64) {
+                    segments.setString(1, batchId);
+                    segments.setInt(2, offset);
+                    segments.setInt(3, Math.min(64, issuedQuantity - offset));
+                    segments.addBatch();
+                }
+            }
+            segments.executeBatch();
         }
     }
 }

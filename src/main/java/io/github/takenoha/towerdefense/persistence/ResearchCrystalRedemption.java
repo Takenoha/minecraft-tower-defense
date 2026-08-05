@@ -13,6 +13,8 @@ public record ResearchCrystalRedemption(
         UUID actorId,
         int quantity,
         String payloadFingerprint,
+        Integer segmentOffset,
+        Integer segmentQuantity,
         ResearchCrystalRedemptionState state,
         Instant preparedAt,
         Instant appliedAt,
@@ -28,6 +30,13 @@ public record ResearchCrystalRedemption(
         Objects.requireNonNull(preparedAt, "preparedAt");
         if (quantity <= 0) {
             throw new IllegalArgumentException("quantity must be positive");
+        }
+        if ((segmentOffset == null) != (segmentQuantity == null)) {
+            throw new IllegalArgumentException(
+                    "segmentOffset and segmentQuantity must be supplied together");
+        }
+        if (segmentOffset != null && (segmentOffset < 0 || segmentQuantity <= 0)) {
+            throw new IllegalArgumentException("research crystal redemption segment is invalid");
         }
         if (state == ResearchCrystalRedemptionState.PREPARED
                 && (appliedAt != null || rolledBackAt != null)) {

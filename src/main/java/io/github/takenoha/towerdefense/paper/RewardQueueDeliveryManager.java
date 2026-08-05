@@ -212,10 +212,10 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
         UUID deliveryOperation = deterministicDeliveryOperation(entry.queueId(), player.getUniqueId());
         List<ItemStack> stacks;
         try {
-            stacks = splitAndTag(
-                    payload,
-                    remaining,
-                    new RewardQueueReceipt(entry.queueId(), deliveryOperation));
+            RewardQueueReceipt receipt = new RewardQueueReceipt(entry.queueId(), deliveryOperation);
+            stacks = "research_crystal".equals(entry.itemId())
+                    ? decodeResearchCrystalStacks(entry, remaining, alreadyAccepted, receipt)
+                    : splitAndTag(payload, remaining, receipt);
         } catch (RuntimeException invalidItem) {
             logFailure("Reward queue " + entry.queueId() + " cannot create an inventory item", invalidItem);
             stopDelivery.run();
@@ -247,7 +247,7 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
         String[] fields = entry.itemPayload().split(":", -1);
         if (fields.length != 5
                 || !"research_crystal".equals(fields[0])
-                || !"v1".equals(fields[1])) {
+                || (!"v1".equals(fields[1]) && !"v2".equals(fields[1]))) {
             throw new IllegalArgumentException("The research crystal payload is invalid");
         }
         try {
@@ -262,6 +262,51 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
         } catch (IllegalArgumentException invalidPayload) {
             throw new IllegalArgumentException("The research crystal payload is invalid", invalidPayload);
         }
+    }
+
+    private List<ItemStack> decodeResearchCrystalStacks(
+            RewardQueueEntry entry,
+            int quantity,
+            int offset,
+            RewardQueueReceipt receipt) {
+        String[] fields = entry.itemPayload().split(":", -1);
+        if (fields.length != 5
+                || !"research_crystal".equals(fields[0])
+                || !"v2".equals(fields[1])) {
+            return splitAndTag(decodePayload(entry), quantity, receipt);
+        }
+        UUID batchId;
+        UUID teamId;
+        int issuedQuantity;
+        try {
+            batchId = UUID.fromString(fields[2]);
+            teamId = UUID.fromString(fields[3]);
+            issuedQuantity = Integer.parseInt(fields[4]);
+        } catch (IllegalArgumentException invalidPayload) {
+            throw new IllegalArgumentException("The research crystal payload is invalid", invalidPayload);
+        }
+        if (issuedQuantity != entry.quantity()
+                || offset < 0
+                || quantity < 0
+                || (long) offset + quantity > issuedQuantity) {
+            throw new IllegalArgumentException("The research crystal payload quantity is invalid");
+        }
+        List<ItemStack> stacks = new ArrayList<>();
+        int remaining = quantity;
+        int segmentOffset = offset;
+        while (remaining > 0) {
+            int segmentQuantity = Math.min(ResearchCrystalTagger.STACK_LIMIT, remaining);
+            ItemStack stack = researchCrystals.create(
+                    batchId,
+                    teamId,
+                    issuedQuantity,
+                    segmentOffset,
+                    segmentQuantity);
+            stacks.add(tagger.tag(stack, receipt));
+            segmentOffset += segmentQuantity;
+            remaining -= segmentQuantity;
+        }
+        return List.copyOf(stacks);
     }
 
     private void markDelivered(

@@ -34,6 +34,7 @@ import java.util.UUID;
 public final class DefenseRepository {
     private static final String TERMINAL_PHASES_SQL =
             "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')";
+    private static final int RESEARCH_CRYSTAL_SEGMENT_SIZE = 64;
     private static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
     public static final int MAX_TEAM_MEMBERS = 8;
     public static final Duration DEFAULT_INVITATION_RETENTION = Duration.ofDays(7L);
@@ -431,6 +432,8 @@ public final class DefenseRepository {
                 actorId,
                 null,
                 -1,
+                null,
+                null,
                 quantity,
                 operationId,
                 preparedAt);
@@ -450,6 +453,31 @@ public final class DefenseRepository {
             int quantity,
             UUID operationId,
             Instant preparedAt) {
+        return prepareResearchCrystalRedemption(
+                batchId,
+                coreId,
+                actorId,
+                itemTeamId,
+                itemIssuedQuantity,
+                null,
+                null,
+                quantity,
+                operationId,
+                preparedAt);
+    }
+
+    /** Reserves a redemption and, for v2 items, binds it to one issued stack segment. */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            Integer itemSegmentOffset,
+            Integer itemSegmentQuantity,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
         Objects.requireNonNull(batchId, "batchId");
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
@@ -461,6 +489,20 @@ public final class DefenseRepository {
         if (itemTeamId != null && itemIssuedQuantity <= 0) {
             throw new IllegalArgumentException("itemIssuedQuantity must be positive");
         }
+        if ((itemSegmentOffset == null) != (itemSegmentQuantity == null)) {
+            throw new IllegalArgumentException(
+                    "itemSegmentOffset and itemSegmentQuantity must be supplied together");
+        }
+        if (itemSegmentOffset != null && itemTeamId == null) {
+            throw new IllegalArgumentException(
+                    "an issued research crystal segment requires team metadata");
+        }
+        if (itemSegmentOffset != null
+                && (itemSegmentOffset < 0
+                        || itemSegmentQuantity <= 0
+                        || itemSegmentQuantity > RESEARCH_CRYSTAL_SEGMENT_SIZE)) {
+            throw new IllegalArgumentException("research crystal item segment is invalid");
+        }
         String fingerprint = itemTeamId == null
                 ? crystalRedemptionFingerprint(batchId, coreId, actorId, quantity)
                 : crystalRedemptionFingerprint(
@@ -469,6 +511,8 @@ public final class DefenseRepository {
                         actorId,
                         itemTeamId,
                         itemIssuedQuantity,
+                        itemSegmentOffset,
+                        itemSegmentQuantity,
                         quantity);
         try {
             return database.inImmediateTransaction(connection -> {
@@ -504,6 +548,21 @@ public final class DefenseRepository {
                     throw new PersistenceConflictException(
                             "The research crystal PDC issuance quantity is invalid");
                 }
+                if (itemSegmentOffset != null) {
+                    if ((long) itemSegmentOffset + itemSegmentQuantity > batch.issuedQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal PDC segment is outside its batch");
+                    }
+                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                                    connection, batchId, itemSegmentOffset)
+                            .orElseThrow(() -> new PersistenceConflictException(
+                                    "The research crystal PDC segment is not issued"));
+                    if (segment.segmentQuantity() != itemSegmentQuantity
+                            || quantity > segment.remainingQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal PDC segment has no remaining quantity");
+                    }
+                }
                 if (batch.status() == ResearchCrystalBatchStatus.VOIDED
                         || quantity > batch.remainingQuantity()) {
                     throw new PersistenceConflictException(
@@ -517,6 +576,8 @@ public final class DefenseRepository {
                         actorId,
                         quantity,
                         fingerprint,
+                        itemSegmentOffset,
+                        itemSegmentQuantity,
                         ResearchCrystalRedemptionState.PREPARED,
                         preparedAt,
                         null,
@@ -568,6 +629,35 @@ public final class DefenseRepository {
                         || redemption.quantity() > batch.remainingQuantity()) {
                     throw new PersistenceConflictException(
                             "The research crystal batch was already exhausted or voided");
+                }
+                if (redemption.segmentOffset() != null) {
+                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                                    connection,
+                                    redemption.batchId(),
+                                    redemption.segmentOffset())
+                            .orElseThrow(() -> new PersistenceConflictException(
+                                    "The research crystal redemption segment disappeared"));
+                    if (!Objects.equals(
+                                segment.segmentQuantity(), redemption.segmentQuantity())
+                            || redemption.quantity() > segment.remainingQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal redemption segment was already consumed");
+                    }
+                    try (PreparedStatement statement = connection.prepareStatement("""
+                            UPDATE research_crystal_segments
+                            SET redeemed_quantity = redeemed_quantity + ?
+                            WHERE batch_id = ? AND segment_offset = ?
+                              AND redeemed_quantity + ? <= segment_quantity
+                            """)) {
+                        statement.setInt(1, redemption.quantity());
+                        statement.setString(2, redemption.batchId().toString());
+                        statement.setInt(3, redemption.segmentOffset());
+                        statement.setInt(4, redemption.quantity());
+                        if (statement.executeUpdate() != 1) {
+                            throw new PersistenceConflictException(
+                                    "The research crystal redemption segment was concurrently resolved");
+                        }
+                    }
                 }
                 TeamProgress progress = loadTeamProgress(connection, redemption.teamId())
                         .orElseThrow(() -> new PersistenceConflictException(
@@ -676,6 +766,8 @@ public final class DefenseRepository {
                         redemption.actorId(),
                         redemption.quantity(),
                         redemption.payloadFingerprint(),
+                        redemption.segmentOffset(),
+                        redemption.segmentQuantity(),
                         ResearchCrystalRedemptionState.ROLLED_BACK,
                         redemption.preparedAt(),
                         null,
@@ -4112,6 +4204,7 @@ public final class DefenseRepository {
             throw new PersistenceConflictException(
                     "The research crystal batch UUID is already assigned to another payload");
         }
+        ensureResearchCrystalSegments(connection, batchId, quantity);
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO event_drop_escrow(
                     drop_id, event_id, source_kind, source_id, item_id, item_payload,
@@ -4517,6 +4610,51 @@ public final class DefenseRepository {
         }
     }
 
+    private static Optional<ResearchCrystalSegment> loadResearchCrystalSegment(
+            Connection connection,
+            UUID batchId,
+            int segmentOffset) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT segment_quantity, redeemed_quantity
+                FROM research_crystal_segments
+                WHERE batch_id = ? AND segment_offset = ?
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setInt(2, segmentOffset);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new ResearchCrystalSegment(
+                                resultSet.getInt("segment_quantity"),
+                                resultSet.getInt("redeemed_quantity")))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static void ensureResearchCrystalSegments(
+            Connection connection,
+            UUID batchId,
+            int issuedQuantity) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_segments(
+                    batch_id, segment_offset, segment_quantity)
+                VALUES (?, ?, ?)
+                ON CONFLICT(batch_id, segment_offset) DO NOTHING
+                """)) {
+            for (int offset = 0; offset < issuedQuantity; offset += RESEARCH_CRYSTAL_SEGMENT_SIZE) {
+                statement.setString(1, batchId.toString());
+                statement.setInt(2, offset);
+                statement.setInt(
+                        3,
+                        Math.min(
+                                RESEARCH_CRYSTAL_SEGMENT_SIZE,
+                                issuedQuantity - offset));
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
     private static ResearchCrystalBatch researchCrystalBatchFromRow(ResultSet resultSet)
             throws SQLException {
         return new ResearchCrystalBatch(
@@ -4535,7 +4673,8 @@ public final class DefenseRepository {
             Connection connection, UUID operationId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, batch_id, core_id, team_id, actor_id, quantity,
-                       payload_fingerprint, state, prepared_at, applied_at, rolled_back_at
+                       payload_fingerprint, segment_offset, segment_quantity, state,
+                       prepared_at, applied_at, rolled_back_at
                 FROM research_crystal_redemptions WHERE operation_id = ?
                 """)) {
             statement.setString(1, operationId.toString());
@@ -4557,6 +4696,8 @@ public final class DefenseRepository {
                 uuid(resultSet.getString("actor_id")),
                 resultSet.getInt("quantity"),
                 resultSet.getString("payload_fingerprint"),
+                nullableInteger(resultSet, "segment_offset"),
+                nullableInteger(resultSet, "segment_quantity"),
                 ResearchCrystalRedemptionState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
                 nullableInstant(resultSet.getString("applied_at")),
@@ -4569,8 +4710,9 @@ public final class DefenseRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO research_crystal_redemptions(
                     operation_id, batch_id, core_id, team_id, actor_id, quantity,
-                    payload_fingerprint, state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    payload_fingerprint, segment_offset, segment_quantity,
+                    state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, redemption.operationId().toString());
             statement.setString(2, redemption.batchId().toString());
@@ -4579,7 +4721,14 @@ public final class DefenseRepository {
             statement.setString(5, redemption.actorId().toString());
             statement.setInt(6, redemption.quantity());
             statement.setString(7, redemption.payloadFingerprint());
-            statement.setString(8, redemption.preparedAt().toString());
+            if (redemption.segmentOffset() == null) {
+                statement.setNull(8, java.sql.Types.INTEGER);
+                statement.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                statement.setInt(8, redemption.segmentOffset());
+                statement.setInt(9, redemption.segmentQuantity());
+            }
+            statement.setString(10, redemption.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -5946,7 +6095,7 @@ public final class DefenseRepository {
             UUID batchId,
             UUID teamId,
             int issuedQuantity) {
-        return "research_crystal:v1:" + batchId + ":" + teamId + ":" + issuedQuantity;
+        return "research_crystal:v2:" + batchId + ":" + teamId + ":" + issuedQuantity;
     }
 
     private static String crystalRedemptionFingerprint(
@@ -5963,9 +6112,14 @@ public final class DefenseRepository {
             UUID actorId,
             UUID itemTeamId,
             int itemIssuedQuantity,
+            Integer itemSegmentOffset,
+            Integer itemSegmentQuantity,
             int quantity) {
         return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|"
-                + itemTeamId + "|" + itemIssuedQuantity + "|" + quantity;
+                + itemTeamId + "|" + itemIssuedQuantity + "|"
+                + (itemSegmentOffset == null ? "legacy" : itemSegmentOffset)
+                + "|" + (itemSegmentQuantity == null ? "legacy" : itemSegmentQuantity)
+                + "|" + quantity;
     }
 
     private static UUID deterministicUuid(UUID base, String namespace, String value) {
@@ -6018,8 +6172,19 @@ public final class DefenseRepository {
         return value == null ? null : Instant.parse(value);
     }
 
+    private static Integer nullableInteger(ResultSet resultSet, String column) throws SQLException {
+        int value = resultSet.getInt(column);
+        return resultSet.wasNull() ? null : value;
+    }
+
     private static String nullableInstantString(Instant value) {
         return value == null ? null : value.toString();
+    }
+
+    private record ResearchCrystalSegment(int segmentQuantity, int redeemedQuantity) {
+        private int remainingQuantity() {
+            return segmentQuantity - redeemedQuantity;
+        }
     }
 
     private record ParticipantSets(Set<UUID> registered, Set<UUID> effective) {

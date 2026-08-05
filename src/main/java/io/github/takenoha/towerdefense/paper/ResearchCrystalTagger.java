@@ -17,12 +17,15 @@ import org.bukkit.plugin.Plugin;
 /** Creates and validates the team-bound research crystal used by the core deposit flow. */
 public final class ResearchCrystalTagger {
     public static final int ITEM_VERSION = 1;
+    public static final int STACK_LIMIT = 64;
 
     private final NamespacedKey markerKey;
     private final NamespacedKey versionKey;
     private final NamespacedKey batchIdKey;
     private final NamespacedKey teamIdKey;
     private final NamespacedKey issuedQuantityKey;
+    private final NamespacedKey segmentOffsetKey;
+    private final NamespacedKey segmentQuantityKey;
     private final NamespacedKey redemptionOperationKey;
 
     public ResearchCrystalTagger(Plugin plugin) {
@@ -36,15 +39,38 @@ public final class ResearchCrystalTagger {
         batchIdKey = new NamespacedKey(namespace, "research_crystal_batch_id");
         teamIdKey = new NamespacedKey(namespace, "research_crystal_team_id");
         issuedQuantityKey = new NamespacedKey(namespace, "research_crystal_issued_quantity");
+        segmentOffsetKey = new NamespacedKey(namespace, "research_crystal_segment_offset");
+        segmentQuantityKey = new NamespacedKey(namespace, "research_crystal_segment_quantity");
         redemptionOperationKey = new NamespacedKey(namespace, "research_crystal_redemption");
     }
 
     /** Creates one stack unit; the delivery bridge splits the queue quantity safely. */
     public ItemStack create(UUID batchId, UUID teamId, int issuedQuantity) {
+        return create(batchId, teamId, issuedQuantity, null, null);
+    }
+
+    /** Creates one deterministic delivery segment within an issuance batch. */
+    public ItemStack create(
+            UUID batchId,
+            UUID teamId,
+            int issuedQuantity,
+            Integer segmentOffset,
+            Integer segmentQuantity) {
         Objects.requireNonNull(batchId, "batchId");
         Objects.requireNonNull(teamId, "teamId");
         if (issuedQuantity <= 0) {
             throw new IllegalArgumentException("issuedQuantity must be positive");
+        }
+        if ((segmentOffset == null) != (segmentQuantity == null)) {
+            throw new IllegalArgumentException(
+                    "segmentOffset and segmentQuantity must be supplied together");
+        }
+        if (segmentOffset != null
+                && (segmentOffset < 0
+                        || segmentQuantity <= 0
+                        || segmentQuantity > STACK_LIMIT
+                        || (long) segmentOffset + segmentQuantity > issuedQuantity)) {
+            throw new IllegalArgumentException("research crystal segment is invalid");
         }
         ItemStack item = new ItemStack(Material.AMETHYST_SHARD);
         ItemMeta meta = Objects.requireNonNull(item.getItemMeta(), "research crystal metadata");
@@ -54,6 +80,10 @@ public final class ResearchCrystalTagger {
         data.set(batchIdKey, PersistentDataType.STRING, batchId.toString());
         data.set(teamIdKey, PersistentDataType.STRING, teamId.toString());
         data.set(issuedQuantityKey, PersistentDataType.INTEGER, issuedQuantity);
+        if (segmentOffset != null) {
+            data.set(segmentOffsetKey, PersistentDataType.INTEGER, segmentOffset);
+            data.set(segmentQuantityKey, PersistentDataType.INTEGER, segmentQuantity);
+        }
         meta.displayName(Component.text("研究結晶", NamedTextColor.LIGHT_PURPLE));
         meta.lore(List.of(
                 Component.text("発行元チーム専用", NamedTextColor.GRAY),
@@ -145,14 +175,28 @@ public final class ResearchCrystalTagger {
         String batchId = data.get(batchIdKey, PersistentDataType.STRING);
         String teamId = data.get(teamIdKey, PersistentDataType.STRING);
         Integer issuedQuantity = data.get(issuedQuantityKey, PersistentDataType.INTEGER);
+        Integer segmentOffset = data.get(segmentOffsetKey, PersistentDataType.INTEGER);
+        Integer segmentQuantity = data.get(segmentQuantityKey, PersistentDataType.INTEGER);
         if (marker == null || marker != 1 || version == null || version != ITEM_VERSION
                 || batchId == null || teamId == null || issuedQuantity == null
                 || issuedQuantity <= 0) {
             return Optional.empty();
         }
+        if ((segmentOffset == null) != (segmentQuantity == null)
+                || (segmentOffset != null
+                        && (segmentOffset < 0
+                                || segmentQuantity <= 0
+                                || segmentQuantity > STACK_LIMIT
+                                || (long) segmentOffset + segmentQuantity > issuedQuantity))) {
+            return Optional.empty();
+        }
         try {
             return Optional.of(new ResearchCrystalItemIdentity(
-                    UUID.fromString(batchId), UUID.fromString(teamId), issuedQuantity));
+                    UUID.fromString(batchId),
+                    UUID.fromString(teamId),
+                    issuedQuantity,
+                    segmentOffset,
+                    segmentQuantity));
         } catch (IllegalArgumentException invalidIdentity) {
             return Optional.empty();
         }
