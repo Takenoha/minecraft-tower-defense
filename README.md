@@ -9,6 +9,11 @@ A Paper server plugin that adds cooperative tower-defense encounters to a normal
 - Java 25
 - Vanilla clients; no required resource pack
 
+## Player guide
+
+See [遊び方 / How to Play](docs/HOW_TO_PLAY.md) for crafting, core setup, teams, stages, towers,
+research crystals, and troubleshooting.
+
 The version is intentionally fixed for the first release. See the official [Paper project setup](https://docs.papermc.io/paper/dev/project-setup/) and [Java requirements](https://docs.papermc.io/paper/getting-started/).
 
 ## Current milestone
