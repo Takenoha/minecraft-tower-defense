@@ -90,9 +90,12 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
@@ -367,6 +370,26 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
     }
 
+    /** Leaves receipt-bearing upgrade stop windows for join reconciliation instead of touching
+     * the saved offline inventory from an async callback. */
+    @EventHandler
+    public void onUpgradeReceiptQuit(PlayerQuitEvent event) {
+        UUID playerId = event.getPlayer().getUniqueId();
+        databaseExecutor.submit(() -> repository.loadPreparedTowerUpgrades().stream()
+                        .filter(upgrade -> upgrade.actorId().equals(playerId))
+                        .toList())
+                .whenComplete((upgrades, failure) -> {
+                    if (failure != null || upgrades == null) {
+                        return;
+                    }
+                    for (TowerUpgrade upgrade : upgrades) {
+                        if (repository.findTowerUpgradeReceipts(upgrade.operationId()).isEmpty()) {
+                            repository.rollbackTowerUpgrade(upgrade.operationId(), Instant.now());
+                        }
+                    }
+                });
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getHand() != EquipmentSlot.HAND
@@ -385,18 +408,25 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onUpgradeReceiptClick(InventoryClickEvent event) {
-        ItemStack source = event.getCurrentItem();
-        if (event.getWhoClicked() instanceof Player player) {
-            if (event.getClick() == ClickType.NUMBER_KEY) {
-                source = player.getInventory().getItem(event.getHotbarButton());
-            } else if (event.getClick() == ClickType.SWAP_OFFHAND) {
-                source = player.getInventory().getItemInOffHand();
-            }
-        }
-        if (upgradeReceipts.isTagged(source)
-                || upgradeReceipts.isTagged(event.getCursor())) {
+        if (containsUpgradeReceipt(event)) {
             event.setCancelled(true);
         }
+    }
+
+    private boolean containsUpgradeReceipt(InventoryClickEvent event) {
+        ItemStack auxiliary = null;
+        if (event.getWhoClicked() instanceof Player player) {
+            if (event.getClick() == ClickType.NUMBER_KEY) {
+                auxiliary = player.getInventory().getItem(event.getHotbarButton());
+            } else if (event.getClick() == ClickType.SWAP_OFFHAND) {
+                auxiliary = player.getInventory().getItemInOffHand();
+            }
+        }
+        return ReceiptTransferPolicy.containsTagged(
+                upgradeReceipts::isTagged,
+                event.getCurrentItem(),
+                event.getCursor(),
+                auxiliary);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -464,6 +494,19 @@ public final class TowerManager implements Listener, AutoCloseable {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptInteractAtEntity(PlayerInteractAtEntityEvent event) {
+        onUpgradeReceiptInteractEntity(event);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
+        if (upgradeReceipts.isTagged(event.getPlayerItem())
+                || upgradeReceipts.isTagged(event.getArmorStandItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onUpgradeReceiptSwapHands(PlayerSwapHandItemsEvent event) {
         if (upgradeReceipts.isTagged(event.getMainHandItem())
                 || upgradeReceipts.isTagged(event.getOffHandItem())) {
@@ -497,7 +540,14 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onUpgradeReceiptDeath(PlayerDeathEvent event) {
-        event.getDrops().removeIf(upgradeReceipts::isTagged);
+        var iterator = event.getDrops().iterator();
+        while (iterator.hasNext()) {
+            ItemStack item = iterator.next();
+            if (upgradeReceipts.isTagged(item)) {
+                event.getItemsToKeep().add(item.clone());
+                iterator.remove();
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -580,7 +630,9 @@ public final class TowerManager implements Listener, AutoCloseable {
         } else if (targetPriority.isPresent()) {
             setTargetPriority(player, holder.towerId(), targetPriority.orElseThrow());
         } else if (event.getRawSlot() == TowerManagementGui.UPGRADE_SLOT) {
-            beginUpgrade(player, holder.towerId());
+            beginUpgrade(player, holder.towerId(), false);
+        } else if (event.getRawSlot() == TowerManagementGui.LEGACY_UPGRADE_SLOT) {
+            beginUpgrade(player, holder.towerId(), true);
         } else if (event.getRawSlot() == TowerManagementGui.REMOVE_SLOT) {
             beginRemoval(player, holder.towerId());
         }
@@ -795,7 +847,8 @@ public final class TowerManager implements Listener, AutoCloseable {
                     data.tower().currentHitPoints(),
                     data.tower().maximumHitPoints(),
                     repairCost,
-                    data.resources()));
+                    data.resources(),
+                    settings.rewards().legacyResourcePaymentsEnabled()));
         }));
     }
 
@@ -998,7 +1051,7 @@ public final class TowerManager implements Listener, AutoCloseable {
                 }));
     }
 
-    private void beginUpgrade(Player player, UUID towerId) {
+    private void beginUpgrade(Player player, UUID towerId, boolean explicitLegacy) {
         if (pendingRemovalTowerIds.contains(towerId) || removalInFlight.contains(towerId)) {
             player.sendMessage(Component.text(
                     "タワー回収処理中のため強化できません。", NamedTextColor.YELLOW));
@@ -1029,11 +1082,10 @@ public final class TowerManager implements Listener, AutoCloseable {
                     : resources.load(tower.teamId(), player.getUniqueId());
             boolean walletPayment = snapshot.defensePoints() >= shardCost
                     && snapshot.enhancementPoints() >= coreCost;
-            if (!walletPayment && !settings.rewards().legacyResourcePaymentsEnabled()) {
-                throw new IllegalStateException(
-                        "ポイント不足です。legacy-resource-payments-enabled=trueなら旧素材で支払えます");
-            }
-            return walletPayment ? PaymentMode.POINT_WALLET : PaymentMode.LEGACY_ITEMS;
+            return PaymentSelectionPolicy.choose(
+                    explicitLegacy,
+                    walletPayment,
+                    settings.rewards().legacyResourcePaymentsEnabled());
         }).whenComplete((paymentMode, quoteFailure) -> runOnMainThread(() -> {
             if (quoteFailure != null) {
                 finishUpgrade(player, towerId, rootMessage(quoteFailure));
@@ -1045,19 +1097,30 @@ public final class TowerManager implements Listener, AutoCloseable {
             }
             if (paymentMode == PaymentMode.LEGACY_ITEMS) {
                 player.sendMessage(Component.text(
-                        "ポイント不足のため旧素材支払いを使用します（旧方式は廃止予定です）。",
+                        explicitLegacy
+                                ? "旧素材支払いを明示的に選択しました（旧方式は廃止予定です）。"
+                                : "ポイント不足のため旧素材支払いを使用します（旧方式は廃止予定です）。",
                         NamedTextColor.YELLOW));
+            }
+            UUID operationId = UUID.randomUUID();
+            if (paymentMode == PaymentMode.LEGACY_ITEMS) {
+                plugin.getLogger().info(
+                        "Legacy tower upgrade payment selected actor=" + player.getUniqueId()
+                                + " team=" + tower.teamId()
+                                + " operation=" + operationId
+                                + " cost=" + shardCost + "+" + coreCost
+                                + " mode=" + paymentMode);
             }
             TowerUpgrade request = paymentMode == PaymentMode.POINT_WALLET
                     ? TowerUpgrade.preparedWallet(
-                            UUID.randomUUID(),
+                            operationId,
                             tower,
                             player.getUniqueId(),
                             shardCost,
                             coreCost,
                             Instant.now())
                     : TowerUpgrade.prepared(
-                            UUID.randomUUID(),
+                            operationId,
                             tower,
                             player.getUniqueId(),
                             shardCost,
@@ -1177,7 +1240,10 @@ public final class TowerManager implements Listener, AutoCloseable {
                                         }
                                         // CLEAR_PENDING is durable before physical removal, so a
                                         // restart can safely finish the receipt clear either way.
-                                        takeUpgradeReceiptItems(player, prepared.operationId());
+                                        if (!saveAfterUpgradeReceiptRemoval(
+                                                player, prepared.operationId())) {
+                                            return;
+                                        }
                                         databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
                                                         prepared.operationId(), Instant.now()));
                                         finishAppliedUpgrade(player, prepared, result.tower().orElse(null));
@@ -1212,66 +1278,53 @@ public final class TowerManager implements Listener, AutoCloseable {
     }
 
     private boolean secureUpgradeItemsInPlace(Player player, TowerUpgrade upgrade) {
-        if (countOrdinaryItems(player, "DEFENSE_SHARD") < upgrade.defenseShardCost()
-                || countOrdinaryItems(player, "ENHANCEMENT_CORE")
-                        < upgrade.enhancementCoreCost()) {
-            return false;
-        }
-        return tagUpgradeItems(
-                player,
-                item -> shardTagger.isShard(item) && !upgradeReceipts.isTagged(item),
-                upgrade.defenseShardCost(),
-                upgrade.operationId(),
-                "DEFENSE_SHARD")
-                && tagUpgradeItems(
-                        player,
+        // addItem/setItem below address storage slots only. Preflight the same slot domain so
+        // armor/offhand capacity cannot make a full storage inventory look safely splittable.
+        ItemStack[] contents = player.getInventory().getStorageContents();
+        Optional<List<ReceiptInventoryPlanner.Extraction>> shardPlan =
+                ReceiptInventoryPlanner.plan(
+                        contents,
+                        item -> shardTagger.isShard(item) && !upgradeReceipts.isTagged(item),
+                        upgrade.defenseShardCost(),
+                        "DEFENSE_SHARD");
+        Optional<List<ReceiptInventoryPlanner.Extraction>> corePlan =
+                ReceiptInventoryPlanner.plan(
+                        contents,
                         item -> enhancementCoreTagger.isEnhancementCore(item)
                                 && !upgradeReceipts.isTagged(item),
                         upgrade.enhancementCoreCost(),
-                        upgrade.operationId(),
                         "ENHANCEMENT_CORE");
-    }
-
-    private long countOrdinaryItems(Player player, String material) {
-        long total = 0L;
-        for (ItemStack item : player.getInventory().getContents()) {
-            if (material.equals("DEFENSE_SHARD")
-                    ? shardTagger.isShard(item) && !upgradeReceipts.isTagged(item)
-                    : enhancementCoreTagger.isEnhancementCore(item)
-                            && !upgradeReceipts.isTagged(item)) {
-                total += item.getAmount();
-            }
+        if (shardPlan.isEmpty() || corePlan.isEmpty()) {
+            return false;
         }
-        return total;
-    }
-
-    private boolean tagUpgradeItems(
-            Player player,
-            java.util.function.Predicate<ItemStack> predicate,
-            long quantity,
-            UUID operationId,
-            String material) {
-        long remaining = quantity;
-        for (int slot = 0; slot < player.getInventory().getSize() && remaining > 0L; slot++) {
-            ItemStack item = player.getInventory().getItem(slot);
-            if (!predicate.test(item)) {
-                continue;
-            }
-            int taggedAmount = (int) Math.min((long) item.getAmount(), remaining);
-            ItemStack tagged = item.clone();
-            tagged.setAmount(taggedAmount);
-            int ordinaryAmount = item.getAmount() - taggedAmount;
+        List<ReceiptInventoryPlanner.Extraction> plan = new ArrayList<>();
+        plan.addAll(shardPlan.orElseThrow());
+        plan.addAll(corePlan.orElseThrow());
+        if (!ReceiptInventoryPlanner.canApply(contents, plan)) {
+            return false;
+        }
+        List<ItemStack> remainders = new ArrayList<>();
+        for (ReceiptInventoryPlanner.Extraction extraction : plan) {
+            ItemStack current = player.getInventory().getItem(extraction.slot());
+            ItemStack tagged = current.clone();
+            tagged.setAmount(extraction.amount());
             player.getInventory().setItem(
-                    slot,
-                    upgradeReceipts.tag(tagged, operationId, material));
-            if (ordinaryAmount > 0) {
-                ItemStack ordinary = item.clone();
-                ordinary.setAmount(ordinaryAmount);
-                giveOrDrop(player, ordinary);
+                    extraction.slot(),
+                    upgradeReceipts.tag(tagged, upgrade.operationId(), extraction.material()));
+            int remainder = current.getAmount() - extraction.amount();
+            if (remainder > 0) {
+                ItemStack ordinary = current.clone();
+                ordinary.setAmount(remainder);
+                remainders.add(ordinary);
             }
-            remaining -= taggedAmount;
         }
-        return remaining == 0L;
+        for (ItemStack remainder : remainders) {
+            if (!giveOrDropWithoutLoss(player, remainder)) {
+                throw new IllegalStateException(
+                        "Receipt inventory preflight disagreed with the live inventory");
+            }
+        }
+        return true;
     }
 
     private boolean hasUpgradeReceiptItems(Player player, TowerUpgrade upgrade) {
@@ -1304,24 +1357,74 @@ public final class TowerManager implements Listener, AutoCloseable {
         return List.copyOf(removed);
     }
 
+    private boolean hasAnyUpgradeReceiptItems(Player player, UUID operationId) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (upgradeReceipts.operationId(item).filter(operationId::equals).isPresent()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void stripUpgradeReceiptItemsInPlace(Player player, UUID operationId) {
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (upgradeReceipts.operationId(item).filter(operationId::equals).isPresent()) {
+                player.getInventory().setItem(slot, upgradeReceipts.strip(item));
+            }
+        }
+    }
+
+    private void removeUpgradeReceiptItems(Player player, UUID operationId) {
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (upgradeReceipts.operationId(item).filter(operationId::equals).isPresent()) {
+                player.getInventory().setItem(slot, null);
+            }
+        }
+    }
+
+    private boolean saveAfterUpgradeReceiptRemoval(Player player, UUID operationId) {
+        if (!player.isOnline()) {
+            return false;
+        }
+        removeUpgradeReceiptItems(player, operationId);
+        try {
+            player.updateInventory();
+            player.saveData();
+            return true;
+        } catch (RuntimeException saveFailure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not durably save cleared tower upgrade receipt " + operationId,
+                    saveFailure);
+            return false;
+        }
+    }
+
+    private void clearTowerUpgradeReceiptsAfterSave(Player player, UUID operationId) {
+        if (!saveAfterUpgradeReceiptRemoval(player, operationId)) {
+            return;
+        }
+        databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
+                        operationId, Instant.now()))
+                .whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.WARNING,
+                                "Could not clear tower upgrade receipts " + operationId,
+                                failure);
+                    }
+                });
+    }
+
     private void rollbackLegacyUpgrade(
             Player player,
             TowerUpgrade upgrade,
             String message) {
-        if (!player.isOnline()) {
-            plugin.getLogger().warning(
-                    "Deferring legacy tower upgrade rollback until player rejoins: "
-                            + upgrade.operationId());
-            return;
-        }
-        for (ItemStack item : takeUpgradeReceiptItems(player, upgrade.operationId())) {
-            giveOrDrop(player, item);
-        }
         databaseExecutor.submit(() -> {
-            repository.restoreTowerUpgradeReceipts(upgrade.operationId(), Instant.now());
             return repository.rollbackTowerUpgrade(upgrade.operationId(), Instant.now());
         }).whenComplete((ignored, failure) -> runOnMainThread(() -> {
-            upgradeInFlight.remove(upgrade.towerId());
             if (failure != null) {
                 plugin.getLogger().log(
                         java.util.logging.Level.SEVERE,
@@ -1334,17 +1437,83 @@ public final class TowerManager implements Listener, AutoCloseable {
                 }
                 return;
             }
-            if (player.isOnline()) {
-                player.sendMessage(Component.text(message, NamedTextColor.YELLOW));
-            }
+            completeRolledBackUpgrade(player, upgrade, message);
         }));
+    }
+
+    private void completeRolledBackUpgrade(
+            Player player,
+            TowerUpgrade upgrade,
+            String message) {
+        if (!player.isOnline()) {
+            return;
+        }
+        databaseExecutor.submit(() -> repository.findTowerUpgradeReceipts(
+                        upgrade.operationId()))
+                .whenComplete((receipts, lookupFailure) -> runOnMainThread(() -> {
+                    if (lookupFailure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.WARNING,
+                                "Could not inspect rolled-back tower receipts "
+                                        + upgrade.operationId(),
+                                lookupFailure);
+                        return;
+                    }
+                    // The async lookup may complete after PlayerQuitEvent. Never mutate or save
+                    // an offline Player object; RETURN_PENDING remains durable until join
+                    // reconciliation can prove the physical handoff.
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (receipts.stream().anyMatch(receipt ->
+                            receipt.state() == TowerUpgradeReceiptState.RETURN_PENDING)) {
+                        stripUpgradeReceiptItemsInPlace(player, upgrade.operationId());
+                        try {
+                            player.updateInventory();
+                            player.saveData();
+                        } catch (RuntimeException saveFailure) {
+                            plugin.getLogger().log(
+                                    java.util.logging.Level.WARNING,
+                                    "Could not durably save rolled-back tower receipt "
+                                            + upgrade.operationId(),
+                                    saveFailure);
+                            return;
+                        }
+                        databaseExecutor.submit(() -> repository.restoreTowerUpgradeReceipts(
+                                        upgrade.operationId(), Instant.now()))
+                                .whenComplete((restored, restoreFailure) -> runOnMainThread(() -> {
+                                    if (restoreFailure != null) {
+                                        plugin.getLogger().log(
+                                                java.util.logging.Level.WARNING,
+                                                "Could not complete tower receipt restore "
+                                                        + upgrade.operationId(),
+                                                restoreFailure);
+                                        return;
+                                    }
+                                    upgradeInFlight.remove(upgrade.towerId());
+                                    player.sendMessage(Component.text(message, NamedTextColor.YELLOW));
+                                }));
+                        return;
+                    }
+                    upgradeInFlight.remove(upgrade.towerId());
+                    player.sendMessage(Component.text(message, NamedTextColor.YELLOW));
+                }));
     }
 
     private void reconcilePreparedUpgradeReceipts(Player player) {
         UUID playerId = player.getUniqueId();
-        databaseExecutor.submit(() -> repository.loadPreparedTowerUpgrades().stream()
-                        .filter(upgrade -> upgrade.actorId().equals(playerId))
-                        .toList())
+        databaseExecutor.submit(() -> {
+            List<TowerUpgrade> upgrades = repository.loadPreparedTowerUpgrades().stream()
+                    .filter(upgrade -> upgrade.actorId().equals(playerId))
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+            for (TowerUpgrade terminal : repository.loadTerminalTowerUpgradeReceipts(playerId)) {
+                if (upgrades.stream().noneMatch(existing ->
+                        existing.operationId().equals(terminal.operationId()))) {
+                    upgrades.add(terminal);
+                }
+            }
+            return List.copyOf(upgrades);
+        })
                 .whenComplete((upgrades, failure) -> runOnMainThread(() -> {
                     if (failure != null || upgrades == null || !player.isOnline()) {
                         return;
@@ -1363,22 +1532,44 @@ public final class TowerManager implements Listener, AutoCloseable {
                         return;
                     }
                     if (receipts.isEmpty()) {
-                        rollbackUpgrade(player, upgrade, "未完了の旧素材強化を安全に取り消しました。");
+                        if (upgrade.state() != TowerUpgradeState.ROLLED_BACK) {
+                            rollbackUpgrade(player, upgrade, "未完了の旧素材強化を安全に取り消しました。");
+                        }
+                        return;
+                    }
+                    if (upgrade.state() == TowerUpgradeState.ROLLED_BACK) {
+                        if (receipts.stream().anyMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.RETURN_PENDING)) {
+                            completeRolledBackUpgrade(
+                                    player,
+                                    upgrade,
+                                    "切断前に取り消した強化素材を返却しました。");
+                        } else if (receipts.stream().anyMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.RESTORED)) {
+                            if (hasAnyUpgradeReceiptItems(player, upgrade.operationId())) {
+                                stripUpgradeReceiptItemsInPlace(player, upgrade.operationId());
+                                player.updateInventory();
+                                player.saveData();
+                            }
+                            upgradeInFlight.remove(upgrade.towerId());
+                        }
                         return;
                     }
                     boolean secured = hasUpgradeReceiptItems(player, upgrade);
                     boolean allSecured = receipts.stream().allMatch(
                             receipt -> receipt.state() == TowerUpgradeReceiptState.SECURED);
                     if (upgrade.state() == TowerUpgradeState.APPLIED) {
-                        boolean clearPending = receipts.stream().allMatch(receipt ->
-                                receipt.state() == TowerUpgradeReceiptState.CLEAR_PENDING
-                                        || receipt.state() == TowerUpgradeReceiptState.CLEARED);
-                        if (clearPending) {
-                            if (secured) {
-                                takeUpgradeReceiptItems(player, upgrade.operationId());
+                        boolean clearPending = receipts.stream().anyMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.CLEAR_PENDING);
+                        boolean allCleared = receipts.stream().allMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.CLEARED);
+                        if (allCleared) {
+                            if (hasAnyUpgradeReceiptItems(player, upgrade.operationId())) {
+                                saveAfterUpgradeReceiptRemoval(player, upgrade.operationId());
                             }
-                            databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
-                                    upgrade.operationId(), Instant.now()));
+                            upgradeInFlight.remove(upgrade.towerId());
+                        } else if (clearPending) {
+                            clearTowerUpgradeReceiptsAfterSave(player, upgrade.operationId());
                         } else if (secured) {
                             databaseExecutor.submit(() -> repository.markTowerUpgradeReceiptsClearPending(
                                             upgrade.operationId(), Instant.now()))
@@ -1386,9 +1577,8 @@ public final class TowerManager implements Listener, AutoCloseable {
                                         if (pendingFailure != null || !player.isOnline()) {
                                             return;
                                         }
-                                        takeUpgradeReceiptItems(player, upgrade.operationId());
-                                        databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
-                                                upgrade.operationId(), Instant.now()));
+                                        clearTowerUpgradeReceiptsAfterSave(
+                                                player, upgrade.operationId());
                                     }));
                         }
                         return;
@@ -2279,6 +2469,14 @@ public final class TowerManager implements Listener, AutoCloseable {
             player.getWorld().dropItemNaturally(player.getLocation(), leftover);
         }
         return true;
+    }
+
+    /** Adds a planned split remainder without ever converting overflow into a ground drop. */
+    private boolean giveOrDropWithoutLoss(Player player, ItemStack item) {
+        if (!player.isOnline()) {
+            return false;
+        }
+        return player.getInventory().addItem(item).isEmpty();
     }
 
     private void runOnMainThread(Runnable action) {

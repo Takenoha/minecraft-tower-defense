@@ -595,6 +595,16 @@ public final class DefenseSessionManager
             return;
         }
         if (defense.ending) {
+            // Claims can complete while terminal persistence is draining.  Keep rendering the
+            // broker here so the pickup notice receives its full TTL instead of being lost behind
+            // the ending short-circuit.
+            renderActionBars(defense);
+            if (defense.finishComplete) {
+                if (currentTick >= defense.finishActionBarDeadlineTick) {
+                    active = null;
+                }
+                return;
+            }
             if (!defense.finishInFlight && currentTick >= defense.finishRetryTick) {
                 submitFinish(defense);
             }
@@ -1137,7 +1147,12 @@ public final class DefenseSessionManager
                                 "技術的復旧のため、今回の仮確保ポイントは失効しました。",
                                 NamedTextColor.YELLOW));
             }
-            active = null;
+            // Keep the ending state alive while the shared broker renders a pickup notice that
+            // completed at the terminal boundary. The event lock is released after the same
+            // 40-tick TTL used by the broker and PaperEscrowDropManager cleanup.
+            defense.finishComplete = true;
+            defense.finishActionBarDeadlineTick = currentTick
+                    + ActionBarBroker.PICKUP_TTL_TICKS;
         }));
     }
 
@@ -1491,8 +1506,10 @@ public final class DefenseSessionManager
         private long coreAttackCount;
         private boolean ending;
         private boolean finishInFlight;
+        private boolean finishComplete;
         private int finishAttempts;
         private long finishRetryTick;
+        private long finishActionBarDeadlineTick;
         private UUID finishOperationId;
         private DefenseSessionSnapshot finishSnapshot;
         private boolean terrainSettlementComplete;

@@ -4,6 +4,7 @@ package io.github.takenoha.towerdefense.persistence;
 public enum CoreRepairReceiptState {
     RESERVED,
     SECURED,
+    RETURN_PENDING,
     CLEAR_PENDING,
     CLEARED,
     RESTORED

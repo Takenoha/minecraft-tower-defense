@@ -25,9 +25,11 @@ public final class ActionBarBroker {
 
     public synchronized void advance(long tick) {
         currentTick = tick;
+        purgeExpired(tick);
     }
 
     public synchronized void publishCountdown(UUID playerId, String text, long nowTick) {
+        purgeExpired(nowTick);
         publish(
                 playerId,
                 "countdown",
@@ -42,6 +44,7 @@ public final class ActionBarBroker {
             UUID eventId,
             String text,
             long nowTick) {
+        purgeExpired(nowTick);
         String key = "pickup:" + eventId;
         Map<String, Notice> playerNotices = notices.computeIfAbsent(playerId, ignored -> new HashMap<>());
         Notice previous = playerNotices.get(key);
@@ -107,6 +110,12 @@ public final class ActionBarBroker {
                         ++sequence,
                         null,
                         key));
+    }
+
+    private void purgeExpired(long nowTick) {
+        notices.values().forEach(playerNotices ->
+                playerNotices.values().removeIf(notice -> notice.expiresAtTick() <= nowTick));
+        notices.entrySet().removeIf(entry -> entry.getValue().isEmpty());
     }
 
     public record Notice(

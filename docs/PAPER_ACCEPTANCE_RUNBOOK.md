@@ -117,7 +117,9 @@ following evidence exists:
    pickup plays one experience-orb sound and shows the added quantity plus the player's cumulative
    provisional amount in the Action Bar. Start a countdown while the pickup message is visible;
    the pickup must remain visible for at least 40 ticks, and repeated pickups for the same event
-   must coalesce instead of cancelling the first notice.
+   must coalesce instead of cancelling the first notice. Complete a claim during the terminal
+   `ending` window and verify it is rendered before the event lock is released; after disconnecting
+   for more than 40 ticks, reconnect and confirm an expired notice is not joined to a new pickup.
 2. Open the resource-vault GUI during preparation and intermission. Confirm settled wallet points
    are spendable in those phases, while provisional points remain unavailable until terminal
    settlement. Confirm the displayed wording says that provisional points are locked until the
@@ -137,12 +139,23 @@ following evidence exists:
    confirm `RESERVED`/`SECURED` operations reconcile from tagged stacks, `CLEAR_PENDING` removes
    any remaining tagged stacks and clears once, and no ordinary surplus material is guessed,
    minted, or removed. A logout before physical receipt handoff must roll back durably; a logout
-   after handoff must defer reconciliation to the saved inventory on join.
+   after handoff must defer reconciliation to the saved inventory on join. Exercise both
+   `keepInventory=true` and `keepInventory=false`; death must retain tagged receipts through the
+   death keep-list, and respawn/restart must resolve `RETURN_PENDING`, `SECURED`, and
+   `CLEAR_PENDING` exactly once.
 6. Attempt to move or use a tagged receipt through normal click, number-key hotbar swap,
    off-hand swap, drag, pickup, drop, place, dispense, craft, Crafter, item-frame, and every
-   entity-interaction route. Every route must be cancelled. Repeat with ordinary untagged items
-   and confirm they remain usable. After a receipt-bearing team is restored, verify wallet credit,
-   receipt state, and physical stacks are unchanged by a restart.
+   entity-interaction route, including `PlayerInteractAtEntityEvent` and
+   `PlayerArmorStandManipulateEvent`. Test both directions of number-key/off-hand swaps and both
+   hands on ordinary entities, ArmorStands, and ItemFrames. Every tagged route must be cancelled;
+   ordinary untagged items must remain usable.
+7. Fill the storage inventory so a partial stack split has no compatible capacity, then attempt a
+   core repair for each material and a tower upgrade requiring both materials. Confirm the
+   operation is rejected before inventory or receipt mutation. Repeat with one safe compatible
+   stack/slot and stop between the receipt replacement and remainder return; after restart, the
+   remainder and receipt must reconcile without a ground drop or duplicate payment.
+   After a receipt-bearing team is restored, verify wallet credit, receipt state, and physical
+   stacks are unchanged by a restart.
 
 ## Evidence record
 

@@ -1941,12 +1941,39 @@ public final class DefenseRepository {
                 updateCoreRepairReceiptState(
                         connection,
                         operationId,
-                        CoreRepairReceiptState.RESTORED,
+                        CoreRepairReceiptState.RETURN_PENDING,
                         rolledBackAt);
                 return OperationOutcome.APPLIED;
             });
         } catch (SQLException exception) {
             throw failure("roll back a prepared core repair", exception);
+        }
+    }
+
+    /** Completes a physical refund after the player inventory has been durably saved. */
+    public OperationOutcome restoreCoreRepairReceipt(UUID operationId, Instant restoredAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(restoredAt, "restoredAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElse(null);
+                if (receipt == null || receipt.state() == CoreRepairReceiptState.RESTORED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.RETURN_PENDING) {
+                    throw new PersistenceConflictException(
+                            "Only a return-pending core receipt can be restored");
+                }
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.RESTORED,
+                        restoredAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("restore a core repair receipt", exception);
         }
     }
 
@@ -1982,6 +2009,54 @@ public final class DefenseRepository {
                                FROM core_repair_receipts r
                                WHERE r.operation_id = core_repair_operations.operation_id
                                  AND r.state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING')
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1
+                               FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'RETURN_PENDING'
+                           )))
+                    ORDER BY prepared_at, operation_id
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        operations.add(coreRepairOperationFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(operations);
+        });
+    }
+
+    /**
+     * Loads terminal receipt rows as a bounded idempotent inventory tombstone.
+     *
+     * <p>A player save can race the database terminal transition during shutdown.  Keeping the
+     * terminal operation visible to the next join lets the Paper bridge strip a resurrected
+     * tagged stack without minting or charging anything again.</p>
+     */
+    public List<CoreRepairOperation> loadTerminalCoreRepairReceipts(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load terminal core repair receipt tombstones", connection -> {
+            List<CoreRepairOperation> operations = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
+                           repair_amount, defense_point_cost, payment_mode, vanilla_material,
+                           vanilla_material_amount, legacy_defense_shard_amount,
+                           payload_fingerprint, state, prepared_at,
+                           applied_at, rolled_back_at
+                    FROM core_repair_operations
+                    WHERE actor_id = ?
+                      AND ((state = 'APPLIED' AND EXISTS (
+                               SELECT 1 FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'CLEARED'
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1 FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'RESTORED'
                            )))
                     ORDER BY prepared_at, operation_id
                     """)) {
@@ -4817,7 +4892,8 @@ public final class DefenseRepository {
                 SET state = ?, resolved_at = ?
                 WHERE operation_id = ?
                   AND ((? = 'CLEARED' AND state IN ('SECURED', 'CLEAR_PENDING'))
-                       OR (? = 'RESTORED' AND state IN ('RESERVED', 'SECURED'))
+                       OR (? = 'RESTORED' AND state IN ('RESERVED', 'SECURED', 'RETURN_PENDING'))
+                       OR (? = 'RETURN_PENDING' AND state IN ('RESERVED', 'SECURED'))
                        OR (? = 'CLEAR_PENDING' AND state = 'SECURED'))
                 """)) {
             statement.setString(1, state.name());
@@ -4826,6 +4902,7 @@ public final class DefenseRepository {
             statement.setString(4, state.name());
             statement.setString(5, state.name());
             statement.setString(6, state.name());
+            statement.setString(7, state.name());
             statement.executeUpdate();
         }
     }

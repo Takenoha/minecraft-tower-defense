@@ -325,6 +325,19 @@ public final class TowerRepository {
                         || loaded.orElseThrow().state() != TowerUpgradeState.PREPARED) {
                     return loaded;
                 }
+                List<TowerUpgradeReceipt> receipts = loadTowerUpgradeReceipts(
+                        connection, operationId);
+                if (!receipts.isEmpty()) {
+                    try (PreparedStatement receiptStatement = connection.prepareStatement("""
+                            UPDATE tower_upgrade_receipts
+                            SET state = 'RETURN_PENDING', resolved_at = ?
+                            WHERE operation_id = ? AND state IN ('RESERVED', 'SECURED')
+                            """)) {
+                        receiptStatement.setString(1, rolledBackAt.toString());
+                        receiptStatement.setString(2, operationId.toString());
+                        receiptStatement.executeUpdate();
+                    }
+                }
                 try (PreparedStatement statement = connection.prepareStatement("""
                         UPDATE tower_upgrade_operations
                         SET state = 'ROLLED_BACK', rolled_back_at = ?
@@ -531,12 +544,56 @@ public final class TowerRepository {
                                FROM tower_upgrade_receipts r
                                WHERE r.operation_id = tower_upgrade_operations.operation_id
                                  AND r.state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING')
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1
+                               FROM tower_upgrade_receipts r
+                               WHERE r.operation_id = tower_upgrade_operations.operation_id
+                                 AND r.state = 'RETURN_PENDING'
                            )))
                     ORDER BY prepared_at, operation_id
                     """);
                     ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
                     upgrades.add(towerUpgradeFromRow(resultSet));
+                }
+            }
+            return List.copyOf(upgrades);
+        });
+    }
+
+    /**
+     * Loads terminal legacy-upgrade receipt tombstones for idempotent join reconciliation.
+     * A stale tagged stack restored by a shutdown is removed without applying the upgrade again.
+     */
+    public List<TowerUpgrade> loadTerminalTowerUpgradeReceipts(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load terminal tower upgrade receipt tombstones", connection -> {
+            List<TowerUpgrade> upgrades = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, tower_id, actor_id, team_id, from_level, to_level,
+                           defense_shard_cost, enhancement_core_cost, payload_fingerprint,
+                           payment_mode, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_upgrade_operations
+                    WHERE actor_id = ?
+                      AND payment_mode = 'LEGACY_ITEMS'
+                      AND ((state = 'APPLIED' AND EXISTS (
+                               SELECT 1 FROM tower_upgrade_receipts r
+                               WHERE r.operation_id = tower_upgrade_operations.operation_id
+                                 AND r.state = 'CLEARED'
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1 FROM tower_upgrade_receipts r
+                               WHERE r.operation_id = tower_upgrade_operations.operation_id
+                                 AND r.state = 'RESTORED'
+                           )))
+                    ORDER BY prepared_at, operation_id
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        upgrades.add(towerUpgradeFromRow(resultSet));
+                    }
                 }
             }
             return List.copyOf(upgrades);
@@ -1232,7 +1289,7 @@ public final class TowerRepository {
                         UPDATE tower_upgrade_receipts
                         SET state = ?, resolved_at = ?
                         WHERE operation_id = ? AND state IN (
-                            'RESERVED', 'SECURED', 'CLEAR_PENDING')
+                            'RESERVED', 'SECURED', 'RETURN_PENDING', 'CLEAR_PENDING')
                         """)) {
                     statement.setString(1, state.name());
                     statement.setString(2, resolvedAt.toString());

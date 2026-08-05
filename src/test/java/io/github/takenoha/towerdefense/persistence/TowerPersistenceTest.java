@@ -365,11 +365,20 @@ final class TowerPersistenceTest {
         TowerUpgrade prepared = towers.prepareTowerUpgrade(
                 TowerUpgrade.prepared(
                         UUID.randomUUID(), installed, ownerId, 2, 1, NOW.plusSeconds(2L)));
+        towers.reserveTowerUpgradeReceipts(
+                prepared.operationId(), ownerId, NOW.plusSeconds(2L));
 
         TowerUpgrade rolledBack = towers.rollbackTowerUpgrade(
                 prepared.operationId(), NOW.plusSeconds(3L)).orElseThrow();
         assertEquals(TowerUpgradeState.ROLLED_BACK, rolledBack.state());
         assertEquals(1, towers.findTower(installed.id()).orElseThrow().individualLevel());
+        assertTrue(towers.findTowerUpgradeReceipts(prepared.operationId()).stream()
+                .allMatch(receipt -> receipt.state() == TowerUpgradeReceiptState.RETURN_PENDING));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                towers.restoreTowerUpgradeReceipts(prepared.operationId(), NOW.plusSeconds(3L)));
+        assertTrue(towers.findTowerUpgradeReceipts(prepared.operationId()).stream()
+                .allMatch(receipt -> receipt.state() == TowerUpgradeReceiptState.RESTORED));
         assertTrue(towers.rollbackTowerUpgrade(
                 prepared.operationId(), NOW.plusSeconds(4L)).orElseThrow().state()
                 == TowerUpgradeState.ROLLED_BACK);

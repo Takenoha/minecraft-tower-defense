@@ -337,13 +337,24 @@ public final class PaperEscrowDropManager {
                 0.7f,
                 1.2f);
         actionBars.publishPickup(player.getUniqueId(), eventId, message);
+        // The claim callback is already on the main thread. Render the broker's winner now so a
+        // terminal callback cannot race the next DefenseSessionManager tick and lose the first
+        // pickup frame while the ending state is being finalized.
+        actionBars.current(player.getUniqueId()).ifPresent(notice ->
+                player.sendActionBar(Component.text(notice.text())));
     }
 
     /** Removes all loaded displays for one event after normal or technical termination. */
     public void removeEventDisplays(UUID eventId) {
         requireMainThread();
         Objects.requireNonNull(eventId, "eventId");
-        actionBars.clearEvent(eventId);
+        // Physical drops are terminal immediately, but a claim that completed during ending
+        // still owns a 40-tick pickup notice.  Defer only the broker cleanup so the notice can be
+        // rendered by DefenseSessionManager's ending path.
+        Bukkit.getScheduler().runTaskLater(
+                plugin,
+                () -> actionBars.clearEvent(eventId),
+                ActionBarBroker.PICKUP_TTL_TICKS);
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntities()) {
                 if (!(entity instanceof Item item)) {

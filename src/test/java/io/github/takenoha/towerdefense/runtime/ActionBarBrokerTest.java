@@ -38,4 +38,19 @@ class ActionBarBrokerTest {
         assertEquals("防衛ポイント +1", broker.current(playerId, 49L).orElseThrow().text());
         assertEquals("準備: 9秒", broker.current(playerId, 50L).orElseThrow().text());
     }
+
+    @Test
+    void expiredPickupDoesNotCoalesceAfterOfflineReconnect() {
+        ActionBarBroker broker = new ActionBarBroker();
+        UUID playerId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+
+        broker.publishPickup(playerId, eventId, "防衛ポイント +1", 10L);
+        broker.advance(50L);
+        broker.publishPickup(playerId, eventId, "防衛ポイント +2", 50L);
+
+        assertEquals(
+                "防衛ポイント +2",
+                broker.current(playerId, 50L).orElseThrow().text());
+    }
 }

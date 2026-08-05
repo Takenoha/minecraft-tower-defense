@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 34;
+    public static final int CURRENT_VERSION = 35;
 
     private SchemaMigrator() {
     }
@@ -159,6 +159,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 34) {
                     applyVersionThirtyFour(connection);
                     recordMigration(connection, 34);
+                }
+                if (installedVersion < 35) {
+                    applyVersionThirtyFive(connection);
+                    recordMigration(connection, 35);
                 }
                 return null;
             });
@@ -1940,6 +1944,78 @@ public final class SchemaMigrator {
                     FROM tower_upgrade_receipts_v32
                     """);
             statement.executeUpdate("DROP TABLE tower_upgrade_receipts_v32");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_upgrade_receipts_player_state_idx
+                    ON tower_upgrade_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Adds a durable return-pending state for physical receipt refunds. */
+    private static void applyVersionThirtyFive(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "ALTER TABLE core_repair_receipts RENAME TO core_repair_receipts_v34");
+            statement.executeUpdate("DROP INDEX IF EXISTS core_repair_receipts_player_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE core_repair_receipts (
+                        operation_id TEXT PRIMARY KEY
+                            REFERENCES core_repair_operations(operation_id) ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        material TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'RETURN_PENDING', 'CLEAR_PENDING',
+                                      'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO core_repair_receipts(
+                        operation_id, player_id, material, quantity, state,
+                        reserved_at, resolved_at)
+                    SELECT operation_id, player_id, material, quantity, state,
+                           reserved_at, resolved_at
+                    FROM core_repair_receipts_v34
+                    """);
+            statement.executeUpdate("DROP TABLE core_repair_receipts_v34");
+            statement.executeUpdate("""
+                    CREATE INDEX core_repair_receipts_player_state_idx
+                    ON core_repair_receipts(player_id, state, reserved_at)
+                    """);
+
+            statement.executeUpdate(
+                    "ALTER TABLE tower_upgrade_receipts RENAME TO tower_upgrade_receipts_v34");
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_upgrade_receipts_player_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_upgrade_receipts (
+                        operation_id TEXT NOT NULL
+                            REFERENCES tower_upgrade_operations(operation_id) ON DELETE CASCADE,
+                        material TEXT NOT NULL CHECK (
+                            material IN ('DEFENSE_SHARD', 'ENHANCEMENT_CORE')
+                        ),
+                        player_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'RETURN_PENDING', 'CLEAR_PENDING',
+                                      'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT,
+                        PRIMARY KEY (operation_id, material)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_upgrade_receipts(
+                        operation_id, material, player_id, quantity, state,
+                        reserved_at, resolved_at)
+                    SELECT operation_id, material, player_id, quantity, state,
+                           reserved_at, resolved_at
+                    FROM tower_upgrade_receipts_v34
+                    """);
+            statement.executeUpdate("DROP TABLE tower_upgrade_receipts_v34");
             statement.executeUpdate("""
                     CREATE INDEX tower_upgrade_receipts_player_state_idx
                     ON tower_upgrade_receipts(player_id, state, reserved_at)

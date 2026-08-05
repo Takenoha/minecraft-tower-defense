@@ -28,6 +28,7 @@ public final class TowerManagementGui {
     public static final int BOOST_RANGE_SLOT = 3;
     public static final int REPAIR_SLOT = 5;
     public static final int UPGRADE_SLOT = 18;
+    public static final int LEGACY_UPGRADE_SLOT = 19;
     public static final int REMOVE_SLOT = 20;
     public static final int HELP_SLOT = 22;
     public static final int CLOSE_SLOT = 26;
@@ -126,6 +127,46 @@ public final class TowerManagementGui {
             long maximumHitPoints,
             int repairCost,
             TeamResourceSnapshot resources) {
+        return create(
+                tower,
+                canRemove,
+                removalReason,
+                researchLevel,
+                shardCost,
+                enhancementCoreCost,
+                canBuyBoost,
+                battleFunds,
+                boosts,
+                powerCost,
+                speedCost,
+                rangeCost,
+                canRepair,
+                currentHitPoints,
+                maximumHitPoints,
+                repairCost,
+                resources,
+                false);
+    }
+
+    public static Inventory create(
+            TowerRecord tower,
+            boolean canRemove,
+            String removalReason,
+            int researchLevel,
+            int shardCost,
+            int enhancementCoreCost,
+            boolean canBuyBoost,
+            long battleFunds,
+            Map<BattleBoostKind, BattleBoost> boosts,
+            int powerCost,
+            int speedCost,
+            int rangeCost,
+            boolean canRepair,
+            long currentHitPoints,
+            long maximumHitPoints,
+            int repairCost,
+            TeamResourceSnapshot resources,
+            boolean legacyPaymentsEnabled) {
         Objects.requireNonNull(tower, "tower");
         Objects.requireNonNull(removalReason, "removalReason");
         Objects.requireNonNull(boosts, "boosts");
@@ -232,6 +273,24 @@ public final class TowerManagementGui {
                                                 + resources.balance(ResourceType.ENHANCEMENT_POINTS),
                                         "資源庫残高が不足しています。"),
                 canUpgrade ? NamedTextColor.AQUA : NamedTextColor.GRAY));
+        boolean legacyUpgradeAvailable = legacyPaymentsEnabled
+                && shardCost > 0
+                && enhancementCoreCost > 0
+                && tower.individualLevel() < researchLevel;
+        if (legacyUpgradeAvailable) {
+            inventory.setItem(
+                    LEGACY_UPGRADE_SLOT,
+                    item(
+                            Material.ENCHANTED_BOOK,
+                            "旧素材で個体Lvを強化",
+                            List.of(
+                                    "次の個体Lv: " + (tower.individualLevel() + 1),
+                                    "防衛の欠片: " + shardCost,
+                                    "強化コア: " + enhancementCoreCost,
+                                    "クリックで旧素材支払いを明示的に選択",
+                                    "旧方式は廃止予定です。"),
+                            NamedTextColor.YELLOW));
+        }
         inventory.setItem(REMOVE_SLOT, item(
                 canRemove ? Material.EMERALD : Material.GRAY_DYE,
                 canRemove ? "回収・移設" : "回収・移設（現在不可）",

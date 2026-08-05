@@ -459,6 +459,11 @@ final class CoreTeamLifecyclePersistenceTest {
         assertEquals(
                 OperationOutcome.APPLIED,
                 repository.rollbackPreparedCoreRepair(operationId, NOW.plusSeconds(4L)));
+        assertEquals(CoreRepairReceiptState.RETURN_PENDING,
+                repository.findCoreRepairReceipt(operationId).orElseThrow().state());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.restoreCoreRepairReceipt(operationId, NOW.plusSeconds(5L)));
         assertEquals(CoreRepairReceiptState.RESTORED,
                 repository.findCoreRepairReceipt(operationId).orElseThrow().state());
     }
