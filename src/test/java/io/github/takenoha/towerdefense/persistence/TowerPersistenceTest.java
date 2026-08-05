@@ -205,7 +205,12 @@ final class TowerPersistenceTest {
         assertEquals(
                 java.util.List.of(
                         TowerResearch.initial(teamId, TowerType.ARROW, NOW),
-                        TowerResearch.initial(teamId, TowerType.CANNON, NOW)),
+                        TowerResearch.initial(teamId, TowerType.CANNON, NOW),
+                        TowerResearch.initial(teamId, TowerType.FLAME, NOW),
+                        TowerResearch.initial(teamId, TowerType.FROST, NOW),
+                        TowerResearch.initial(teamId, TowerType.LIGHTNING, NOW),
+                        TowerResearch.initial(teamId, TowerType.SNIPER, NOW),
+                        TowerResearch.initial(teamId, TowerType.SUPPORT, NOW)),
                 towers.loadTowerResearch(teamId));
         addResearchPoints(database, teamId, 12L);
         UUID operationId = UUID.randomUUID();

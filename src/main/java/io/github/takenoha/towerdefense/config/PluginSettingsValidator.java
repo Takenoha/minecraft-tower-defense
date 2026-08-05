@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.config;
 
+import io.github.takenoha.towerdefense.domain.TowerType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -59,6 +60,11 @@ public final class PluginSettingsValidator {
                             + towers.limitIncrement() + ")");
         }
         requirePositive("towers.hard-cap", towers.hardCap(), unreadablePaths, violations);
+        requirePositive(
+                "towers.max-health",
+                towers.towerMaximumHitPoints(),
+                unreadablePaths,
+                violations);
         if (isReadable("towers.base-limit", unreadablePaths)
                 && isReadable("towers.hard-cap", unreadablePaths)
                 && towers.hardCap() < towers.baseLimit()) {
@@ -136,6 +142,118 @@ public final class PluginSettingsValidator {
             violations.add(
                     "towers.upgrade.research-cost-per-level: must be >= 0 (was "
                             + towers.researchCostPerLevel() + ")");
+        }
+        requirePositive(
+                "towers.battle-boost.base-cost",
+                towers.battleBoostBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.battle-boost.cost-per-level", unreadablePaths)
+                && towers.battleBoostCostPerLevel() < 0) {
+            violations.add(
+                    "towers.battle-boost.cost-per-level: must be >= 0 (was "
+                            + towers.battleBoostCostPerLevel() + ")");
+        }
+        requireAtLeastFinite(
+                "towers.battle-boost.power-multiplier",
+                towers.battleBoostPowerMultiplier(),
+                1.0d,
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                "towers.battle-boost.speed-multiplier",
+                towers.battleBoostSpeedMultiplier(),
+                unreadablePaths,
+                violations);
+        requireAtLeastFinite(
+                "towers.battle-boost.range-multiplier",
+                towers.battleBoostRangeMultiplier(),
+                1.0d,
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.stack-limit",
+                towers.battleBoostStackLimit(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.funds-per-health",
+                towers.battleRepairFundsPerHealth(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.health-per-purchase",
+                towers.battleRepairHealthPerPurchase(),
+                unreadablePaths,
+                violations);
+        for (TowerType type : TowerType.values()) {
+            if (type == TowerType.ARROW || type == TowerType.CANNON) {
+                continue;
+            }
+            TowerProfile profile = towers.specialistProfiles().get(type);
+            if (profile == null) {
+                violations.add("towers." + type.id() + ": profile is required");
+                continue;
+            }
+            requirePositive(
+                    "towers." + type.id() + ".damage",
+                    profile.damage(),
+                    unreadablePaths,
+                    violations);
+            requirePositive(
+                    "towers." + type.id() + ".attack-interval-ticks",
+                    profile.attackIntervalTicks(),
+                    unreadablePaths,
+                    violations);
+            String path = "towers." + type.id();
+            requirePositiveFinite(path + ".range", profile.range(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".area-radius", profile.areaRadius(), unreadablePaths, violations);
+            if (isReadable(path + ".slow-percent", unreadablePaths)
+                    && (!Double.isFinite(profile.slowPercent())
+                            || profile.slowPercent() < 0.0d
+                            || profile.slowPercent() > 1.0d)) {
+                violations.add(path + ".slow-percent: must be finite and between 0 and 1");
+            }
+            requireNonNegative(
+                    path + ".slow-duration-ticks",
+                    profile.slowDurationTicks(),
+                    unreadablePaths,
+                    violations);
+            requireNonNegative(path + ".chain-count", profile.chainCount(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".chain-radius", profile.chainRadius(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".support-radius", profile.supportRadius(), unreadablePaths, violations);
+            if (type == TowerType.SUPPORT) {
+                requireAtLeastFinite(
+                        path + ".support-damage-multiplier",
+                        profile.supportDamageMultiplier(),
+                        1.0d,
+                        unreadablePaths,
+                        violations);
+                requirePositiveFinite(
+                        path + ".support-speed-multiplier",
+                        profile.supportSpeedMultiplier(),
+                        unreadablePaths,
+                        violations);
+                requireAtLeastFinite(
+                        path + ".support-range-multiplier",
+                        profile.supportRangeMultiplier(),
+                        1.0d,
+                        unreadablePaths,
+                        violations);
+                requirePositive(
+                        path + ".support-stack-limit",
+                        profile.supportStackLimit(),
+                        unreadablePaths,
+                        violations);
+            }
+            requireNonNegative(
+                    path + ".burn-duration-ticks",
+                    profile.burnDurationTicks(),
+                    unreadablePaths,
+                    violations);
         }
     }
 
@@ -505,6 +623,50 @@ public final class PluginSettingsValidator {
             List<String> violations) {
         if (isReadable(path, unreadablePaths) && value <= 0) {
             violations.add(path + ": must be > 0 (was " + value + ")");
+        }
+    }
+
+    private static void requireNonNegative(
+            String path,
+            int value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths) && value < 0) {
+            violations.add(path + ": must be >= 0 (was " + value + ")");
+        }
+    }
+
+    private static void requirePositiveFinite(
+            String path,
+            double value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value <= 0.0d)) {
+            violations.add(path + ": must be finite and > 0 (was " + value + ")");
+        }
+    }
+
+    private static void requireAtLeastFinite(
+            String path,
+            double value,
+            double minimum,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value < minimum)) {
+            violations.add(path + ": must be finite and >= " + minimum + " (was " + value + ")");
+        }
+    }
+
+    private static void requireNonNegativeFinite(
+            String path,
+            double value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value < 0.0d)) {
+            violations.add(path + ": must be finite and >= 0 (was " + value + ")");
         }
     }
 

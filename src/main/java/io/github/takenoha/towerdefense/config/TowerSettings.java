@@ -1,6 +1,8 @@
 package io.github.takenoha.towerdefense.config;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Shared tower limits and the first two tower types' combat values.
@@ -12,6 +14,7 @@ public record TowerSettings(
         int baseLimit,
         int limitIncrement,
         int hardCap,
+        int towerMaximumHitPoints,
         int arrowDamage,
         double arrowRange,
         int arrowAttackIntervalTicks,
@@ -24,10 +27,20 @@ public record TowerSettings(
         int individualUpgradeShardCostPerLevel,
         int individualUpgradeCoreCostPerLevel,
         int researchBaseCost,
-        int researchCostPerLevel) {
+        int researchCostPerLevel,
+        int battleBoostBaseCost,
+        int battleBoostCostPerLevel,
+        double battleBoostPowerMultiplier,
+        double battleBoostSpeedMultiplier,
+        double battleBoostRangeMultiplier,
+        int battleBoostStackLimit,
+        int battleRepairFundsPerHealth,
+        int battleRepairHealthPerPurchase,
+        Map<TowerType, TowerProfile> specialistProfiles) {
     public static final int DEFAULT_BASE_LIMIT = 8;
     public static final int DEFAULT_LIMIT_INCREMENT = 2;
     public static final int DEFAULT_HARD_CAP = 40;
+    public static final int DEFAULT_TOWER_MAXIMUM_HIT_POINTS = 100;
     public static final int DEFAULT_ARROW_DAMAGE = 4;
     public static final double DEFAULT_ARROW_RANGE = 16.0d;
     public static final int DEFAULT_ARROW_ATTACK_INTERVAL_TICKS = 20;
@@ -41,6 +54,26 @@ public record TowerSettings(
     public static final int DEFAULT_INDIVIDUAL_UPGRADE_CORE_COST_PER_LEVEL = 1;
     public static final int DEFAULT_RESEARCH_BASE_COST = 10;
     public static final int DEFAULT_RESEARCH_COST_PER_LEVEL = 5;
+    public static final int DEFAULT_BATTLE_BOOST_BASE_COST = 25;
+    public static final int DEFAULT_BATTLE_BOOST_COST_PER_LEVEL = 15;
+    public static final double DEFAULT_BATTLE_BOOST_POWER_MULTIPLIER = 1.20d;
+    public static final double DEFAULT_BATTLE_BOOST_SPEED_MULTIPLIER = 0.85d;
+    public static final double DEFAULT_BATTLE_BOOST_RANGE_MULTIPLIER = 1.15d;
+    public static final int DEFAULT_BATTLE_BOOST_STACK_LIMIT = 3;
+    public static final int DEFAULT_BATTLE_REPAIR_FUNDS_PER_HEALTH = 1;
+    public static final int DEFAULT_BATTLE_REPAIR_HEALTH_PER_PURCHASE = 10;
+
+    public TowerSettings {
+        specialistProfiles = Map.copyOf(
+                Objects.requireNonNull(specialistProfiles, "specialistProfiles"));
+        for (TowerType type : TowerType.values()) {
+            if (type != TowerType.ARROW && type != TowerType.CANNON
+                    && !specialistProfiles.containsKey(type)) {
+                throw new IllegalArgumentException(
+                        "missing tower profile for " + type.id());
+            }
+        }
+    }
 
     /** Backward-compatible constructor for callers that only configure the Arrow tower. */
     public TowerSettings(
@@ -54,6 +87,7 @@ public record TowerSettings(
                 baseLimit,
                 limitIncrement,
                 hardCap,
+                DEFAULT_TOWER_MAXIMUM_HIT_POINTS,
                 arrowDamage,
                 arrowRange,
                 arrowAttackIntervalTicks,
@@ -66,7 +100,16 @@ public record TowerSettings(
                 DEFAULT_INDIVIDUAL_UPGRADE_SHARD_COST_PER_LEVEL,
                 DEFAULT_INDIVIDUAL_UPGRADE_CORE_COST_PER_LEVEL,
                 DEFAULT_RESEARCH_BASE_COST,
-                DEFAULT_RESEARCH_COST_PER_LEVEL);
+                DEFAULT_RESEARCH_COST_PER_LEVEL,
+                DEFAULT_BATTLE_BOOST_BASE_COST,
+                DEFAULT_BATTLE_BOOST_COST_PER_LEVEL,
+                DEFAULT_BATTLE_BOOST_POWER_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_SPEED_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_RANGE_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_STACK_LIMIT,
+                DEFAULT_BATTLE_REPAIR_FUNDS_PER_HEALTH,
+                DEFAULT_BATTLE_REPAIR_HEALTH_PER_PURCHASE,
+                defaultSpecialistProfiles());
     }
 
     /** Keeps direct construction source-compatible with the pre-economy tower settings. */
@@ -85,6 +128,7 @@ public record TowerSettings(
                 baseLimit,
                 limitIncrement,
                 hardCap,
+                DEFAULT_TOWER_MAXIMUM_HIT_POINTS,
                 arrowDamage,
                 arrowRange,
                 arrowAttackIntervalTicks,
@@ -97,7 +141,16 @@ public record TowerSettings(
                 DEFAULT_INDIVIDUAL_UPGRADE_SHARD_COST_PER_LEVEL,
                 DEFAULT_INDIVIDUAL_UPGRADE_CORE_COST_PER_LEVEL,
                 DEFAULT_RESEARCH_BASE_COST,
-                DEFAULT_RESEARCH_COST_PER_LEVEL);
+                DEFAULT_RESEARCH_COST_PER_LEVEL,
+                DEFAULT_BATTLE_BOOST_BASE_COST,
+                DEFAULT_BATTLE_BOOST_COST_PER_LEVEL,
+                DEFAULT_BATTLE_BOOST_POWER_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_SPEED_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_RANGE_MULTIPLIER,
+                DEFAULT_BATTLE_BOOST_STACK_LIMIT,
+                DEFAULT_BATTLE_REPAIR_FUNDS_PER_HEALTH,
+                DEFAULT_BATTLE_REPAIR_HEALTH_PER_PURCHASE,
+                defaultSpecialistProfiles());
     }
 
     public static TowerSettings defaults() {
@@ -115,24 +168,105 @@ public record TowerSettings(
     }
 
     public double rangeFor(TowerType type) {
-        return switch (java.util.Objects.requireNonNull(type, "type")) {
-            case ARROW -> arrowRange;
-            case CANNON -> cannonRange;
-        };
+        return profile(type).range();
     }
 
     public int damageFor(TowerType type) {
-        return switch (java.util.Objects.requireNonNull(type, "type")) {
-            case ARROW -> arrowDamage;
-            case CANNON -> cannonDamage;
-        };
+        return profile(type).damage();
     }
 
     public int attackIntervalTicksFor(TowerType type) {
-        return switch (java.util.Objects.requireNonNull(type, "type")) {
-            case ARROW -> arrowAttackIntervalTicks;
-            case CANNON -> cannonAttackIntervalTicks;
+        return profile(type).attackIntervalTicks();
+    }
+
+    public TowerProfile profile(TowerType type) {
+        Objects.requireNonNull(type, "type");
+        return switch (type) {
+            case ARROW -> new TowerProfile(
+                    arrowDamage,
+                    arrowRange,
+                    arrowAttackIntervalTicks,
+                    0.0d,
+                    0.0d,
+                    0,
+                    0,
+                    0.0d,
+                    0.0d,
+                    1.0d,
+                    1.0d,
+                    1.0d,
+                    0,
+                    0);
+            case CANNON -> new TowerProfile(
+                    cannonDamage,
+                    cannonRange,
+                    cannonAttackIntervalTicks,
+                    cannonSplashRadius,
+                    0.0d,
+                    0,
+                    0,
+                    0.0d,
+                    0.0d,
+                    1.0d,
+                    1.0d,
+                    1.0d,
+                    0,
+                    0);
+            default -> specialistProfiles.get(type);
         };
+    }
+
+    public double areaRadiusFor(TowerType type) {
+        return profile(type).areaRadius();
+    }
+
+    public double slowPercentFor(TowerType type) {
+        return profile(type).slowPercent();
+    }
+
+    public int slowDurationTicksFor(TowerType type) {
+        return profile(type).slowDurationTicks();
+    }
+
+    public int chainCountFor(TowerType type) {
+        return profile(type).chainCount();
+    }
+
+    public double chainRadiusFor(TowerType type) {
+        return profile(type).chainRadius();
+    }
+
+    public double supportRadius() {
+        return profile(TowerType.SUPPORT).supportRadius();
+    }
+
+    public double supportDamageMultiplier() {
+        return profile(TowerType.SUPPORT).supportDamageMultiplier();
+    }
+
+    public double supportSpeedMultiplier() {
+        return profile(TowerType.SUPPORT).supportSpeedMultiplier();
+    }
+
+    public double supportRangeMultiplier() {
+        return profile(TowerType.SUPPORT).supportRangeMultiplier();
+    }
+
+    public int supportStackLimit() {
+        return profile(TowerType.SUPPORT).supportStackLimit();
+    }
+
+    public int burnDurationTicksFor(TowerType type) {
+        return profile(type).burnDurationTicks();
+    }
+
+    private static Map<TowerType, TowerProfile> defaultSpecialistProfiles() {
+        return Map.of(
+                TowerType.FROST, TowerProfile.frostDefaults(),
+                TowerType.LIGHTNING, TowerProfile.lightningDefaults(),
+                TowerType.SUPPORT, TowerProfile.supportDefaults(),
+                TowerType.SNIPER, TowerProfile.sniperDefaults(),
+                TowerType.FLAME, TowerProfile.flameDefaults());
     }
 
     public int individualUpgradeShardCost(int currentLevel) {
@@ -160,6 +294,17 @@ public record TowerSettings(
                 researchCostPerLevel,
                 currentResearchLevel,
                 "research cost");
+    }
+
+    public int battleBoostCost(int currentBoostLevel) {
+        if (currentBoostLevel < 0) {
+            throw new IllegalArgumentException("currentBoostLevel must not be negative");
+        }
+        return boundedCost(
+                battleBoostBaseCost,
+                battleBoostCostPerLevel,
+                currentBoostLevel,
+                "battle boost cost");
     }
 
     private static void requireLevel(int level, String name) {

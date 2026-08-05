@@ -178,6 +178,11 @@ public final class TowerItemTagger {
         return switch (Objects.requireNonNull(type, "type")) {
             case ARROW -> Material.BOW;
             case CANNON -> Material.DISPENSER;
+            case FROST -> Material.PACKED_ICE;
+            case LIGHTNING -> Material.LIGHTNING_ROD;
+            case SUPPORT -> Material.AMETHYST_BLOCK;
+            case SNIPER -> Material.CROSSBOW;
+            case FLAME -> Material.BLAZE_ROD;
         };
     }
 
