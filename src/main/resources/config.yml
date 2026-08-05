@@ -50,6 +50,15 @@ rewards:
   research-crystal-base-per-stage: 100
   research-crystal-replay-percent: 25
   research-crystal-minimum-quantity: 0
+  # Event currency is team-shared and exists only until the event terminal transaction.
+  battle-funds-normal-enemy: 5
+  battle-funds-special-enemy: 15
+  battle-funds-boss-enemy: 50
+  battle-funds-per-wave: 50
+  # Physical materials are escrowed until the event reaches a normal terminal state.
+  defense-shards-normal-enemy: 1
+  defense-shards-special-enemy: 2
+  enhancement-core-drop-percent: 10
 
 towers:
   # The cap is base + increment * highest-cleared-level, bounded by hard-cap.
@@ -66,6 +75,13 @@ towers:
     range: 14.0
     attack-interval-ticks: 40
     splash-radius: 2.5
+  upgrade:
+    base-shard-cost: 2
+    base-core-cost: 1
+    shard-cost-per-level: 1
+    core-cost-per-level: 1
+    research-base-cost: 10
+    research-cost-per-level: 5
 
 # Enemy terrain mutation is fail-closed. Set each flag only after the reviewed Paper integration
 # and recovery procedure has produced evidence for this server profile.

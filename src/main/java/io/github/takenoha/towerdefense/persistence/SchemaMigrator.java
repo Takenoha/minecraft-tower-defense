@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 18;
+    public static final int CURRENT_VERSION = 20;
 
     private SchemaMigrator() {
     }
@@ -95,6 +95,14 @@ public final class SchemaMigrator {
                 if (installedVersion < 18) {
                     applyVersionEighteen(connection);
                     recordMigration(connection, 18);
+                }
+                if (installedVersion < 19) {
+                    applyVersionNineteen(connection);
+                    recordMigration(connection, 19);
+                }
+                if (installedVersion < 20) {
+                    applyVersionTwenty(connection);
+                    recordMigration(connection, 20);
                 }
                 return null;
             });
@@ -1109,6 +1117,89 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX research_crystal_redemptions_batch_idx
                     ON research_crystal_redemptions(batch_id, state, prepared_at)
+                    """);
+        }
+    }
+
+    /** Adds an event-scoped, idempotently mutated battle-funds ledger. */
+    private static void applyVersionNineteen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE event_battle_funds (
+                        event_id TEXT PRIMARY KEY
+                            REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        balance INTEGER NOT NULL CHECK (balance >= 0),
+                        total_earned INTEGER NOT NULL CHECK (total_earned >= 0),
+                        total_spent INTEGER NOT NULL CHECK (total_spent >= 0),
+                        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'SETTLED')),
+                        updated_at TEXT NOT NULL,
+                        CHECK (total_spent <= total_earned),
+                        CHECK (state = 'ACTIVE' OR balance = 0)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE event_battle_fund_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL
+                            REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        actor_id TEXT,
+                        operation_kind TEXT NOT NULL,
+                        amount INTEGER NOT NULL CHECK (amount > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        UNIQUE (event_id, operation_kind, payload_fingerprint)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_battle_fund_operations_event_idx
+                    ON event_battle_fund_operations(event_id, applied_at)
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO event_battle_funds(
+                        event_id, team_id, balance, total_earned, total_spent, state, updated_at
+                    )
+                    SELECT event_id, team_id, 0, 0, 0,
+                           CASE WHEN state IN ('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')
+                                THEN 'SETTLED' ELSE 'ACTIVE' END,
+                           updated_at
+                    FROM defense_events
+                    """);
+        }
+    }
+
+    /** Adds two-phase, idempotent individual tower-level upgrade operations. */
+    private static void applyVersionTwenty(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE tower_upgrade_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        from_level INTEGER NOT NULL CHECK (from_level > 0),
+                        to_level INTEGER NOT NULL CHECK (to_level = from_level + 1),
+                        defense_shard_cost INTEGER NOT NULL CHECK (defense_shard_cost > 0),
+                        enhancement_core_cost INTEGER NOT NULL CHECK (enhancement_core_cost > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_upgrade_operations_tower_idx
+                    ON tower_upgrade_operations(tower_id, state, prepared_at)
                     """);
         }
     }

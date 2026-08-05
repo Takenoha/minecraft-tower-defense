@@ -242,6 +242,66 @@ final class TowerPersistenceTest {
     }
 
     @Test
+    void individualUpgradeUsesResearchCapAndTwoPhaseIdempotency() throws SQLException {
+        Database database = new Database(temporaryDirectory.resolve("upgrade.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 2);
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+
+        TowerUpgrade request = TowerUpgrade.prepared(
+                UUID.randomUUID(), installed, ownerId, 2, 1, NOW.plusSeconds(2L));
+        TowerUpgrade prepared = towers.prepareTowerUpgrade(request);
+        assertEquals(TowerUpgradeState.PREPARED, prepared.state());
+        assertEquals(prepared, towers.prepareTowerUpgrade(request));
+
+        TowerUpgradeResult applied = towers.applyTowerUpgrade(
+                prepared.operationId(), NOW.plusSeconds(3L));
+        assertEquals(OperationOutcome.APPLIED, applied.outcome());
+        assertEquals(2, applied.tower().orElseThrow().individualLevel());
+        TowerUpgradeResult replay = towers.applyTowerUpgrade(
+                prepared.operationId(), NOW.plusSeconds(4L));
+        assertEquals(OperationOutcome.ALREADY_APPLIED, replay.outcome());
+        assertEquals(2, replay.tower().orElseThrow().individualLevel());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.prepareTowerUpgrade(
+                        TowerUpgrade.prepared(
+                                prepared.operationId(),
+                                installed,
+                                ownerId,
+                                3,
+                                1,
+                                NOW.plusSeconds(5L))));
+    }
+
+    @Test
+    void preparedUpgradeCanBeRolledBackWithoutChangingTheTower() throws SQLException {
+        Database database = new Database(temporaryDirectory.resolve("upgrade-rollback.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        setTowerResearchLevel(database, teamId, TowerType.ARROW, 2);
+        TowerRecord installed = installTower(towers, teamId, ownerId, NOW);
+        TowerUpgrade prepared = towers.prepareTowerUpgrade(
+                TowerUpgrade.prepared(
+                        UUID.randomUUID(), installed, ownerId, 2, 1, NOW.plusSeconds(2L)));
+
+        TowerUpgrade rolledBack = towers.rollbackTowerUpgrade(
+                prepared.operationId(), NOW.plusSeconds(3L)).orElseThrow();
+        assertEquals(TowerUpgradeState.ROLLED_BACK, rolledBack.state());
+        assertEquals(1, towers.findTower(installed.id()).orElseThrow().individualLevel());
+        assertTrue(towers.rollbackTowerUpgrade(
+                prepared.operationId(), NOW.plusSeconds(4L)).orElseThrow().state()
+                == TowerUpgradeState.ROLLED_BACK);
+    }
+
+    @Test
     void placementCannotExceedTheTeamResearchCap() throws SQLException {
         Database database = new Database(temporaryDirectory.resolve("research-gate.sqlite"));
         DefenseRepository teams = new DefenseRepository(database);

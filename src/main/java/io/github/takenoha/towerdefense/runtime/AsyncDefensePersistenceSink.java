@@ -66,6 +66,22 @@ public final class AsyncDefensePersistenceSink implements DefensePersistenceSink
     }
 
     @Override
+    public CompletionStage<Void> creditBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID operationId,
+            String operationKind,
+            long amount) {
+        return executor.execute(() -> repository.creditBattleFunds(
+                eventId,
+                teamId,
+                operationId,
+                operationKind,
+                amount,
+                Instant.now()));
+    }
+
+    @Override
     public CompletionStage<Void> finish(
             DefenseSessionSnapshot snapshot,
             UUID operationId) {
@@ -92,4 +108,3 @@ public final class AsyncDefensePersistenceSink implements DefensePersistenceSink
         }
     }
 }
-

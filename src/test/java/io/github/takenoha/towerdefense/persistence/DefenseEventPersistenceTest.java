@@ -138,6 +138,78 @@ final class DefenseEventPersistenceTest {
     }
 
     @Test
+    void battleFundsAreTeamSharedIdempotentAndSettledAtTerminal() {
+        DefenseRepository repository = new DefenseRepository(
+                new Database(temporaryDirectory.resolve("battle-funds.sqlite")));
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        UUID eventId = UUID.randomUUID();
+        StartRequest request = startRequest(fixture, eventId);
+        assertEquals(StartOutcome.STARTED, repository.tryStart(request));
+        assertEquals(0L, repository.loadBattleFunds(eventId).balance());
+
+        UUID enemyOperation = UUID.randomUUID();
+        String enemyKind = "ENEMY_NORMAL:" + UUID.randomUUID();
+        BattleFundsMutationResult earned = repository.creditBattleFunds(
+                eventId,
+                fixture.teamId(),
+                enemyOperation,
+                enemyKind,
+                10L,
+                STARTED_AT.plusSeconds(1L));
+        assertEquals(OperationOutcome.APPLIED, earned.outcome());
+        assertEquals(10L, earned.funds().balance());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.creditBattleFunds(
+                        eventId,
+                        fixture.teamId(),
+                        enemyOperation,
+                        enemyKind,
+                        10L,
+                        STARTED_AT.plusSeconds(2L)).outcome());
+        assertEquals(10L, repository.loadBattleFunds(eventId).balance());
+
+        DefenseSession session = DefenseSession.restore(request.session());
+        session.completeCountdown(Set.of(fixture.ownerId()));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.saveTransition(
+                        session.snapshot(), 0L, UUID.randomUUID(), STARTED_AT.plusSeconds(3L)));
+        UUID spendOperation = UUID.randomUUID();
+        BattleFundsMutationResult spent = repository.spendBattleFunds(
+                eventId,
+                fixture.teamId(),
+                fixture.ownerId(),
+                spendOperation,
+                "REPAIR",
+                4L,
+                STARTED_AT.plusSeconds(4L));
+        assertEquals(OperationOutcome.APPLIED, spent.outcome());
+        assertEquals(6L, spent.funds().balance());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.spendBattleFunds(
+                        eventId,
+                        fixture.teamId(),
+                        fixture.ownerId(),
+                        spendOperation,
+                        "REPAIR",
+                        4L,
+                        STARTED_AT.plusSeconds(5L)).outcome());
+
+        assertTrue(session.abort());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), 1L, UUID.randomUUID(), STARTED_AT.plusSeconds(6L)));
+        BattleFunds settled = repository.loadBattleFunds(eventId);
+        assertEquals(BattleFundsState.SETTLED, settled.state());
+        assertEquals(0L, settled.balance());
+        assertEquals(10L, settled.totalEarned());
+        assertEquals(4L, settled.totalSpent());
+    }
+
+    @Test
     void victoryAdvancesTeamStageUnlockInsideTheTerminalTransaction() {
         DefenseRepository repository = new DefenseRepository(
                 new Database(temporaryDirectory.resolve("victory-progress.sqlite")));

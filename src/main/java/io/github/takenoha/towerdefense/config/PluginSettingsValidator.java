@@ -104,6 +104,39 @@ public final class PluginSettingsValidator {
                     "towers.cannon.splash-radius: must be > 0 (was "
                             + towers.cannonSplashRadius() + ")");
         }
+        requirePositive(
+                "towers.upgrade.base-shard-cost",
+                towers.individualUpgradeBaseShardCost(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.upgrade.base-core-cost",
+                towers.individualUpgradeBaseCoreCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.upgrade.shard-cost-per-level", unreadablePaths)
+                && towers.individualUpgradeShardCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.shard-cost-per-level: must be >= 0 (was "
+                            + towers.individualUpgradeShardCostPerLevel() + ")");
+        }
+        if (isReadable("towers.upgrade.core-cost-per-level", unreadablePaths)
+                && towers.individualUpgradeCoreCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.core-cost-per-level: must be >= 0 (was "
+                            + towers.individualUpgradeCoreCostPerLevel() + ")");
+        }
+        requirePositive(
+                "towers.upgrade.research-base-cost",
+                towers.researchBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.upgrade.research-cost-per-level", unreadablePaths)
+                && towers.researchCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.research-cost-per-level: must be >= 0 (was "
+                            + towers.researchCostPerLevel() + ")");
+        }
     }
 
     private static void validateTerrainMutation(
@@ -425,6 +458,43 @@ public final class PluginSettingsValidator {
             violations.add(
                     "rewards.research-crystal-minimum-quantity: must be >= 0"
                             + " (was " + rewards.researchCrystalMinimumQuantity() + ")");
+        }
+        requirePositive(
+                "rewards.battle-funds-normal-enemy",
+                rewards.battleFundsNormalEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-special-enemy",
+                rewards.battleFundsSpecialEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-boss-enemy",
+                rewards.battleFundsBossEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-per-wave",
+                rewards.battleFundsPerWave(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.defense-shards-normal-enemy",
+                rewards.defenseShardsNormalEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.defense-shards-special-enemy",
+                rewards.defenseShardsSpecialEnemy(),
+                unreadablePaths,
+                violations);
+        if (isReadable("rewards.enhancement-core-drop-percent", unreadablePaths)
+                && (rewards.enhancementCoreDropPercent() < 0
+                        || rewards.enhancementCoreDropPercent() > 100)) {
+            violations.add(
+                    "rewards.enhancement-core-drop-percent: must be between 0 and 100"
+                            + " (was " + rewards.enhancementCoreDropPercent() + ")");
         }
     }
 

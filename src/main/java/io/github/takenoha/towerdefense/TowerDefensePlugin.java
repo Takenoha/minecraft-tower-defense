@@ -168,7 +168,9 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         sessions,
                         coreRegistry,
                         coreItems,
-                        new DefenseShardTagger(this)),
+                        new DefenseShardTagger(this),
+                        towerRepository,
+                        new io.github.takenoha.towerdefense.paper.ResearchCrystalTagger(this)),
                 this);
         RaidSealListener raidSeals = new RaidSealListener(
                 this,

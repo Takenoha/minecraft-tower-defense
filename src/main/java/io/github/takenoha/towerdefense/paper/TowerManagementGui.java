@@ -18,6 +18,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 public final class TowerManagementGui {
     public static final int SIZE = 27;
     public static final int PRIORITY_START_SLOT = 9;
+    public static final int UPGRADE_SLOT = 18;
     public static final int REMOVE_SLOT = 20;
     public static final int HELP_SLOT = 22;
     public static final int CLOSE_SLOT = 26;
@@ -32,8 +33,21 @@ public final class TowerManagementGui {
             TowerRecord tower,
             boolean canRemove,
             String removalReason) {
+        return create(tower, canRemove, removalReason, tower.individualLevel(), 0, 0);
+    }
+
+    public static Inventory create(
+            TowerRecord tower,
+            boolean canRemove,
+            String removalReason,
+            int researchLevel,
+            int shardCost,
+            int enhancementCoreCost) {
         Objects.requireNonNull(tower, "tower");
         Objects.requireNonNull(removalReason, "removalReason");
+        if (researchLevel <= 0 || shardCost < 0 || enhancementCoreCost < 0) {
+            throw new IllegalArgumentException("tower management values are invalid");
+        }
         TowerManagementInventoryHolder holder = new TowerManagementInventoryHolder(tower.id());
         Inventory inventory = Bukkit.createInventory(
                 holder,
@@ -46,6 +60,7 @@ public final class TowerManagementGui {
                 tower.type().displayName() + "タワー",
                 List.of(
                         "個体Lv: " + tower.individualLevel(),
+                        "研究上限: " + researchLevel,
                         "対象優先: " + tower.targetPriority().displayName(),
                         "座標: " + tower.blockX() + ", " + tower.blockY()
                                 + ", " + tower.blockZ(),
@@ -64,6 +79,22 @@ public final class TowerManagementGui {
                                     : List.of("クリックで対象優先を変更"),
                             selected ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
         }
+        boolean canUpgrade = shardCost > 0
+                && enhancementCoreCost > 0
+                && tower.individualLevel() < researchLevel;
+        inventory.setItem(UPGRADE_SLOT, item(
+                canUpgrade ? Material.NETHER_STAR : Material.GRAY_DYE,
+                canUpgrade ? "個体Lvを強化" : "個体Lv強化（現在不可）",
+                canUpgrade
+                        ? List.of(
+                                "次の個体Lv: " + (tower.individualLevel() + 1),
+                                "防衛の欠片: " + shardCost,
+                                "強化コア: " + enhancementCoreCost,
+                                "クリックで素材を消費して強化")
+                        : tower.individualLevel() >= researchLevel
+                                ? List.of("チーム研究Lvが上限です。")
+                                : List.of("個体Lv強化は現在利用できません。"),
+                canUpgrade ? NamedTextColor.AQUA : NamedTextColor.GRAY));
         inventory.setItem(REMOVE_SLOT, item(
                 canRemove ? Material.EMERALD : Material.GRAY_DYE,
                 canRemove ? "回収・移設" : "回収・移設（現在不可）",

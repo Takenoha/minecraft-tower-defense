@@ -10,6 +10,8 @@ import io.github.takenoha.towerdefense.domain.EnemyPathAction;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.domain.EnemyRoleSchedule;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
+import io.github.takenoha.towerdefense.paper.DefenseShardTagger;
+import io.github.takenoha.towerdefense.paper.EnhancementCoreTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
@@ -20,6 +22,7 @@ import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -87,6 +90,8 @@ public final class DefenseSessionManager
     private final PaperEnemyTerrainAction terrainAction;
     private final TerrainMutationActivationGate terrainMutationGate;
     private final EnemyRoleSchedule enemyRoles;
+    private final DefenseShardTagger defenseShards;
+    private final EnhancementCoreTagger enhancementCores;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -183,6 +188,8 @@ public final class DefenseSessionManager
         enemyRoles = new EnemyRoleSchedule(
                 settings.enemies().destroyerRatio(),
                 settings.enemies().builderRatio());
+        defenseShards = new DefenseShardTagger(plugin);
+        enhancementCores = new EnhancementCoreTagger(plugin);
         terrainMutationGate = new TerrainMutationActivationGate(settings.terrainMutation());
         terrainAction = new PaperEnemyTerrainAction(
                 new TerrainMutationPolicy(terrainMutationGate.enabled()),
@@ -344,6 +351,20 @@ public final class DefenseSessionManager
                         || defense.session.phase() == DefensePhase.INTERMISSION);
     }
 
+    /** Returns whether a tower's individual level may change for this team right now. */
+    public boolean mayUpgradeTower(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        if (defense == null) {
+            return true;
+        }
+        return !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
+    }
+
     @Override
     public boolean mayRemain(TaggedEnemy taggedEnemy, UUID entityId) {
         requireMainThread();
@@ -434,6 +455,53 @@ public final class DefenseSessionManager
                         EnemyStatus.DEAD));
         if (active.session.phase() != DefensePhase.WAVE_ACTIVE) {
             return;
+        }
+        int shardQuantity = settings.rewards().defenseShardsFor(taggedEnemy.role());
+        if (shardQuantity > 0) {
+            escrowDrops.issueEnemyDrop(
+                    taggedEnemy.eventId(),
+                    taggedEnemy.logicalEnemyId(),
+                    entity.getLocation(),
+                    "defense_shard",
+                    defenseShards.create(
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "DEFENSE_SHARD_ITEM",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            shardQuantity),
+                    Instant.now());
+        }
+        if (taggedEnemy.role() != EnemyRole.NORMAL
+                && settings.rewards().enhancementCoreDropPercent() > 0
+                && ThreadLocalRandom.current().nextInt(100)
+                        < settings.rewards().enhancementCoreDropPercent()) {
+            escrowDrops.issueEnemyDrop(
+                    taggedEnemy.eventId(),
+                    taggedEnemy.logicalEnemyId(),
+                    entity.getLocation(),
+                    "enhancement_core",
+                    enhancementCores.create(
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "ENHANCEMENT_CORE_ITEM",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            1),
+                    Instant.now());
+        }
+        int funds = settings.rewards().battleFundsFor(taggedEnemy.role());
+        if (funds > 0) {
+            observe(
+                    active,
+                    persistence.creditBattleFunds(
+                            taggedEnemy.eventId(),
+                            active.session.teamId(),
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "BATTLE_FUNDS_ENEMY",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            "ENEMY_" + taggedEnemy.role().id()
+                                    + ":" + taggedEnemy.logicalEnemyId(),
+                            funds));
         }
         boolean waveCleared = active.session.recordEnemyDefeated(1L);
         if (active.session.isTerminal()) {
@@ -779,6 +847,20 @@ public final class DefenseSessionManager
     }
 
     private void onWaveCleared(ActiveDefense defense) {
+        int waveFunds = settings.rewards().battleFundsPerWave();
+        if (waveFunds > 0 && defense.session.currentWave() > 0) {
+            observe(
+                    defense,
+                    persistence.creditBattleFunds(
+                            defense.session.eventId(),
+                            defense.session.teamId(),
+                            deterministicOperation(
+                                    defense.session.eventId(),
+                                    "BATTLE_FUNDS_WAVE",
+                                    Integer.toString(defense.session.currentWave())),
+                            "WAVE_CLEAR:" + defense.session.currentWave(),
+                            waveFunds));
+        }
         if (defense.session.phase() == DefensePhase.VICTORY) {
             finish(defense, "全ウェーブを突破しました。勝利です。");
             return;
@@ -992,6 +1074,11 @@ public final class DefenseSessionManager
 
     private static long increment(long value) {
         return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
+    private static UUID deterministicOperation(UUID eventId, String namespace, String value) {
+        return UUID.nameUUIDFromBytes((eventId + "|" + namespace + "|" + value)
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     private void cleanupWorldState(ActiveDefense defense) {

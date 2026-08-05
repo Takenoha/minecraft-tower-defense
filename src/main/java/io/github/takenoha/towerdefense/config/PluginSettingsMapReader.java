@@ -165,7 +165,42 @@ final class PluginSettingsMapReader {
                             values,
                             "rewards",
                             "research-crystal-minimum-quantity",
-                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_MINIMUM_QUANTITY));
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_MINIMUM_QUANTITY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-normal-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_NORMAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-special-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_SPECIAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-boss-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_BOSS_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-per-wave",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_PER_WAVE),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "defense-shards-normal-enemy",
+                            RewardSettings.DEFAULT_DEFENSE_SHARDS_NORMAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "defense-shards-special-enemy",
+                            RewardSettings.DEFAULT_DEFENSE_SHARDS_SPECIAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "enhancement-core-drop-percent",
+                            RewardSettings.DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT));
         }
 
         private TerrainMutationSettings terrainMutation() {
@@ -207,6 +242,10 @@ final class PluginSettingsMapReader {
             Map<?, ?> cannon = nestedSection(values, "towers", "cannon");
             if (cannon == null) {
                 cannon = Map.of();
+            }
+            Map<?, ?> upgrade = nestedSection(values, "towers", "upgrade");
+            if (upgrade == null) {
+                upgrade = Map.of();
             }
             return new TowerSettings(
                     integerOrDefault(
@@ -258,7 +297,37 @@ final class PluginSettingsMapReader {
                             cannon,
                             "towers.cannon",
                             "splash-radius",
-                            TowerSettings.DEFAULT_CANNON_SPLASH_RADIUS));
+                            TowerSettings.DEFAULT_CANNON_SPLASH_RADIUS),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "base-shard-cost",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_BASE_SHARD_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "base-core-cost",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_BASE_CORE_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "shard-cost-per-level",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_SHARD_COST_PER_LEVEL),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "core-cost-per-level",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_CORE_COST_PER_LEVEL),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "research-base-cost",
+                            TowerSettings.DEFAULT_RESEARCH_BASE_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "research-cost-per-level",
+                            TowerSettings.DEFAULT_RESEARCH_COST_PER_LEVEL));
         }
 
         private Map<?, ?> nestedSection(Map<?, ?> parent, String parentPath, String name) {
