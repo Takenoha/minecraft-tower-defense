@@ -150,4 +150,76 @@ class ResourceVoucherRepositoryTest {
             throw new AssertionError("Could not inspect voucher migration", exception);
         }
     }
+
+    @Test
+    void rolledBackDeliveryCanRetryAndRolledBackRedeemCannotReplay() {
+        Database database = new Database(temporaryDirectory.resolve("voucher-retry.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        ResourceVoucherRepository vouchers = new ResourceVoucherRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        UUID outsiderId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                4L,
+                UUID.randomUUID(),
+                "voucher-retry-seed",
+                NOW);
+
+        ResourceVoucher voucher = vouchers.withdraw(
+                        teamId,
+                        ownerId,
+                        ResourceType.DEFENSE_POINTS,
+                        4L,
+                        UUID.randomUUID(),
+                        NOW.plusSeconds(1L))
+                .voucher();
+        UUID delivery = UUID.randomUUID();
+        assertEquals(
+                VoucherDeliveryOutcome.PREPARED,
+                vouchers.prepareDelivery(
+                                voucher.voucherId(), ownerId, delivery, NOW.plusSeconds(2L))
+                        .outcome());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                vouchers.rollbackDelivery(delivery, NOW.plusSeconds(3L)));
+        assertEquals(
+                VoucherDeliveryOutcome.PREPARED,
+                vouchers.prepareDelivery(
+                                voucher.voucherId(), ownerId, delivery, NOW.plusSeconds(4L))
+                        .outcome());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                vouchers.applyDelivery(voucher.voucherId(), delivery, NOW.plusSeconds(5L)));
+
+        UUID redeem = UUID.randomUUID();
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> vouchers.prepareRedeem(
+                        voucher.voucherId(), outsiderId, UUID.randomUUID(), NOW.plusSeconds(6L)));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                vouchers.prepareRedeem(voucher.voucherId(), ownerId, redeem, NOW.plusSeconds(7L))
+                        .outcome());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> vouchers.prepareRedeem(
+                        voucher.voucherId(), ownerId, UUID.randomUUID(), NOW.plusSeconds(8L)));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                vouchers.rollbackRedeem(redeem, NOW.plusSeconds(9L)));
+        assertEquals(
+                ResourceVoucherState.AVAILABLE,
+                vouchers.findVoucher(voucher.voucherId()).orElseThrow().state());
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> vouchers.prepareRedeem(
+                        voucher.voucherId(), ownerId, redeem, NOW.plusSeconds(10L)));
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> vouchers.applyRedeem(redeem, NOW.plusSeconds(11L)));
+    }
 }

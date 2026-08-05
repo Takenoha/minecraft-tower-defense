@@ -173,15 +173,23 @@ public final class ResourceVoucherRepository {
                     VoucherDeliveryOperation operation = existing.orElseThrow();
                     requireMatchingDelivery(
                             operation, voucherId, recipientPlayerId, fingerprint);
-                    return new VoucherDeliveryResult(
-                            switch (operation.state()) {
-                                case PREPARED -> VoucherDeliveryOutcome.ALREADY_PREPARED;
-                                case APPLIED -> VoucherDeliveryOutcome.ALREADY_AVAILABLE;
-                                case ROLLED_BACK -> throw new PersistenceConflictException(
-                                        "The voucher delivery operation was rolled back");
-                            },
-                            voucher,
-                            operation);
+                    return switch (operation.state()) {
+                        case PREPARED -> new VoucherDeliveryResult(
+                                VoucherDeliveryOutcome.ALREADY_PREPARED, voucher, operation);
+                        case APPLIED -> new VoucherDeliveryResult(
+                                VoucherDeliveryOutcome.ALREADY_AVAILABLE, voucher, operation);
+                        case ROLLED_BACK -> {
+                            if (voucher.state() != ResourceVoucherState.PENDING_DELIVERY) {
+                                throw new PersistenceConflictException(
+                                        "The rolled-back delivery no longer targets a pending voucher");
+                            }
+                            resetDeliveryState(connection, deliveryOperationId, preparedAt);
+                            yield new VoucherDeliveryResult(
+                                    VoucherDeliveryOutcome.PREPARED,
+                                    voucher,
+                                    loadDeliveryOperation(connection, deliveryOperationId).orElseThrow());
+                        }
+                    };
                 }
                 if (voucher.state() == ResourceVoucherState.AVAILABLE) {
                     return new VoucherDeliveryResult(
@@ -339,6 +347,10 @@ public final class ResourceVoucherRepository {
                 if (existing.isPresent()) {
                     VoucherRedeemOperation operation = existing.orElseThrow();
                     requireMatchingRedeem(operation, voucher, actorId, fingerprint);
+                    if (operation.state() == VoucherRedeemState.ROLLED_BACK) {
+                        throw new PersistenceConflictException(
+                                "The voucher redeem operation was rolled back; use a new operation UUID");
+                    }
                     return new VoucherRedeemResult(
                             operation.state() == VoucherRedeemState.APPLIED
                                     ? OperationOutcome.ALREADY_APPLIED
@@ -768,6 +780,23 @@ public final class ResourceVoucherRepository {
                   """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, at.toString());
+            statement.setString(2, operationId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new PersistenceConflictException("The voucher delivery state changed");
+            }
+        }
+    }
+
+    private static void resetDeliveryState(
+            Connection connection,
+            UUID operationId,
+            Instant preparedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE resource_voucher_delivery_operations
+                SET state = 'PREPARED', prepared_at = ?, applied_at = NULL, rolled_back_at = NULL
+                WHERE delivery_operation_id = ? AND state = 'ROLLED_BACK'
+                """)) {
+            statement.setString(1, preparedAt.toString());
             statement.setString(2, operationId.toString());
             if (statement.executeUpdate() != 1) {
                 throw new PersistenceConflictException("The voucher delivery state changed");
