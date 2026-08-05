@@ -13,6 +13,9 @@ enabled. It does not enable terrain mutation in the production plugin.
 - Role metadata in `TaggedEnemy` and the event-enemy PDC. Legacy tags without the role key remain
   readable as normal enemies; malformed role values are rejected.
 - Role-specific navigation speed and persisted ledger types for spawned event enemies.
+- Role-specific Paper variants: Destroyers spawn as Husks, Builders as Zombie Villagers, and
+  normal/boss roles remain Zombies. All variants carry the same event/logical PDC identity and
+  reconcile through the same restart and recovery path.
 - A Paper-independent path planner that distinguishes advance, protected-obstacle recalculation,
   destroyer breaking, builder support, and bounded recovery.
 - A stalled pathfinder acceptance is no longer treated as an indefinitely usable direct path:

@@ -52,8 +52,10 @@ import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Husk;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Zombie;
+import org.bukkit.entity.ZombieVillager;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -631,15 +633,26 @@ public final class DefenseSessionManager
             defense.spawnFailureSinceTick = -1L;
             Zombie zombie;
             try {
-                zombie = defense.world.spawn(
-                        spawnLocation.orElseThrow(),
-                        Zombie.class,
-                        CreatureSpawnEvent.SpawnReason.CUSTOM,
-                        entity -> configureEnemy(
-                                entity,
-                                role,
-                                defense.session.currentWave()
-                                        == defense.session.totalWaves()));
+                Location location = spawnLocation.orElseThrow();
+                boolean finalWave = defense.session.currentWave()
+                        == defense.session.totalWaves();
+                zombie = switch (role) {
+                    case DESTROYER -> defense.world.spawn(
+                            location,
+                            Husk.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case BUILDER -> defense.world.spawn(
+                            location,
+                            ZombieVillager.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case NORMAL, BOSS -> defense.world.spawn(
+                            location,
+                            Zombie.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                };
             } catch (IllegalArgumentException spawnFailure) {
                 plugin.getLogger().warning("Could not spawn event enemy: " + spawnFailure.getMessage());
                 return;
