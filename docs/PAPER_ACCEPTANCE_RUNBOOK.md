@@ -201,6 +201,14 @@ following evidence exists:
    For an untagged ordinary voucher already in an anvil, grindstone, or smithing input, reject
    cursor placement, shift-click, number-key, and off-hand insertion, but allow clicking the top
    input back out to the player's inventory. Repeat with a receipt and an ordinary non-voucher.
+   Preload an ItemFrame with a voucher and verify empty-hand right-click rotation/removal and
+   player, explosion, and other hanging-break paths are cancelled; placing a voucher into an empty
+   ItemFrame must also be cancelled. Repeat with an ordinary ItemFrame item to confirm normal
+   interaction and break behavior. Force a redeem operation to `ROLLED_BACK` after its receipt was
+   tagged, then rejoin and confirm the matching redeem operation is loaded, only that redeem PDC is
+   stripped from inventory/cursor/armor/off-hand copies, the available voucher remains, and the
+   redeem hold is released. A different operation's receipt must remain protected, and the rolled-
+   back operation must never credit the wallet on retry.
 7. While a team has a non-zero wallet or a `PENDING_DELIVERY`/`AVAILABLE`/`RESERVED` voucher,
    confirm disband and sole-owner leave are rejected. After all vouchers are redeemed and balances
    are intentionally spent, confirm the normal team lifecycle remains available. Move and rebuild

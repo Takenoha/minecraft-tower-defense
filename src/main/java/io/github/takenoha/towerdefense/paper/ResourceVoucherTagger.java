@@ -76,6 +76,24 @@ public final class ResourceVoucherTagger {
         return stripped;
     }
 
+    /** Strips only the matching redeem receipt, leaving any unrelated receipt untouched. */
+    public ItemStack stripRedeemReceipt(ItemStack item, UUID operationId) {
+        Objects.requireNonNull(item, "item");
+        Objects.requireNonNull(operationId, "operationId");
+        ItemStack stripped = item.clone();
+        ItemMeta meta = stripped.getItemMeta();
+        if (meta == null) {
+            return stripped;
+        }
+        PersistentDataContainer data = meta.getPersistentDataContainer();
+        String persistedOperation = data.get(redeemOperationKey, PersistentDataType.STRING);
+        if (operationId.toString().equals(persistedOperation)) {
+            data.remove(redeemOperationKey);
+            stripped.setItemMeta(meta);
+        }
+        return stripped;
+    }
+
     public Optional<ResourceVoucherItemData> read(ItemStack item) {
         if (item == null || item.getType() != Material.PRISMARINE_CRYSTALS) {
             return Optional.empty();

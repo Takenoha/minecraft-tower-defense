@@ -222,4 +222,43 @@ class ResourceVoucherRepositoryTest {
                 PersistenceConflictException.class,
                 () -> vouchers.applyRedeem(redeem, NOW.plusSeconds(11L)));
     }
+
+    @Test
+    void rolledBackRedeemIsLoadedForPhysicalReceiptRecovery() {
+        Database database = new Database(temporaryDirectory.resolve("voucher-rollback-recovery.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        ResourceRepository resources = new ResourceRepository(database);
+        ResourceVoucherRepository vouchers = new ResourceVoucherRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+        resources.credit(
+                teamId,
+                ResourceType.DEFENSE_POINTS,
+                3L,
+                UUID.randomUUID(),
+                "voucher-rollback-recovery-seed",
+                NOW);
+
+        ResourceVoucher voucher = vouchers.withdraw(
+                        teamId,
+                        ownerId,
+                        ResourceType.DEFENSE_POINTS,
+                        3L,
+                        UUID.randomUUID(),
+                        NOW.plusSeconds(1L))
+                .voucher();
+        UUID delivery = UUID.randomUUID();
+        vouchers.prepareDelivery(voucher.voucherId(), ownerId, delivery, NOW.plusSeconds(2L));
+        vouchers.applyDelivery(voucher.voucherId(), delivery, NOW.plusSeconds(3L));
+        UUID redeem = UUID.randomUUID();
+        vouchers.prepareRedeem(voucher.voucherId(), ownerId, redeem, NOW.plusSeconds(4L));
+        vouchers.rollbackRedeem(redeem, NOW.plusSeconds(5L));
+
+        assertTrue(vouchers.loadOpenRedeems(ownerId).isEmpty());
+        assertEquals(1, vouchers.loadRedeemsForRecovery(ownerId).size());
+        assertEquals(
+                VoucherRedeemState.ROLLED_BACK,
+                vouchers.loadRedeemsForRecovery(ownerId).getFirst().state());
+    }
 }

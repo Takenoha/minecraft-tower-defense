@@ -36,6 +36,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Item;
+import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -50,6 +51,7 @@ import org.bukkit.event.entity.EntityTeleportEvent;
 import org.bukkit.event.entity.ItemDespawnEvent;
 import org.bukkit.event.entity.ItemMergeEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.hanging.HangingBreakEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -374,7 +376,12 @@ public final class ResourceVoucherListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onVoucherInteractEntity(PlayerInteractEntityEvent event) {
-        if (isVoucher(event.getPlayer().getInventory().getItem(event.getHand()))) {
+        boolean handIsVoucher = isVoucher(
+                event.getPlayer().getInventory().getItem(event.getHand()));
+        boolean entityContainsVoucher = event.getRightClicked() instanceof ItemFrame frame
+                && isVoucher(frame.getItem());
+        if (isRecoveryGuarded(event.getPlayer().getUniqueId())
+                || VoucherEntityPolicy.blocksInteraction(handIsVoucher, entityContainsVoucher)) {
             event.setCancelled(true);
         }
     }
@@ -386,7 +393,17 @@ public final class ResourceVoucherListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onVoucherArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
-        if (isVoucher(event.getPlayerItem()) || isVoucher(event.getArmorStandItem())) {
+        if (isRecoveryGuarded(event.getPlayer().getUniqueId())
+                || isVoucher(event.getPlayerItem())
+                || isVoucher(event.getArmorStandItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onVoucherHangingBreak(HangingBreakEvent event) {
+        if (event.getEntity() instanceof ItemFrame frame
+                && VoucherEntityPolicy.blocksHangingBreak(isVoucher(frame.getItem()))) {
             event.setCancelled(true);
         }
     }
@@ -642,6 +659,12 @@ public final class ResourceVoucherListener implements Listener {
         }
         if (operation.state() == VoucherRedeemState.ROLLED_BACK) {
             clearRedeemHold(player.getUniqueId(), voucher.voucherId());
+            if (VoucherReceiptRecoveryPolicy.stripsRolledBackReceipt(
+                    operation.state(), voucher.state())) {
+                stripMatchingRedeemReceipts(player, voucher, operation.operationId());
+            } else {
+                invalidateVoucherCopies(player, voucher);
+            }
             player.sendMessage(Component.text(
                     "この証票の預け入れ操作は取り消し済みです。", NamedTextColor.YELLOW));
             return;
@@ -701,7 +724,7 @@ public final class ResourceVoucherListener implements Listener {
                                 voucher -> deliveries.add(new DeliveryRecovery(voucher, operation)));
                     }
                     List<RedeemRecovery> redeems = new ArrayList<>();
-                    for (VoucherRedeemOperation operation : vouchers.loadOpenRedeems(actorId)) {
+                    for (VoucherRedeemOperation operation : vouchers.loadRedeemsForRecovery(actorId)) {
                         vouchers.findVoucher(operation.voucherId()).ifPresent(
                                 voucher -> redeems.add(new RedeemRecovery(voucher, operation)));
                     }
@@ -771,10 +794,14 @@ public final class ResourceVoucherListener implements Listener {
             removeVoucherCopies(player, voucher);
             return;
         }
-        if (operation.state() == VoucherRedeemState.ROLLED_BACK
-                || voucher.state() == ResourceVoucherState.VOIDED) {
+        if (voucher.state() == ResourceVoucherState.VOIDED) {
             clearRedeemHold(player.getUniqueId(), voucher.voucherId());
             invalidateVoucherCopies(player, voucher);
+            return;
+        }
+        if (operation.state() == VoucherRedeemState.ROLLED_BACK) {
+            clearRedeemHold(player.getUniqueId(), voucher.voucherId());
+            stripMatchingRedeemReceipts(player, voucher, operation.operationId());
             return;
         }
         int slot = findCanonicalVoucherSlot(player, voucher, null, operation.operationId());
@@ -873,6 +900,58 @@ public final class ResourceVoucherListener implements Listener {
 
     private void removeVoucherCopies(Player player, ResourceVoucher voucher) {
         invalidateVoucherCopies(player, voucher);
+    }
+
+    /** Removes only a matching rolled-back redeem receipt and keeps the available voucher. */
+    private void stripMatchingRedeemReceipts(
+            Player player,
+            ResourceVoucher voucher,
+            UUID operationId) {
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = inventory.getItem(slot);
+            if (matchesRedeemReceipt(item, voucher, operationId)) {
+                inventory.setItem(slot, tagger.stripRedeemReceipt(item, operationId));
+            }
+        }
+        ItemStack[] armor = inventory.getArmorContents();
+        boolean armorChanged = false;
+        for (int slot = 0; slot < armor.length; slot++) {
+            if (matchesRedeemReceipt(armor[slot], voucher, operationId)) {
+                armor[slot] = tagger.stripRedeemReceipt(armor[slot], operationId);
+                armorChanged = true;
+            }
+        }
+        if (armorChanged) {
+            inventory.setArmorContents(armor);
+        }
+        ItemStack[] extra = inventory.getExtraContents();
+        boolean extraChanged = false;
+        for (int slot = 0; slot < extra.length; slot++) {
+            if (matchesRedeemReceipt(extra[slot], voucher, operationId)) {
+                extra[slot] = tagger.stripRedeemReceipt(extra[slot], operationId);
+                extraChanged = true;
+            }
+        }
+        if (extraChanged) {
+            inventory.setExtraContents(extra);
+        }
+        if (matchesRedeemReceipt(inventory.getItemInOffHand(), voucher, operationId)) {
+            inventory.setItemInOffHand(
+                    tagger.stripRedeemReceipt(inventory.getItemInOffHand(), operationId));
+        }
+        if (matchesRedeemReceipt(player.getItemOnCursor(), voucher, operationId)) {
+            player.setItemOnCursor(tagger.stripRedeemReceipt(
+                    player.getItemOnCursor(), operationId));
+        }
+    }
+
+    private boolean matchesRedeemReceipt(
+            ItemStack item,
+            ResourceVoucher voucher,
+            UUID operationId) {
+        return VoucherReceiptRecoveryPolicy.isMatchingRedeemReceipt(
+                tagger.read(item).orElse(null), voucher.voucherId(), operationId);
     }
 
     /** Removes every parseable physical copy by voucher UUID, including amount>1 duplicates. */

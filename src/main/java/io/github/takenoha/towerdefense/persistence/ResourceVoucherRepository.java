@@ -301,15 +301,30 @@ public final class ResourceVoucherRepository {
 
     public List<VoucherRedeemOperation> loadOpenRedeems(UUID actorId) {
         Objects.requireNonNull(actorId, "actorId");
-        return read("load open voucher redeems", connection -> {
+        return loadRedeems(actorId, false);
+    }
+
+    /** Loads open and rolled-back operations whose physical receipt may need reconciliation. */
+    public List<VoucherRedeemOperation> loadRedeemsForRecovery(UUID actorId) {
+        Objects.requireNonNull(actorId, "actorId");
+        return loadRedeems(actorId, true);
+    }
+
+    private List<VoucherRedeemOperation> loadRedeems(
+            UUID actorId,
+            boolean includeRolledBack) {
+        String states = includeRolledBack
+                ? "'PREPARED', 'APPLIED', 'ROLLED_BACK'"
+                : "'PREPARED', 'APPLIED'";
+        return read("load voucher redeems for recovery", connection -> {
             List<VoucherRedeemOperation> operations = new ArrayList<>();
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT operation_id, voucher_id, team_id, actor_id, resource_type, quantity,
                            payload_fingerprint, state, prepared_at, applied_at, rolled_back_at
                     FROM resource_voucher_redeem_operations
-                    WHERE actor_id = ? AND state IN ('PREPARED', 'APPLIED')
+                    WHERE actor_id = ? AND state IN (%s)
                     ORDER BY prepared_at, operation_id
-                    """)) {
+                    """.formatted(states))) {
                 statement.setString(1, actorId.toString());
                 try (ResultSet resultSet = statement.executeQuery()) {
                     while (resultSet.next()) {
