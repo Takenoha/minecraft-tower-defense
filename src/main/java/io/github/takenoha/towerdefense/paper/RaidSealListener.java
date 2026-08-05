@@ -27,11 +27,13 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.CrafterCraftEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.CraftingRecipe;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -124,6 +126,15 @@ public final class RaidSealListener implements Listener {
                 });
     }
 
+    /** Vanilla Crafter has no player inventory matrix callback; keep plugin and seal paths closed. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onCrafterCraft(CrafterCraftEvent event) {
+        if (!shouldCancelCrafter(event.getRecipe(), event.getResult())) {
+            return;
+        }
+        event.setCancelled(true);
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
         reconcile(event.getPlayer());
@@ -132,9 +143,8 @@ public final class RaidSealListener implements Listener {
     /** Uses a physical seal directly on the registered core. */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCoreInteract(PlayerInteractEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND
-                || (event.getAction() != Action.RIGHT_CLICK_BLOCK
-                        && event.getAction() != Action.RIGHT_CLICK_AIR)) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK
+                && event.getAction() != Action.RIGHT_CLICK_AIR) {
             return;
         }
         Optional<RaidSealItemIdentity> identity = tagger.read(event.getItem());
@@ -142,6 +152,9 @@ public final class RaidSealListener implements Listener {
             return;
         }
         event.setCancelled(true);
+        if (event.getHand() != EquipmentSlot.HAND) {
+            return;
+        }
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
             return;
         }
@@ -274,6 +287,25 @@ public final class RaidSealListener implements Listener {
             }
         }
         return false;
+    }
+
+    private boolean shouldCancelCrafter(CraftingRecipe recipe, ItemStack result) {
+        boolean pluginRecipe = recipe instanceof ShapedRecipe shaped
+                && shaped.getKey().getNamespace().equals(plugin.getName().toLowerCase())
+                && (shaped.getKey().getKey().equals("core")
+                        || shaped.getKey().getKey().startsWith("raid_seal_stage_"));
+        boolean resultTemplate = tagger.isRecipeTemplate(result);
+        return RaidSealAutomationPolicy.cancelCrafter(
+                pluginRecipe,
+                resultTemplate,
+                recipe instanceof ShapedRecipe shaped
+                        && shaped.getChoiceMap().values().stream()
+                                .filter(Objects::nonNull)
+                                .anyMatch(choice -> choice.test(new ItemStack(Material.ECHO_SHARD))),
+                recipe instanceof ShapedRecipe shaped
+                        && shaped.getChoiceMap().values().stream()
+                                .filter(Objects::nonNull)
+                                .anyMatch(choice -> choice.test(new ItemStack(Material.ENDER_EYE))));
     }
 
     private void give(Player player, RaidSeal seal) {

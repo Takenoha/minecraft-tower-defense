@@ -46,15 +46,21 @@ server until the evidence template at the end has been completed and reviewed.
    `PAPER` items and produces an `ECHO_SHARD` seal without a center `NETHER_STAR`.
 4. If a database-owned legacy `ENDER_EYE` seal is available, confirm it retains its UUID/stage,
    is usable on a registered core, and is converted to `ECHO_SHARD` on owner login. Confirm both
-   legacy and new seals are cancelled on air/ordinary-block right-clicks and as crafting inputs.
+   legacy and new seals are cancelled on air/ordinary-block right-clicks from either hand and as
+   crafting inputs. Put a plugin core/seal recipe and a seal-shaped input into a Crafter and
+   confirm the automated craft is cancelled; no UUID-less core/seal may be emitted.
 5. Start stage 2 from the core GUI or by right-clicking a stage-2 seal. Confirm the GUI selects the
    requested stage, the seal is reserved/consumed once, the stage has eight waves, and the status
    line reports the selected stage. Repeat once with stage 3 or 10 to prove the progression path.
 6. During a wave, identify role names `防衛戦破壊兵`, `防衛戦建築兵`, and the intermediate/final
    boss names. Confirm Destroyers are Husks, Builders are Zombie Villagers, and normal/boss roles
    are Zombies. Confirm all four event roles glow, while a natural zombie/husk/zombie villager
-   spawned outside the event remains non-glowing. Confirm every variant can be damaged only by a
-   registered participant or team tower and drops no vanilla loot.
+   spawned outside the event remains non-glowing. Remove the glow from one event entity and force
+   the reconciliation/requeue path; confirm the replacement or reconciled entity is glowing again.
+   Confirm the same for a replacement spawned after an out-of-range spawn attempt. After each of
+   victory, defeat, operator abort, and technical recovery, inspect every loaded world and confirm
+   no event-tagged glowing Mob remains. Confirm every variant can be damaged only by a registered
+   participant or team tower and drops no vanilla loot.
 
 ## 3. Tower attack and destruction
 
