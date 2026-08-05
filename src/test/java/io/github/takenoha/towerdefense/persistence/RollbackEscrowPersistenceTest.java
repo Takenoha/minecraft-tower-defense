@@ -608,15 +608,18 @@ final class RollbackEscrowPersistenceTest {
                 escrow.loadDrops(fixture.eventId()).getFirst().displayEntityId().orElseThrow());
 
         Instant settledAt = finishVictory(fixture);
-        assertEquals(1, escrow.loadRewardQueue(fixture.eventId()).size());
-        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).getFirst();
+        assertEquals(2, escrow.loadRewardQueue(fixture.eventId()).size());
+        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).stream()
+                .filter(entry -> entry.itemId().equals("defense_shard"))
+                .findFirst()
+                .orElseThrow();
         assertEquals(RewardQueueScope.TEAM, queue.scope());
         assertEquals(fixture.teamId(), queue.recipientId());
         assertEquals(3, queue.quantity());
         assertEquals(
                 Optional.of(settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION)),
                 queue.teamClaimDeadline());
-        assertEquals(1, escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).size());
+        assertEquals(2, escrow.loadPendingRewardQueueForPlayer(fixture.ownerId()).size());
         UUID deliveryOperation = UUID.randomUUID();
         assertEquals(
                 RewardDeliveryOutcome.ACQUIRED,
@@ -663,13 +666,18 @@ final class RollbackEscrowPersistenceTest {
                         UUID.randomUUID(),
                         settledAt.plusSeconds(1L)).outcome());
 
-        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).getFirst();
+        RewardQueueEntry queue = escrow.loadRewardQueue(fixture.eventId()).stream()
+                .filter(entry -> entry.itemId().equals("defense_shard"))
+                .findFirst()
+                .orElseThrow();
         Instant deadline = settledAt.plus(EscrowRepository.DEFAULT_TEAM_QUEUE_RETENTION);
         assertTrue(escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline.minusNanos(1L))
                 .isEmpty());
         assertEquals(
                 List.of(queue),
-                escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline));
+                escrow.loadPendingRewardQueueForPlayer(fallbackOwnerId, deadline).stream()
+                        .filter(entry -> entry.itemId().equals("defense_shard"))
+                        .toList());
         assertTrue(escrow.loadPendingRewardQueueForPlayer(UUID.randomUUID(), deadline).isEmpty());
         assertThrows(
                 PersistenceConflictException.class,

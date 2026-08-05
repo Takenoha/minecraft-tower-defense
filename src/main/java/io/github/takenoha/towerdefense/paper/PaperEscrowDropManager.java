@@ -139,6 +139,66 @@ public final class PaperEscrowDropManager {
         }
     }
 
+    /** Queues one event-enemy material without exposing a usable ItemStack during the event. */
+    public void issueEnemyDrop(
+            UUID eventId,
+            UUID sourceId,
+            Location location,
+            String itemId,
+            ItemStack itemStack,
+            Instant createdAt) {
+        requireMainThread();
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(sourceId, "sourceId");
+        Objects.requireNonNull(location, "location");
+        Objects.requireNonNull(itemId, "itemId");
+        Objects.requireNonNull(itemStack, "itemStack");
+        Objects.requireNonNull(createdAt, "createdAt");
+        if (itemStack.getAmount() <= 0 || itemStack.getType().isAir()) {
+            throw new IllegalArgumentException("enemy drop item must be usable");
+        }
+        UUID dropId = deterministic(sourceId, "ENEMY_DROP", itemId);
+        UUID createOperationId = deterministic(sourceId, "ENEMY_DROP_CREATE", itemId);
+        EscrowDrop drop = new EscrowDrop(
+                eventId,
+                dropId,
+                DropSourceKind.ENEMY,
+                sourceId,
+                itemId,
+                PaperItemStackCodec.encode(itemStack),
+                itemStack.getAmount(),
+                Optional.empty());
+        databaseExecutor.submit(() -> escrow.prepare(drop, createOperationId, createdAt))
+                .whenComplete((outcome, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (failure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.WARNING,
+                                "Could not prepare event enemy drop " + drop.dropId(),
+                                failure);
+                        return;
+                    }
+                    spawnPreparedDrop(location, new PreparedDrop(drop, itemStack));
+                }));
+    }
+
+    private void spawnPreparedDrop(Location location, PreparedDrop prepared) {
+        if (findDisplay(prepared.drop().dropId()).isPresent()) {
+            return;
+        }
+        Item display = location.getWorld().spawn(location.clone().add(0.0d, 0.4d, 0.0d), Item.class,
+                item -> {
+                    item.setItemStack(tagger.tag(prepared.itemStack(), prepared.drop()));
+                    item.setPickupDelay(0);
+                    item.setTicksLived(1);
+                    tagger.tag(item, prepared.drop());
+                });
+        databaseExecutor.execute(() -> escrow.updateDisplayEntity(
+                prepared.drop().eventId(),
+                prepared.drop().dropId(),
+                Optional.of(display.getUniqueId()),
+                Instant.now()));
+    }
+
     /** Voids prepared rows when the corresponding physical block operation cannot be applied. */
     public void discardPreparedDrops(List<PreparedDrop> preparedDrops, Instant discardedAt) {
         requireMainThread();

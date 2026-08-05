@@ -46,12 +46,26 @@ rewards:
   # TEAM rows are available to registered participants for this long before the current owner
   # may receive the pending row as a safe fallback.
   team-queue-retention-seconds: 604800
+  # Successful stage clears issue one team-bound crystal batch through the reward queue.
+  research-crystal-base-per-stage: 100
+  research-crystal-replay-percent: 25
+  research-crystal-minimum-quantity: 0
+  # Event currency is team-shared and exists only until the event terminal transaction.
+  battle-funds-normal-enemy: 5
+  battle-funds-special-enemy: 15
+  battle-funds-boss-enemy: 50
+  battle-funds-per-wave: 50
+  # Physical materials are escrowed until the event reaches a normal terminal state.
+  defense-shards-normal-enemy: 1
+  defense-shards-special-enemy: 2
+  enhancement-core-drop-percent: 10
 
 towers:
   # The cap is base + increment * highest-cleared-level, bounded by hard-cap.
   base-limit: 8
   limit-increment: 2
   hard-cap: 40
+  max-health: 100
   arrow:
     damage: 4
     range: 16.0
@@ -62,6 +76,53 @@ towers:
     range: 14.0
     attack-interval-ticks: 40
     splash-radius: 2.5
+  frost:
+    damage: 2
+    range: 12.0
+    attack-interval-ticks: 30
+    slow-percent: 0.35
+    slow-duration-ticks: 50
+  lightning:
+    damage: 6
+    range: 18.0
+    attack-interval-ticks: 35
+    chain-count: 3
+    chain-radius: 5.0
+  support:
+    damage: 1
+    range: 10.0
+    attack-interval-ticks: 40
+    support-radius: 8.0
+    support-damage-multiplier: 1.25
+    support-speed-multiplier: 0.80
+    support-range-multiplier: 1.15
+    support-stack-limit: 2
+  sniper:
+    damage: 18
+    range: 32.0
+    attack-interval-ticks: 60
+  flame:
+    damage: 3
+    range: 15.0
+    attack-interval-ticks: 25
+    area-radius: 3.0
+    burn-duration-ticks: 80
+  battle-boost:
+    base-cost: 25
+    cost-per-level: 15
+    power-multiplier: 1.20
+    speed-multiplier: 0.85
+    range-multiplier: 1.15
+    stack-limit: 3
+    funds-per-health: 1
+    health-per-purchase: 10
+  upgrade:
+    base-shard-cost: 2
+    base-core-cost: 1
+    shard-cost-per-level: 1
+    core-cost-per-level: 1
+    research-base-cost: 10
+    research-cost-per-level: 5
 
 # Enemy terrain mutation is fail-closed. Set each flag only after the reviewed Paper integration
 # and recovery procedure has produced evidence for this server profile.

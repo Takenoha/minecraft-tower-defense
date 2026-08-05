@@ -8,6 +8,7 @@ import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.TeamMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
+import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
@@ -47,9 +48,12 @@ public final class CoreManagementListener implements Listener {
     private final DefenseSessionManager sessions;
     private final CoreRegistry cores;
     private final CoreItemListener coreItems;
+    private final TowerRepository towerRepository;
     private final DefenseShardTagger shardTagger;
+    private final ResearchCrystalTagger researchCrystals;
     private final Set<UUID> repairInFlight = new java.util.HashSet<>();
     private final Set<UUID> teamActionInFlight = new java.util.HashSet<>();
+    private final Set<UUID> crystalInFlight = new java.util.HashSet<>();
 
     public CoreManagementListener(
             JavaPlugin plugin,
@@ -60,6 +64,53 @@ public final class CoreManagementListener implements Listener {
             CoreRegistry cores,
             CoreItemListener coreItems,
             DefenseShardTagger shardTagger) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                coreItems,
+                shardTagger,
+                null,
+                new ResearchCrystalTagger(plugin));
+    }
+
+    public CoreManagementListener(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            CoreItemListener coreItems,
+            DefenseShardTagger shardTagger,
+            ResearchCrystalTagger researchCrystals) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                coreItems,
+                shardTagger,
+                null,
+                researchCrystals);
+    }
+
+    public CoreManagementListener(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            CoreItemListener coreItems,
+            DefenseShardTagger shardTagger,
+            TowerRepository towerRepository,
+            ResearchCrystalTagger researchCrystals) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -68,6 +119,8 @@ public final class CoreManagementListener implements Listener {
         this.cores = Objects.requireNonNull(cores, "cores");
         this.coreItems = Objects.requireNonNull(coreItems, "coreItems");
         this.shardTagger = Objects.requireNonNull(shardTagger, "shardTagger");
+        this.towerRepository = towerRepository;
+        this.researchCrystals = Objects.requireNonNull(researchCrystals, "researchCrystals");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -94,7 +147,8 @@ public final class CoreManagementListener implements Listener {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof CoreManagementInventoryHolder)
                 && !(top.getHolder() instanceof TeamManagementInventoryHolder)
-                && !(top.getHolder() instanceof TeamManagementConfirmationHolder)) {
+                && !(top.getHolder() instanceof TeamManagementConfirmationHolder)
+                && !(top.getHolder() instanceof TowerResearchInventoryHolder)) {
             return;
         }
         event.setCancelled(true);
@@ -109,6 +163,10 @@ public final class CoreManagementListener implements Listener {
                 player.closeInventory();
             } else if (event.getRawSlot() == CoreManagementGui.TEAM_SLOT) {
                 openTeamGui(player, holder.coreId());
+            } else if (event.getRawSlot() == CoreManagementGui.RESEARCH_DEPOSIT_SLOT) {
+                beginResearchCrystalDeposit(player, holder.coreId());
+            } else if (event.getRawSlot() == CoreManagementGui.TOWER_RESEARCH_SLOT) {
+                openTowerResearchGui(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.REPAIR_SLOT) {
                 beginRepair(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.RELOCATE_SLOT) {
@@ -118,6 +176,8 @@ public final class CoreManagementListener implements Listener {
             handleTeamManagementClick(player, holder, event.getRawSlot(), event.getClick());
         } else if (top.getHolder() instanceof TeamManagementConfirmationHolder holder) {
             handleTeamConfirmationClick(player, holder, event.getRawSlot());
+        } else if (top.getHolder() instanceof TowerResearchInventoryHolder holder) {
+            handleTowerResearchClick(player, holder, event.getRawSlot());
         }
     }
 
@@ -126,7 +186,8 @@ public final class CoreManagementListener implements Listener {
         Object holder = event.getView().getTopInventory().getHolder();
         if (holder instanceof CoreManagementInventoryHolder
                 || holder instanceof TeamManagementInventoryHolder
-                || holder instanceof TeamManagementConfirmationHolder) {
+                || holder instanceof TeamManagementConfirmationHolder
+                || holder instanceof TowerResearchInventoryHolder) {
             event.setCancelled(true);
         }
     }
@@ -160,6 +221,204 @@ public final class CoreManagementListener implements Listener {
                     data.repairCost(),
                     settings.core().repairMaterial()));
         }));
+    }
+
+    private void openTowerResearchGui(Player player, UUID coreId) {
+        if (towerRepository == null) {
+            player.sendMessage(Component.text(
+                    "タワー研究画面は現在利用できません。", NamedTextColor.RED));
+            return;
+        }
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            TeamRecord team = repository.findTeam(core.teamId()).orElseThrow(
+                    () -> new IllegalStateException("コアのチームが見つかりません"));
+            if (!team.members().contains(player.getUniqueId())) {
+                throw new IllegalStateException("このコアへアクセスできるチームメンバーではありません");
+            }
+            return new TowerResearchGuiData(
+                    repository.loadTeamProgress(team.id()),
+                    towerRepository.loadTowerResearch(team.id()));
+        }).whenComplete((data, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            player.openInventory(TowerResearchGui.create(
+                    coreId,
+                    data.progress(),
+                    data.research(),
+                    settings.towers()));
+        }));
+    }
+
+    private void handleTowerResearchClick(
+            Player player,
+            TowerResearchInventoryHolder holder,
+            int rawSlot) {
+        if (rawSlot == TowerResearchGui.CLOSE_SLOT) {
+            openCoreGui(player, holder.coreId());
+            return;
+        }
+        TowerResearchGui.towerTypeAt(rawSlot)
+                .ifPresent(type -> beginTowerResearchPurchase(player, holder.coreId(), type));
+    }
+
+    private void beginTowerResearchPurchase(
+            Player player,
+            UUID coreId,
+            io.github.takenoha.towerdefense.domain.TowerType towerType) {
+        if (towerRepository == null) {
+            return;
+        }
+        UUID actorId = player.getUniqueId();
+        UUID operationId = UUID.randomUUID();
+        player.sendMessage(Component.text("タワー研究を購入しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            TeamRecord team = repository.findTeam(core.teamId()).orElseThrow(
+                    () -> new IllegalStateException("コアのチームが見つかりません"));
+            if (!team.members().contains(actorId)) {
+                throw new IllegalStateException("このチームのメンバーではありません");
+            }
+            var current = towerRepository.findTowerResearch(team.id(), towerType).orElseThrow(
+                    () -> new IllegalStateException("タワー研究データが見つかりません"));
+            int cost = settings.towers().researchCost(current.researchLevel());
+            return towerRepository.purchaseTowerResearch(
+                    team.id(), actorId, towerType, cost, operationId, Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "タワー研究を購入できません: " + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            player.sendMessage(Component.text(
+                    towerType.displayName() + "研究をLv" + result.research().researchLevel()
+                            + "へ解放しました。",
+                    NamedTextColor.GREEN));
+            openTowerResearchGui(player, coreId);
+        }));
+    }
+
+    private void beginResearchCrystalDeposit(Player player, UUID coreId) {
+        if (sessions.hasActiveSession()) {
+            player.sendMessage(Component.text("防衛戦中は研究結晶を納品できません。", NamedTextColor.RED));
+            return;
+        }
+        ItemStack held = player.getInventory().getItemInMainHand();
+        ResearchCrystalItemIdentity identity = researchCrystals.read(held).orElse(null);
+        if (identity == null) {
+            player.sendMessage(Component.text(
+                    "発行元チームの研究結晶を手に持ってください。", NamedTextColor.YELLOW));
+            return;
+        }
+        int quantity = held.getAmount();
+        UUID actorId = player.getUniqueId();
+        if (!crystalInFlight.add(actorId)) {
+            player.sendMessage(Component.text("研究結晶の納品を処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        UUID operationId = UUID.randomUUID();
+        player.sendMessage(Component.text("研究結晶の納品を準備しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            return repository.prepareResearchCrystalRedemption(
+                    identity.batchId(),
+                    core.id(),
+                    actorId,
+                    quantity,
+                    operationId,
+                    Instant.now());
+        }).whenComplete((prepared, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                finishCrystalDeposit(player, "研究結晶を納品できません: " + rootMessage(failure));
+                return;
+            }
+            ItemStack current = player.getInventory().getItemInMainHand();
+            boolean sameItem = researchCrystals.read(current)
+                    .map(identity::equals)
+                    .orElse(false)
+                    && current.getAmount() >= prepared.quantity();
+            if (!sameItem || sessions.hasActiveSession()) {
+                rollbackCrystalDeposit(
+                        player,
+                        prepared.operationId(),
+                        null,
+                        "手持ちの研究結晶または防衛フェーズが変わったため納品を取り消しました。");
+                return;
+            }
+            ItemStack refund = current.clone();
+            refund.setAmount(prepared.quantity());
+            removeHeldQuantity(player, prepared.quantity());
+            databaseExecutor.submit(() -> repository.applyResearchCrystalRedemption(
+                            prepared.operationId(), Instant.now()))
+                    .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                        if (applyFailure != null) {
+                            rollbackCrystalDeposit(
+                                    player,
+                                    prepared.operationId(),
+                                    refund,
+                                    "研究結晶を納品できなかったため返却を試みます: "
+                                            + rootMessage(applyFailure));
+                            return;
+                        }
+                        crystalInFlight.remove(actorId);
+                        player.sendMessage(Component.text(
+                                "研究結晶を" + prepared.quantity()
+                                        + "個納品し、研究ポイントへ変換しました。現在: "
+                                        + result.progress().researchPoints(),
+                                NamedTextColor.GREEN));
+                        openCoreGui(player, coreId);
+                    }));
+        }));
+    }
+
+    private void rollbackCrystalDeposit(
+            Player player,
+            UUID operationId,
+            ItemStack refund,
+            String message) {
+        databaseExecutor.submit(() -> repository.rollbackResearchCrystalRedemption(
+                        operationId, Instant.now()))
+                .whenComplete((rolledBack, rollbackFailure) -> runOnMainThread(() -> {
+                    crystalInFlight.remove(player.getUniqueId());
+                    if (rollbackFailure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.SEVERE,
+                                "Could not roll back research crystal redemption " + operationId,
+                                rollbackFailure);
+                        player.sendMessage(Component.text(
+                                "研究結晶の納品復旧を保留しています。管理者へ連絡してください。",
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (refund != null
+                            && rolledBack.isPresent()
+                            && rolledBack.orElseThrow().state()
+                                    == io.github.takenoha.towerdefense.persistence
+                                            .ResearchCrystalRedemptionState.ROLLED_BACK) {
+                        addOrDrop(player, refund);
+                    }
+                    player.sendMessage(Component.text(message, NamedTextColor.RED));
+                }));
+    }
+
+    private static void removeHeldQuantity(Player player, int quantity) {
+        ItemStack held = player.getInventory().getItemInMainHand();
+        int remaining = held.getAmount() - quantity;
+        player.getInventory().setItemInMainHand(remaining <= 0 ? null : held);
+        if (remaining > 0) {
+            player.getInventory().getItemInMainHand().setAmount(remaining);
+        }
+    }
+
+    private void finishCrystalDeposit(Player player, String message) {
+        crystalInFlight.remove(player.getUniqueId());
+        player.sendMessage(Component.text(message, NamedTextColor.RED));
     }
 
     private void openTeamGui(Player player, UUID coreId) {
@@ -568,6 +827,11 @@ public final class CoreManagementListener implements Listener {
     }
 
     private record TeamGuiData(CoreRecord core, TeamRecord team) {
+    }
+
+    private record TowerResearchGuiData(
+            TeamProgress progress,
+            List<io.github.takenoha.towerdefense.domain.TowerResearch> research) {
     }
 
     private record RemovedItems(List<ItemStack> items) {
