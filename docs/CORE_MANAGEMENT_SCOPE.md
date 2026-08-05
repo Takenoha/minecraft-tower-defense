@@ -29,8 +29,8 @@ membership checks, and idempotent operation UUIDs.
 ## Deliberate boundary
 
 This slice does not implement tower placement/upgrades or research purchasing/crystal delivery.
-The team-management GUI is intentionally a first slice: offline invitation records, team naming,
-chat controls, and arbitrary-player selection remain future work.
+The team-management follow-up now supplies offline invitation records, team naming, chat controls,
+and arbitrary-player selection through commands rather than this first GUI.
 Enemy terrain mutation remains fail-closed and its three activation flags are unchanged.
 
 ## Verification

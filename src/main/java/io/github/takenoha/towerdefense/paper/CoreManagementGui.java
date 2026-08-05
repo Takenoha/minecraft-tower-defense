@@ -59,8 +59,10 @@ public final class CoreManagementGui {
                 NamedTextColor.AQUA));
 
         List<String> memberLore = new ArrayList<>();
+        memberLore.add("チーム名: " + team.displayName());
         memberLore.add("オーナー: " + playerName(team.ownerId()));
-        memberLore.add("メンバー: " + team.members().size() + "人");
+        memberLore.add("メンバー: " + team.members().size() + " / "
+                + io.github.takenoha.towerdefense.persistence.DefenseRepository.MAX_TEAM_MEMBERS + "人");
         team.members().stream()
                 .sorted()
                 .map(CoreManagementGui::playerName)

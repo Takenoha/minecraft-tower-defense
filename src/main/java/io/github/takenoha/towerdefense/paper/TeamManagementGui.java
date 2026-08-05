@@ -25,6 +25,7 @@ public final class TeamManagementGui {
     public static final int SIZE = 54;
     public static final int INVITE_SLOT = 45;
     public static final int LEAVE_SLOT = 47;
+    public static final int RENAME_SLOT = 51;
     public static final int CLOSE_SLOT = 53;
     public static final int CONFIRM_SLOT = 11;
     public static final int CANCEL_SLOT = 15;
@@ -72,7 +73,8 @@ public final class TeamManagementGui {
                 owner
                         ? List.of(
                                 "6ブロック以内のプレイヤーが1人だけのとき、",
-                                "そのプレイヤーをチームへ招待します。")
+                                "そのプレイヤーをチームへ招待します。",
+                                "オフライン招待は /td team invite <player> を使用します。")
                         : List.of("チームオーナーだけが使用できます。"),
                 owner ? NamedTextColor.GREEN : NamedTextColor.GRAY));
         inventory.setItem(LEAVE_SLOT, item(
@@ -80,6 +82,13 @@ public final class TeamManagementGui {
                 "チームから脱退",
                 List.of("確認後、現在のチームから脱退します。"),
                 NamedTextColor.YELLOW));
+        inventory.setItem(RENAME_SLOT, item(
+                owner ? Material.NAME_TAG : Material.GRAY_DYE,
+                owner ? "チーム名を変更" : "チーム名変更（オーナーのみ）",
+                owner
+                        ? List.of("チャットで /td team rename <名前> を実行します。")
+                        : List.of("チームオーナーだけが使用できます。"),
+                owner ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.GRAY));
         inventory.setItem(CLOSE_SLOT, item(
                 Material.BARRIER,
                 "閉じる",
@@ -91,6 +100,9 @@ public final class TeamManagementGui {
                 List.of(
                         "メンバーを左クリック: オーナーが除名",
                         "メンバーを右クリック: オーナーを移譲",
+                        "チーム上限: "
+                                + io.github.takenoha.towerdefense.persistence.DefenseRepository.MAX_TEAM_MEMBERS
+                                + "人",
                         "オーナー自身には操作できません。"),
                 NamedTextColor.AQUA));
         return inventory;

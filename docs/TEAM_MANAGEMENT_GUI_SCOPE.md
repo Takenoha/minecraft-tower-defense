@@ -20,19 +20,26 @@ lock, and UUID-idempotent mutations.
 - Owner-only removal of a non-owner member and transfer of ownership to an existing member.
 - Member self-service leave, with the repository enforcing the owner-transfer and persisted-core
   constraints.
+- Durable team display names with owner-only UUID-idempotent rename operations.
+- A repository-enforced eight-member limit, including invitation acceptance and direct member adds.
+- Offline invitation records with a seven-day expiry, reconnect-time listing, accept, decline, and
+  UUID-idempotent state transitions.
+- Player commands for offline invites, invitation decisions, team naming, and team chat:
+  `/td team invite`, `invites`, `accept`, `decline`, `rename`, and `chat`.
 - Inventory click and drag cancellation so GUI items cannot be moved into player inventories.
 - Asynchronous persistence with a per-player in-flight guard, success refresh, and failure message.
 
 ## Deliberate boundary
 
-This is the first team-management GUI slice. It does not add offline invitation records, team
-names, chat controls, member limits, tower placement, research purchasing, stage selection beyond
-the initial stage-1-through-10 catalog, or terrain mutation. The invitation target is intentionally limited to
-one nearby online player so the GUI does not need a chat-input or arbitrary-player selector yet.
+The GUI invite button remains intentionally limited to one nearby online player. Offline invites and
+chat-input naming are exposed as commands so the GUI does not guess a player name or consume chat
+input. This scope still does not add tower placement, research purchasing, stage selection beyond
+the initial stage-1-through-10 catalog, or terrain mutation.
 
 ## Verification
 
-The existing persistence lifecycle tests cover authorization, idempotency, ownership transfer,
-removal, leave constraints, and active-event rejection. The implementation must pass the full
-Gradle test suite and a Paper 26.2 build 87 / Java 25 startup smoke. Manual inventory clicks are
-not available in this environment and remain a follow-up verification item.
+The persistence lifecycle tests cover authorization, idempotency, ownership transfer, removal,
+leave constraints, active-event rejection, team naming, invitation expiry/decision recovery, and
+the member limit. The implementation must pass the full Gradle test suite and a Paper 26.2 build 87
+/ Java 25 startup smoke. Manual inventory clicks and live command interaction are not available in
+this environment and remain verification items.
