@@ -18,6 +18,12 @@ public final class ResourceVaultGui {
     public static final int SIZE = 27;
     public static final int DEFENSE_SLOT = 11;
     public static final int ENHANCEMENT_SLOT = 15;
+    public static final int DEFENSE_TEN_SLOT = 10;
+    public static final int DEFENSE_HUNDRED_SLOT = 12;
+    public static final int DEFENSE_ALL_SLOT = 13;
+    public static final int ENHANCEMENT_ONE_SLOT = 14;
+    public static final int ENHANCEMENT_TEN_SLOT = 16;
+    public static final int ENHANCEMENT_ALL_SLOT = 17;
     public static final int CLOSE_SLOT = 22;
 
     private ResourceVaultGui() {
@@ -26,6 +32,14 @@ public final class ResourceVaultGui {
     public static Inventory create(
             java.util.UUID coreId,
             TeamResourceSnapshot resources) {
+        return create(coreId, resources, false, false);
+    }
+
+    public static Inventory create(
+            java.util.UUID coreId,
+            TeamResourceSnapshot resources,
+            boolean owner,
+            boolean canWithdraw) {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(resources, "resources");
         ResourceVaultInventoryHolder holder = new ResourceVaultInventoryHolder(coreId);
@@ -44,6 +58,30 @@ public final class ResourceVaultGui {
                 ResourceType.ENHANCEMENT_POINTS.displayName(),
                 resourceLore(resources, ResourceType.ENHANCEMENT_POINTS),
                 NamedTextColor.GOLD));
+        inventory.setItem(DEFENSE_TEN_SLOT, action(
+                Material.PAPER,
+                "防衛Pを10P引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.DEFENSE_POINTS) >= 10L));
+        inventory.setItem(DEFENSE_HUNDRED_SLOT, action(
+                Material.MAP,
+                "防衛Pを100P引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.DEFENSE_POINTS) >= 100L));
+        inventory.setItem(DEFENSE_ALL_SLOT, action(
+                Material.CHEST,
+                "防衛Pを全額引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.DEFENSE_POINTS) > 0L));
+        inventory.setItem(ENHANCEMENT_ONE_SLOT, action(
+                Material.PAPER,
+                "強化Pを1P引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.ENHANCEMENT_POINTS) >= 1L));
+        inventory.setItem(ENHANCEMENT_TEN_SLOT, action(
+                Material.MAP,
+                "強化Pを10P引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.ENHANCEMENT_POINTS) >= 10L));
+        inventory.setItem(ENHANCEMENT_ALL_SLOT, action(
+                Material.CHEST,
+                "強化Pを全額引き出す",
+                owner && canWithdraw && resources.balance(ResourceType.ENHANCEMENT_POINTS) > 0L));
         inventory.setItem(CLOSE_SLOT, item(
                 Material.BARRIER,
                 "戻る",
@@ -62,7 +100,17 @@ public final class ResourceVaultGui {
                 "防衛戦の正常終了時に残高へ確定します。",
                 "仮確保分は終端処理まで消費できません。",
                 "確定残高は準備時間・ウェーブ間の強化や修理に使用できます。",
-                "ポイント証票の発行は後続機能です。");
+                "証票はチームに拘束され、同じチームのコアへ戻せます。");
+    }
+
+    private static ItemStack action(Material material, String name, boolean enabled) {
+        return item(
+                enabled ? material : Material.GRAY_DYE,
+                name,
+                enabled
+                        ? List.of("クリックで携帯ポイント証票を1個発行します。")
+                        : List.of("オーナー権限、戦闘外、残高を確認してください。"),
+                enabled ? NamedTextColor.YELLOW : NamedTextColor.GRAY);
     }
 
     private static ItemStack item(

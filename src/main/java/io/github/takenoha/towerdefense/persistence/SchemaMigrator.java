@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 35;
+    public static final int CURRENT_VERSION = 36;
 
     private SchemaMigrator() {
     }
@@ -163,6 +163,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 35) {
                     applyVersionThirtyFive(connection);
                     recordMigration(connection, 35);
+                }
+                if (installedVersion < 36) {
+                    applyVersionThirtySix(connection);
+                    recordMigration(connection, 36);
                 }
                 return null;
             });
@@ -2019,6 +2023,113 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_upgrade_receipts_player_state_idx
                     ON tower_upgrade_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Adds DB-backed resource vouchers and the delivery/redeem stop-boundary ledgers. */
+    private static void applyVersionThirtySix(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE resource_vouchers (
+                        voucher_id TEXT PRIMARY KEY,
+                        withdrawal_operation_id TEXT NOT NULL UNIQUE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        resource_type TEXT NOT NULL CHECK (
+                            resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')
+                        ),
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (state IN (
+                            'PENDING_DELIVERY', 'AVAILABLE', 'RESERVED', 'REDEEMED', 'VOIDED'
+                        )),
+                        delivery_recipient_player_id TEXT NOT NULL,
+                        payload_fingerprint TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        available_at TEXT,
+                        reserved_at TEXT,
+                        redeemed_at TEXT,
+                        voided_at TEXT,
+                        CHECK ((state = 'PENDING_DELIVERY' AND available_at IS NULL
+                                AND reserved_at IS NULL AND redeemed_at IS NULL
+                                AND voided_at IS NULL)
+                               OR (state = 'AVAILABLE' AND available_at IS NOT NULL
+                                   AND reserved_at IS NULL AND redeemed_at IS NULL
+                                   AND voided_at IS NULL)
+                               OR (state = 'RESERVED' AND available_at IS NOT NULL
+                                   AND reserved_at IS NOT NULL AND redeemed_at IS NULL
+                                   AND voided_at IS NULL)
+                               OR (state = 'REDEEMED' AND available_at IS NOT NULL
+                                   AND reserved_at IS NOT NULL AND redeemed_at IS NOT NULL
+                                   AND voided_at IS NULL)
+                               OR (state = 'VOIDED' AND voided_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX resource_vouchers_delivery_idx
+                    ON resource_vouchers(delivery_recipient_player_id, state, issued_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX resource_vouchers_team_state_idx
+                    ON resource_vouchers(team_id, state, voucher_id)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE resource_voucher_delivery_operations (
+                        delivery_operation_id TEXT PRIMARY KEY,
+                        voucher_id TEXT NOT NULL REFERENCES resource_vouchers(voucher_id)
+                            ON DELETE RESTRICT,
+                        recipient_player_id TEXT NOT NULL,
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX resource_voucher_delivery_voucher_idx
+                    ON resource_voucher_delivery_operations(voucher_id, state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE resource_voucher_redeem_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        voucher_id TEXT NOT NULL REFERENCES resource_vouchers(voucher_id)
+                            ON DELETE RESTRICT,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        actor_id TEXT NOT NULL,
+                        resource_type TEXT NOT NULL CHECK (
+                            resource_type IN ('DEFENSE_POINTS', 'ENHANCEMENT_POINTS')
+                        ),
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX resource_voucher_redeem_voucher_idx
+                    ON resource_voucher_redeem_operations(voucher_id, state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX resource_voucher_redeem_actor_idx
+                    ON resource_voucher_redeem_operations(actor_id, state, prepared_at)
                     """);
         }
     }
