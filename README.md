@@ -70,8 +70,8 @@ Enemies that reach the core remain in the encounter and attack it every configur
 `core.attack-interval-ticks` ticks (20 ticks by default) until defeated or the event ends.
 
 The public core placement boundary is now available as a separate Paper interaction: craft the
-initial diamond/nether-star core item, then right-click a validated ordinary Overworld block to
-replace it with a tagged beacon. Placement is owner-only, blocked during an active defense, and
+initial diamond/resin-bricks core item, then right-click a validated ordinary Overworld block to
+replace it with a registered dried-kelp core. Placement is owner-only, blocked during an active defense, and
 protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, and the
 first nearby-player team-management GUI are available as follow-on slices. Stage-specific start
 items, towers, and research remain later backlog; see

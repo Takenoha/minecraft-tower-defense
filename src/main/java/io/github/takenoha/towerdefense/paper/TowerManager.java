@@ -1991,13 +1991,27 @@ public final class TowerManager implements Listener, AutoCloseable {
             schedule.updateInterval(effectiveAttackInterval(tower, supportStacks), currentTick);
             if (schedule.tryClaim(currentTick)) {
                 LivingEntity center = target.orElseThrow();
-                switch (tower.type()) {
-                    case ARROW, SNIPER -> center.damage(effectiveDamage(tower, supportStacks), stand);
-                    case CANNON -> damageCannonTargets(tower, stand, center, supportStacks);
-                    case FROST -> damageFrostTarget(tower, stand, center, supportStacks);
-                    case LIGHTNING -> damageLightningTargets(tower, stand, center, supportStacks);
-                    case FLAME -> damageFlameTargets(tower, stand, center, supportStacks);
+                TowerAttackEffects.Budget effectBudget = TowerAttackEffects.newBudget();
+                boolean attackSucceeded = switch (tower.type()) {
+                    case ARROW, SNIPER -> damageTarget(
+                            tower,
+                            stand,
+                            stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                            center,
+                            effectiveDamage(tower, supportStacks),
+                            effectBudget);
+                    case CANNON -> damageCannonTargets(
+                            tower, stand, center, supportStacks, effectBudget);
+                    case FROST -> damageFrostTarget(
+                            tower, stand, center, supportStacks, effectBudget);
+                    case LIGHTNING -> damageLightningTargets(
+                            tower, stand, center, supportStacks, effectBudget);
+                    case FLAME -> damageFlameTargets(
+                            tower, stand, center, supportStacks, effectBudget);
                     case SUPPORT -> throw new IllegalStateException("support tower reached attack path");
+                    };
+                if (supportStacks > 0 && attackSucceeded) {
+                    renderSupportPulses(tower, stand, effectBudget);
                 }
             }
         }
@@ -2225,13 +2239,15 @@ public final class TowerManager implements Listener, AutoCloseable {
         return candidates.stream().findFirst();
     }
 
-    private void damageCannonTargets(
+    private boolean damageCannonTargets(
             TowerRecord tower,
             ArmorStand stand,
             LivingEntity center,
-            int supportStacks) {
+            int supportStacks,
+            TowerAttackEffects.Budget effectBudget) {
         double radius = settings.towers().cannonSplashRadius();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        boolean damagedAny = false;
         for (Entity entity : center.getWorld().getNearbyEntities(
                 center.getLocation(), radius, radius, radius)) {
             if (!(entity instanceof Monster monster)
@@ -2247,38 +2263,57 @@ public final class TowerManager implements Listener, AutoCloseable {
                     tagged.orElseThrow(), tower.teamId())) {
                 continue;
             }
-            monster.damage(effectiveDamage(tower, supportStacks), stand);
+            damagedAny |= damageTarget(
+                    tower,
+                    stand,
+                    stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                    monster,
+                    effectiveDamage(tower, supportStacks),
+                    effectBudget);
         }
+        return damagedAny;
     }
 
-    private void damageFrostTarget(
+    private boolean damageFrostTarget(
             TowerRecord tower,
             ArmorStand stand,
             LivingEntity target,
-            int supportStacks) {
+            int supportStacks,
+            TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
+        double beforeHealth = target.getHealth();
         target.damage(effectiveDamage(tower, supportStacks), stand);
+        boolean damaged = target.isDead() || target.getHealth() < beforeHealth;
         int duration = towerSettings.slowDurationTicksFor(tower.type());
-        if (duration <= 0) {
-            return;
+        boolean slowed = false;
+        if (duration > 0) {
+            int amplifier = Math.max(
+                    0,
+                    (int) Math.ceil(towerSettings.slowPercentFor(tower.type()) * 4.0d) - 1);
+            slowed = target.addPotionEffect(new PotionEffect(
+                    PotionEffectType.SLOWNESS,
+                    duration,
+                    amplifier,
+                    true,
+                    true,
+                    true));
         }
-        int amplifier = Math.max(
-                0,
-                (int) Math.ceil(towerSettings.slowPercentFor(tower.type()) * 4.0d) - 1);
-        target.addPotionEffect(new PotionEffect(
-                PotionEffectType.SLOWNESS,
-                duration,
-                amplifier,
-                true,
-                true,
-                true));
+        if (damaged || slowed) {
+            renderSuccessfulAttack(
+                    tower.type(),
+                    stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                    target,
+                    effectBudget);
+        }
+        return damaged || slowed;
     }
 
-    private void damageLightningTargets(
+    private boolean damageLightningTargets(
             TowerRecord tower,
             ArmorStand stand,
             LivingEntity center,
-            int supportStacks) {
+            int supportStacks,
+            TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
         double radius = towerSettings.chainRadiusFor(tower.type());
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
@@ -2302,24 +2337,46 @@ public final class TowerManager implements Listener, AutoCloseable {
             }
             candidates.add(monster);
         }
-        candidates.stream()
+        List<LivingEntity> chain = candidates.stream()
                 .skip(1)
                 .sorted(Comparator.comparingDouble(
                         candidate -> candidate.getLocation().distanceSquared(center.getLocation())))
                 .limit(Math.max(0, towerSettings.chainCountFor(tower.type()) - 1L))
-                .forEach(candidate -> candidate.damage(
-                        effectiveDamage(tower, supportStacks), stand));
-        center.damage(effectiveDamage(tower, supportStacks), stand);
+                .toList();
+        org.bukkit.Location source = stand.getLocation().clone().add(0.0d, 1.0d, 0.0d);
+        boolean damagedAny = false;
+        for (LivingEntity candidate : chain) {
+            if (damageTarget(
+                    tower,
+                    stand,
+                    source,
+                    candidate,
+                    effectiveDamage(tower, supportStacks),
+                    effectBudget)) {
+                damagedAny = true;
+                source = candidate.getLocation().clone().add(0.0d, 0.8d, 0.0d);
+            }
+        }
+        damagedAny |= damageTarget(
+                tower,
+                stand,
+                source,
+                center,
+                effectiveDamage(tower, supportStacks),
+                effectBudget);
+        return damagedAny;
     }
 
-    private void damageFlameTargets(
+    private boolean damageFlameTargets(
             TowerRecord tower,
             ArmorStand stand,
             LivingEntity center,
-            int supportStacks) {
+            int supportStacks,
+            TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
         double radius = towerSettings.areaRadiusFor(tower.type());
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        boolean damagedAny = false;
         for (Entity entity : center.getWorld().getNearbyEntities(
                 center.getLocation(), radius, radius, radius)) {
             if (!(entity instanceof Monster monster)
@@ -2335,10 +2392,78 @@ public final class TowerManager implements Listener, AutoCloseable {
                     tagged.orElseThrow(), tower.teamId())) {
                 continue;
             }
+            double beforeHealth = monster.getHealth();
             monster.damage(effectiveDamage(tower, supportStacks), stand);
+            boolean damaged = monster.isDead() || monster.getHealth() < beforeHealth;
+            int previousFireTicks = monster.getFireTicks();
             monster.setFireTicks(Math.max(
                     monster.getFireTicks(), towerSettings.burnDurationTicksFor(tower.type())));
+            if (damaged || monster.getFireTicks() > previousFireTicks) {
+                damagedAny = true;
+                renderSuccessfulAttack(
+                        tower.type(),
+                        stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                        monster,
+                        effectBudget);
+            }
         }
+        return damagedAny;
+    }
+
+    private boolean damageTarget(
+            TowerRecord tower,
+            ArmorStand stand,
+            org.bukkit.Location source,
+            LivingEntity target,
+            int damage,
+            TowerAttackEffects.Budget effectBudget) {
+        double beforeHealth = target.getHealth();
+        target.damage(damage, stand);
+        boolean damaged = target.isDead() || target.getHealth() < beforeHealth;
+        if (damaged) {
+            renderSuccessfulAttack(tower.type(), source, target, effectBudget);
+        }
+        return damaged;
+    }
+
+    private void renderSuccessfulAttack(
+            TowerType type,
+            org.bukkit.Location source,
+            LivingEntity target,
+            TowerAttackEffects.Budget effectBudget) {
+        org.bukkit.Location targetLocation = target.getLocation().clone().add(0.0d, 0.8d, 0.0d);
+        TowerAttackEffects.renderAttack(type, source, targetLocation, effectBudget);
+        TowerAttackEffects.renderHit(type, targetLocation, effectBudget);
+    }
+
+    private void renderSupportPulses(
+            TowerRecord tower,
+            ArmorStand target,
+            TowerAttackEffects.Budget effectBudget) {
+        double radiusSquared = settings.towers().supportRadius()
+                * settings.towers().supportRadius();
+        towers.all().stream()
+                .filter(candidate -> candidate.type() == TowerType.SUPPORT)
+                .filter(candidate -> candidate.teamId().equals(tower.teamId()))
+                .filter(candidate -> !candidate.id().equals(tower.id()))
+                .filter(candidate -> candidate.worldId().equals(tower.worldId()))
+                .filter(candidate -> {
+                    Entity entity = Bukkit.getEntity(candidate.entityId());
+                    return entity instanceof ArmorStand support
+                            && support.isValid()
+                            && !support.isDead()
+                            && support.getLocation().distanceSquared(target.getLocation())
+                                    <= radiusSquared;
+                })
+                .sorted(Comparator.comparing(candidate -> candidate.id().toString()))
+                .limit(settings.towers().supportStackLimit())
+                .map(candidate -> Bukkit.getEntity(candidate.entityId()))
+                .filter(entity -> entity instanceof ArmorStand)
+                .forEach(entity -> TowerAttackEffects.renderBuff(
+                        TowerType.SUPPORT,
+                        ((ArmorStand) entity).getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                        target.getLocation().clone().add(0.0d, 1.0d, 0.0d),
+                        effectBudget));
     }
 
     private int supportStacksFor(TowerRecord tower, ArmorStand stand) {

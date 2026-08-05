@@ -23,14 +23,20 @@ public final class ResearchCrystalTagger {
     private final NamespacedKey batchIdKey;
     private final NamespacedKey teamIdKey;
     private final NamespacedKey issuedQuantityKey;
+    private final NamespacedKey redemptionOperationKey;
 
     public ResearchCrystalTagger(Plugin plugin) {
-        Objects.requireNonNull(plugin, "plugin");
-        markerKey = new NamespacedKey(plugin, "research_crystal");
-        versionKey = new NamespacedKey(plugin, "research_crystal_version");
-        batchIdKey = new NamespacedKey(plugin, "research_crystal_batch_id");
-        teamIdKey = new NamespacedKey(plugin, "research_crystal_team_id");
-        issuedQuantityKey = new NamespacedKey(plugin, "research_crystal_issued_quantity");
+        this(Objects.requireNonNull(plugin, "plugin").getName());
+    }
+
+    ResearchCrystalTagger(String namespace) {
+        Objects.requireNonNull(namespace, "namespace");
+        markerKey = new NamespacedKey(namespace, "research_crystal");
+        versionKey = new NamespacedKey(namespace, "research_crystal_version");
+        batchIdKey = new NamespacedKey(namespace, "research_crystal_batch_id");
+        teamIdKey = new NamespacedKey(namespace, "research_crystal_team_id");
+        issuedQuantityKey = new NamespacedKey(namespace, "research_crystal_issued_quantity");
+        redemptionOperationKey = new NamespacedKey(namespace, "research_crystal_redemption");
     }
 
     /** Creates one stack unit; the delivery bridge splits the queue quantity safely. */
@@ -59,6 +65,73 @@ public final class ResearchCrystalTagger {
     }
 
     public Optional<ResearchCrystalItemIdentity> read(ItemStack item) {
+        if (hasRedemptionReceipt(item)) {
+            return Optional.empty();
+        }
+        return readIdentity(item);
+    }
+
+    /** Reads the crystal identity while a durable physical redemption receipt is attached. */
+    Optional<ResearchCrystalItemIdentity> readWithRedemptionReceipt(ItemStack item) {
+        return readIdentity(item);
+    }
+
+    /** Adds the redemption operation id before the database apply phase. */
+    void tagRedemption(ItemStack item, UUID operationId) {
+        Objects.requireNonNull(item, "item");
+        Objects.requireNonNull(operationId, "operationId");
+        ItemMeta meta = Objects.requireNonNull(item.getItemMeta(), "research crystal metadata");
+        meta.getPersistentDataContainer().set(
+                redemptionOperationKey,
+                PersistentDataType.STRING,
+                operationId.toString());
+        item.setItemMeta(meta);
+    }
+
+    boolean hasRedemptionReceipt(ItemStack item) {
+        if (item == null) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        return meta != null
+                && meta.getPersistentDataContainer().getKeys().contains(redemptionOperationKey);
+    }
+
+    Optional<UUID> redemptionOperationId(ItemStack item) {
+        if (item == null) {
+            return Optional.empty();
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return Optional.empty();
+        }
+        String value = meta.getPersistentDataContainer().get(
+                redemptionOperationKey,
+                PersistentDataType.STRING);
+        if (value == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(UUID.fromString(value));
+        } catch (IllegalArgumentException invalidOperation) {
+            return Optional.empty();
+        }
+    }
+
+    /** Removes a receipt after its operation was rolled back or physically consumed. */
+    void clearRedemptionReceipt(ItemStack item) {
+        if (item == null) {
+            return;
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return;
+        }
+        meta.getPersistentDataContainer().remove(redemptionOperationKey);
+        item.setItemMeta(meta);
+    }
+
+    private Optional<ResearchCrystalItemIdentity> readIdentity(ItemStack item) {
         if (item == null || item.getType() != Material.AMETHYST_SHARD || item.getAmount() <= 0) {
             return Optional.empty();
         }

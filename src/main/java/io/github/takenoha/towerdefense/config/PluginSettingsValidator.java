@@ -381,6 +381,19 @@ public final class PluginSettingsValidator {
                 && (core.repairMaterial() == null || core.repairMaterial().isBlank())) {
             violations.add("core.repair-material: must be a non-blank string");
         }
+        if (isReadable("core.warning-sound", unreadablePaths)
+                && (core.warningSound() == null || core.warningSound().isBlank())) {
+            violations.add("core.warning-sound: must be a non-blank string");
+        }
+        requirePositiveFinite(
+                "core.warning-volume", core.warningVolume(), unreadablePaths, violations);
+        requirePositiveFinite(
+                "core.warning-pitch", core.warningPitch(), unreadablePaths, violations);
+        requirePositive(
+                "core.warning-min-interval-ticks",
+                core.warningMinIntervalTicks(),
+                unreadablePaths,
+                violations);
         requirePositive(
                 "core.repair-health-per-unit",
                 core.repairHealthPerUnit(),

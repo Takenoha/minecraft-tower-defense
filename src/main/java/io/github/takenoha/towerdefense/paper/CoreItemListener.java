@@ -42,7 +42,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 /** Public core recipe and the durable main-thread physical placement bridge. */
 public final class CoreItemListener implements Listener {
-    private static final Material CORE_BLOCK = Material.BEACON;
+    private static final Material CORE_BLOCK = CoreMaterialPolicy.CURRENT_BLOCK;
 
     private final JavaPlugin plugin;
     private final PluginSettings settings;
@@ -77,6 +77,41 @@ public final class CoreItemListener implements Listener {
         blockTagger = new CoreBlockTagger(plugin);
         appliedItemIds = new HashSet<>(repository.loadAppliedCorePlacementItemIds());
         combatArea = new CombatAreaContext(settings);
+    }
+
+    /**
+     * Migrates only database-registered legacy beacon coordinates.
+     *
+     * <p>No world scan is performed.  A missing or unexpected block is left untouched and logged
+     * so a database or world mismatch cannot destroy an unrelated block.</p>
+     */
+    public void reconcileRegisteredCoreBlocks() {
+        List<CoreRecord> durableCores;
+        try {
+            durableCores = repository.loadAllCores();
+        } catch (RuntimeException failure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.SEVERE,
+                    "Cannot reconcile registered core blocks because the durable core read failed",
+                    failure);
+            return;
+        }
+        for (CoreRecord core : durableCores) {
+            World world = Bukkit.getWorld(core.worldId());
+            if (world == null) {
+                plugin.getLogger().warning(
+                        "Cannot reconcile core " + core.id() + ": world is not loaded");
+                continue;
+            }
+            Block block = world.getBlockAt(core.blockX(), core.blockY(), core.blockZ());
+            if (block.getType() == CoreMaterialPolicy.LEGACY_BLOCK) {
+                block.setType(CORE_BLOCK, false);
+            } else if (!CoreMaterialPolicy.isCurrentBlock(block.getType())) {
+                plugin.getLogger().warning(
+                        "Registered core " + core.id() + " has unexpected block "
+                                + block.getType() + " at its durable coordinate; leaving it intact");
+            }
+        }
     }
 
     /** Registers the compact vanilla recipe for an unbound core item. */
@@ -126,6 +161,7 @@ public final class CoreItemListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
+        reconcileRegisteredCoreBlocks();
         reconcileAppliedItems(event.getPlayer());
     }
 

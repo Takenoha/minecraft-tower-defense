@@ -10,6 +10,8 @@ import io.github.takenoha.towerdefense.persistence.CoreRepairOperationState;
 import io.github.takenoha.towerdefense.persistence.CoreRepairReceipt;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.PaymentMode;
+import io.github.takenoha.towerdefense.persistence.ResearchCrystalRedemption;
+import io.github.takenoha.towerdefense.persistence.ResearchCrystalRedemptionState;
 import io.github.takenoha.towerdefense.persistence.TeamMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
@@ -208,12 +210,38 @@ public final class CoreManagementListener implements Listener {
         reconcileOpenRepairReceipts(event.getPlayer());
     }
 
+    @EventHandler
+    public void onResearchCrystalJoin(PlayerJoinEvent event) {
+        Bukkit.getScheduler().runTaskLater(
+                plugin,
+                () -> reconcileResearchCrystalReceipts(event.getPlayer()),
+                1L);
+    }
+
+    /** Reconciles receipts for players who remain online across a plugin reload. */
+    public void reconcileOnlineResearchCrystalReceipts() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            Bukkit.getScheduler().runTaskLater(
+                    plugin,
+                    () -> reconcileResearchCrystalReceipts(player),
+                    1L);
+        }
+    }
+
     /** Reconciles a receipt after death, when the server has restored the respawn inventory. */
     @EventHandler
     public void onRepairReceiptRespawn(PlayerRespawnEvent event) {
         Bukkit.getScheduler().runTaskLater(
                 plugin,
                 () -> reconcileOpenRepairReceipts(event.getPlayer()),
+                1L);
+    }
+
+    @EventHandler
+    public void onResearchCrystalRespawn(PlayerRespawnEvent event) {
+        Bukkit.getScheduler().runTaskLater(
+                plugin,
+                () -> reconcileResearchCrystalReceipts(event.getPlayer()),
                 1L);
     }
 
@@ -241,6 +269,66 @@ public final class CoreManagementListener implements Listener {
                                         operation.operationId(), Instant.now()));
                     }
                 });
+    }
+
+    @EventHandler
+    public void onResearchCrystalQuit(PlayerQuitEvent event) {
+        // The durable redemption receipt is reconciled after the player rejoins. Never mutate a
+        // saved offline inventory from an outstanding async callback.
+        crystalInFlight.remove(event.getPlayer().getUniqueId());
+    }
+
+    /** Prevents an in-flight receipt from being moved while its database operation is pending. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalClick(InventoryClickEvent event) {
+        if (event.getWhoClicked() instanceof Player player
+                && crystalInFlight.contains(player.getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalDrag(InventoryDragEvent event) {
+        if (event.getWhoClicked() instanceof Player player
+                && crystalInFlight.contains(player.getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalDrop(PlayerDropItemEvent event) {
+        if (crystalInFlight.contains(event.getPlayer().getUniqueId())
+                || researchCrystals.hasRedemptionReceipt(event.getItemDrop().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalSwap(PlayerSwapHandItemsEvent event) {
+        if (crystalInFlight.contains(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalInventoryMove(InventoryMoveItemEvent event) {
+        if (researchCrystals.hasRedemptionReceipt(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalPickup(EntityPickupItemEvent event) {
+        if (researchCrystals.hasRedemptionReceipt(event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onResearchCrystalDespawn(ItemDespawnEvent event) {
+        if (researchCrystals.hasRedemptionReceipt(event.getEntity().getItemStack())) {
+            event.setCancelled(true);
+        }
     }
 
     private void reconcileOpenRepairReceipts(Player player) {
@@ -668,52 +756,101 @@ public final class CoreManagementListener implements Listener {
             player.sendMessage(Component.text("防衛戦中は研究結晶を納品できません。", NamedTextColor.RED));
             return;
         }
-        ItemStack held = player.getInventory().getItemInMainHand();
-        ResearchCrystalItemIdentity identity = researchCrystals.read(held).orElse(null);
-        if (identity == null) {
+        List<ResearchCrystalInventoryPolicy.Candidate> candidates =
+                ResearchCrystalInventoryPolicy.scan(
+                        player.getInventory().getStorageContents(),
+                        player.getInventory().getItemInOffHand(),
+                        researchCrystals);
+        if (candidates.isEmpty()) {
             player.sendMessage(Component.text(
-                    "発行元チームの研究結晶を手に持ってください。", NamedTextColor.YELLOW));
+                    "自分のインベントリに納品できる研究結晶がありません。",
+                    NamedTextColor.YELLOW));
             return;
         }
-        int quantity = held.getAmount();
         UUID actorId = player.getUniqueId();
         if (!crystalInFlight.add(actorId)) {
             player.sendMessage(Component.text("研究結晶の納品を処理中です。", NamedTextColor.YELLOW));
             return;
         }
+        player.sendMessage(Component.text(
+                "研究結晶をインベントリ全体から確認しています…", NamedTextColor.GRAY));
+        processResearchCrystalCandidate(
+                player,
+                coreId,
+                candidates,
+                0,
+                new ResearchCrystalDepositSummary());
+    }
+
+    private void processResearchCrystalCandidate(
+            Player player,
+            UUID coreId,
+            List<ResearchCrystalInventoryPolicy.Candidate> candidates,
+            int index,
+            ResearchCrystalDepositSummary summary) {
+        if (!player.isOnline()) {
+            crystalInFlight.remove(player.getUniqueId());
+            return;
+        }
+        if (index >= candidates.size()) {
+            finishCrystalDeposit(player, coreId, summary);
+            return;
+        }
+        ResearchCrystalInventoryPolicy.Candidate candidate = candidates.get(index);
+        ItemStack current = currentCrystalCandidate(player, candidate);
+        if (!matchesCrystalCandidate(current, candidate)) {
+            summary.skippedStacks++;
+            processResearchCrystalCandidate(player, coreId, candidates, index + 1, summary);
+            return;
+        }
+
         UUID operationId = UUID.randomUUID();
-        player.sendMessage(Component.text("研究結晶の納品を準備しています…", NamedTextColor.GRAY));
+        // Keep the physical handoff durable while the database operation is in flight.
+        ItemStack tagged = current.clone();
+        researchCrystals.tagRedemption(tagged, operationId);
+        if (candidate.isOffHand()) {
+            player.getInventory().setItemInOffHand(tagged);
+        } else {
+            player.getInventory().setItem(candidate.storageSlot(), tagged);
+        }
         databaseExecutor.submit(() -> {
             CoreRecord core = repository.findCore(coreId).orElseThrow(
                     () -> new IllegalStateException("コアが見つかりません"));
             return repository.prepareResearchCrystalRedemption(
-                    identity.batchId(),
+                    candidate.identity().batchId(),
                     core.id(),
-                    actorId,
-                    quantity,
+                    player.getUniqueId(),
+                    candidate.identity().teamId(),
+                    candidate.identity().issuedQuantity(),
+                    candidate.quantity(),
                     operationId,
                     Instant.now());
-        }).whenComplete((prepared, failure) -> runOnMainThread(() -> {
-            if (failure != null) {
-                finishCrystalDeposit(player, "研究結晶を納品できません: " + rootMessage(failure));
+        }).whenComplete((prepared, prepareFailure) -> runOnMainThread(() -> {
+            if (prepareFailure != null) {
+                if (player.isOnline()) {
+                    clearResearchCrystalReceipt(player, operationId);
+                }
+                summary.failures.add(rootMessage(prepareFailure));
+                processResearchCrystalCandidate(player, coreId, candidates, index + 1, summary);
                 return;
             }
-            ItemStack current = player.getInventory().getItemInMainHand();
-            boolean sameItem = researchCrystals.read(current)
-                    .map(identity::equals)
-                    .orElse(false)
-                    && current.getAmount() >= prepared.quantity();
-            if (!sameItem || sessions.hasActiveSession()) {
+            if (!player.isOnline()) {
+                rollbackCrystalDeposit(player, prepared.operationId(), null, null);
+                return;
+            }
+            if (sessions.hasActiveSession()
+                    || countResearchCrystalReceipt(player, prepared.operationId())
+                            < prepared.quantity()) {
                 rollbackCrystalDeposit(
                         player,
                         prepared.operationId(),
-                        null,
-                        "手持ちの研究結晶または防衛フェーズが変わったため納品を取り消しました。");
+                        "研究結晶の現物または防衛フェーズが変わったため納品を取り消しました。",
+                        () -> processResearchCrystalCandidate(
+                                player, coreId, candidates, index + 1, summary));
                 return;
             }
-            ItemStack refund = current.clone();
-            refund.setAmount(prepared.quantity());
-            removeHeldQuantity(player, prepared.quantity());
+            // Commit the points before consuming the physical item. The receipt makes a stop
+            // between these callbacks recoverable on the next join.
             databaseExecutor.submit(() -> repository.applyResearchCrystalRedemption(
                             prepared.operationId(), Instant.now()))
                     .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
@@ -721,18 +858,34 @@ public final class CoreManagementListener implements Listener {
                             rollbackCrystalDeposit(
                                     player,
                                     prepared.operationId(),
-                                    refund,
-                                    "研究結晶を納品できなかったため返却を試みます: "
-                                            + rootMessage(applyFailure));
+                                    "研究結晶を納品できなかったため復旧を試みます: "
+                                            + rootMessage(applyFailure),
+                                    () -> processResearchCrystalCandidate(
+                                            player, coreId, candidates, index + 1, summary));
                             return;
                         }
-                        crystalInFlight.remove(actorId);
-                        player.sendMessage(Component.text(
-                                "研究結晶を" + prepared.quantity()
-                                        + "個納品し、研究ポイントへ変換しました。現在: "
-                                        + result.progress().researchPoints(),
-                                NamedTextColor.GREEN));
-                        openCoreGui(player, coreId);
+                        if (!player.isOnline()) {
+                            crystalInFlight.remove(player.getUniqueId());
+                            return;
+                        }
+                        int consumed = consumeResearchCrystalReceipt(
+                                player, prepared.operationId(), prepared.quantity());
+                        if (consumed != prepared.quantity()) {
+                            crystalInFlight.remove(player.getUniqueId());
+                            plugin.getLogger().warning(
+                                    "Applied research crystal redemption is awaiting physical "
+                                            + "receipt recovery: " + prepared.operationId());
+                            player.updateInventory();
+                            player.sendMessage(Component.text(
+                                    "研究結晶の納品は確定しましたが、現物の後処理を保留しています。"
+                                            + "再接続後に自動復旧します。",
+                                    NamedTextColor.YELLOW));
+                            return;
+                        }
+                        summary.convertedQuantity += prepared.quantity();
+                        summary.latestResearchPoints = result.progress().researchPoints();
+                        processResearchCrystalCandidate(
+                                player, coreId, candidates, index + 1, summary);
                     }));
         }));
     }
@@ -740,45 +893,288 @@ public final class CoreManagementListener implements Listener {
     private void rollbackCrystalDeposit(
             Player player,
             UUID operationId,
-            ItemStack refund,
-            String message) {
+            String message,
+            Runnable afterRollback) {
         databaseExecutor.submit(() -> repository.rollbackResearchCrystalRedemption(
                         operationId, Instant.now()))
                 .whenComplete((rolledBack, rollbackFailure) -> runOnMainThread(() -> {
-                    crystalInFlight.remove(player.getUniqueId());
                     if (rollbackFailure != null) {
+                        crystalInFlight.remove(player.getUniqueId());
                         plugin.getLogger().log(
                                 java.util.logging.Level.SEVERE,
                                 "Could not roll back research crystal redemption " + operationId,
                                 rollbackFailure);
-                        player.sendMessage(Component.text(
-                                "研究結晶の納品復旧を保留しています。管理者へ連絡してください。",
-                                NamedTextColor.RED));
+                        if (player.isOnline()) {
+                            player.sendMessage(Component.text(
+                                    "研究結晶の納品復旧を保留しています。再接続後に再試行します。",
+                                    NamedTextColor.RED));
+                        }
                         return;
                     }
-                    if (refund != null
-                            && rolledBack.isPresent()
-                            && rolledBack.orElseThrow().state()
-                                    == io.github.takenoha.towerdefense.persistence
-                                            .ResearchCrystalRedemptionState.ROLLED_BACK) {
-                        addOrDrop(player, refund);
+                    if (rolledBack.isPresent()
+                            && rolledBack.orElseThrow().state() == ResearchCrystalRedemptionState.ROLLED_BACK) {
+                        if (player.isOnline()) {
+                            clearResearchCrystalReceipt(player, operationId);
+                            player.updateInventory();
+                            if (message != null) {
+                                player.sendMessage(Component.text(message, NamedTextColor.RED));
+                            }
+                            if (afterRollback != null) {
+                                afterRollback.run();
+                                return;
+                            }
+                        }
+                        crystalInFlight.remove(player.getUniqueId());
+                        return;
                     }
-                    player.sendMessage(Component.text(message, NamedTextColor.RED));
+                    // An ambiguous apply result must retain its receipt for durable reconciliation.
+                    crystalInFlight.remove(player.getUniqueId());
+                    if (player.isOnline()) {
+                        player.sendMessage(Component.text(
+                                "研究結晶の納品状態が確定できないため、現物の復旧を保留しています。",
+                                NamedTextColor.YELLOW));
+                    }
                 }));
     }
 
-    private static void removeHeldQuantity(Player player, int quantity) {
-        ItemStack held = player.getInventory().getItemInMainHand();
-        int remaining = held.getAmount() - quantity;
-        player.getInventory().setItemInMainHand(remaining <= 0 ? null : held);
-        if (remaining > 0) {
-            player.getInventory().getItemInMainHand().setAmount(remaining);
+    private void finishCrystalDeposit(
+            Player player,
+            UUID coreId,
+            ResearchCrystalDepositSummary summary) {
+        crystalInFlight.remove(player.getUniqueId());
+        if (!player.isOnline()) {
+            return;
+        }
+        if (summary.convertedQuantity > 0) {
+            player.sendMessage(Component.text(
+                    "研究結晶を" + summary.convertedQuantity
+                            + "個納品し、研究ポイントへ変換しました。現在: "
+                            + summary.latestResearchPoints,
+                    NamedTextColor.GREEN));
+            if (!summary.failures.isEmpty() || summary.skippedStacks > 0) {
+                player.sendMessage(Component.text(
+                        "一部の研究結晶は状態が変わったため、納品していません。",
+                        NamedTextColor.YELLOW));
+            }
+            openCoreGui(player, coreId);
+            return;
+        }
+        if (!summary.failures.isEmpty()) {
+            player.sendMessage(Component.text(
+                    "研究結晶を納品できません: " + summary.failures.get(0),
+                    NamedTextColor.RED));
+        } else {
+            player.sendMessage(Component.text(
+                    "研究結晶の現物が変わったため納品できませんでした。もう一度お試しください。",
+                    NamedTextColor.YELLOW));
         }
     }
 
-    private void finishCrystalDeposit(Player player, String message) {
-        crystalInFlight.remove(player.getUniqueId());
-        player.sendMessage(Component.text(message, NamedTextColor.RED));
+    private ItemStack currentCrystalCandidate(
+            Player player,
+            ResearchCrystalInventoryPolicy.Candidate candidate) {
+        return candidate.isOffHand()
+                ? player.getInventory().getItemInOffHand()
+                : player.getInventory().getItem(candidate.storageSlot());
+    }
+
+    private boolean matchesCrystalCandidate(
+            ItemStack current,
+            ResearchCrystalInventoryPolicy.Candidate candidate) {
+        return current != null
+                && current.getAmount() >= candidate.quantity()
+                && current.isSimilar(candidate.snapshot())
+                && researchCrystals.read(current)
+                        .map(candidate.identity()::equals)
+                        .orElse(false);
+    }
+
+    private int countResearchCrystalReceipt(Player player, UUID operationId) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getStorageContents()) {
+            if (researchCrystals.redemptionOperationId(item).filter(operationId::equals).isPresent()) {
+                total += item.getAmount();
+            }
+        }
+        ItemStack offHand = player.getInventory().getItemInOffHand();
+        if (researchCrystals.redemptionOperationId(offHand).filter(operationId::equals).isPresent()) {
+            total += offHand.getAmount();
+        }
+        return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+    }
+
+    private int consumeResearchCrystalReceipt(
+            Player player,
+            UUID operationId,
+            int quantity) {
+        int remaining = quantity;
+        for (int slot = 0;
+                slot < player.getInventory().getStorageContents().length && remaining > 0;
+                slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (!researchCrystals.redemptionOperationId(item).filter(operationId::equals).isPresent()) {
+                continue;
+            }
+            int consumed = Math.min(remaining, item.getAmount());
+            if (consumed == item.getAmount()) {
+                player.getInventory().setItem(slot, null);
+            } else {
+                ItemStack remainderItem = item.clone();
+                remainderItem.setAmount(item.getAmount() - consumed);
+                researchCrystals.clearRedemptionReceipt(remainderItem);
+                player.getInventory().setItem(slot, remainderItem);
+            }
+            remaining -= consumed;
+        }
+        if (remaining > 0) {
+            ItemStack offHand = player.getInventory().getItemInOffHand();
+            if (researchCrystals.redemptionOperationId(offHand).filter(operationId::equals).isPresent()) {
+                int consumed = Math.min(remaining, offHand.getAmount());
+                if (consumed == offHand.getAmount()) {
+                    player.getInventory().setItemInOffHand(null);
+                } else {
+                    ItemStack remainderItem = offHand.clone();
+                    remainderItem.setAmount(offHand.getAmount() - consumed);
+                    researchCrystals.clearRedemptionReceipt(remainderItem);
+                    player.getInventory().setItemInOffHand(remainderItem);
+                }
+                remaining -= consumed;
+            }
+        }
+        if (remaining == 0) {
+            clearResearchCrystalReceipt(player, operationId);
+        }
+        return quantity - remaining;
+    }
+
+    private void clearResearchCrystalReceipt(Player player, UUID operationId) {
+        for (int slot = 0; slot < player.getInventory().getStorageContents().length; slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (researchCrystals.redemptionOperationId(item).filter(operationId::equals).isPresent()) {
+                ItemStack stripped = item.clone();
+                researchCrystals.clearRedemptionReceipt(stripped);
+                player.getInventory().setItem(slot, stripped);
+            }
+        }
+        ItemStack offHand = player.getInventory().getItemInOffHand();
+        if (researchCrystals.redemptionOperationId(offHand).filter(operationId::equals).isPresent()) {
+            ItemStack stripped = offHand.clone();
+            researchCrystals.clearRedemptionReceipt(stripped);
+            player.getInventory().setItemInOffHand(stripped);
+        }
+    }
+
+    private void reconcileResearchCrystalReceipts(Player player) {
+        if (!player.isOnline()) {
+            return;
+        }
+        Set<UUID> operationIds = new java.util.HashSet<>();
+        for (int slot = 0; slot < player.getInventory().getStorageContents().length; slot++) {
+            int currentSlot = slot;
+            ItemStack item = player.getInventory().getItem(slot);
+            collectResearchCrystalReceipt(
+                    item,
+                    operationIds,
+                    () -> {
+                        ItemStack stripped = item.clone();
+                        researchCrystals.clearRedemptionReceipt(stripped);
+                        player.getInventory().setItem(currentSlot, stripped);
+                    });
+        }
+        ItemStack offHand = player.getInventory().getItemInOffHand();
+        collectResearchCrystalReceipt(
+                offHand,
+                operationIds,
+                () -> {
+                    ItemStack stripped = offHand.clone();
+                    researchCrystals.clearRedemptionReceipt(stripped);
+                    player.getInventory().setItemInOffHand(stripped);
+                });
+        for (UUID operationId : operationIds) {
+            reconcileResearchCrystalReceipt(player, operationId);
+        }
+    }
+
+    private void collectResearchCrystalReceipt(
+            ItemStack item,
+            Set<UUID> operationIds,
+            Runnable clearMalformedReceipt) {
+        if (!researchCrystals.hasRedemptionReceipt(item)) {
+            return;
+        }
+        Optional<UUID> operationId = researchCrystals.redemptionOperationId(item);
+        if (operationId.isPresent()) {
+            operationIds.add(operationId.orElseThrow());
+        } else {
+            clearMalformedReceipt.run();
+        }
+    }
+
+    private void reconcileResearchCrystalReceipt(Player player, UUID operationId) {
+        databaseExecutor.submit(() -> repository.findResearchCrystalRedemption(operationId))
+                .whenComplete((loaded, failure) -> runOnMainThread(() -> {
+                    if (failure != null || !player.isOnline()) {
+                        if (failure != null) {
+                            plugin.getLogger().warning(
+                                    "Could not reconcile research crystal redemption "
+                                            + operationId + ": " + rootMessage(failure));
+                        }
+                        return;
+                    }
+                    if (loaded.isEmpty()) {
+                        clearResearchCrystalReceipt(player, operationId);
+                        player.updateInventory();
+                        return;
+                    }
+                    ResearchCrystalRedemption redemption = loaded.orElseThrow();
+                    if (!redemption.actorId().equals(player.getUniqueId())) {
+                        plugin.getLogger().warning(
+                                "Research crystal receipt belongs to another actor: " + operationId);
+                        return;
+                    }
+                    if (redemption.state() == ResearchCrystalRedemptionState.APPLIED) {
+                        int consumed = consumeResearchCrystalReceipt(
+                                player, operationId, redemption.quantity());
+                        player.updateInventory();
+                        if (consumed != redemption.quantity()) {
+                            plugin.getLogger().warning(
+                                    "Research crystal receipt remains after applied recovery: "
+                                            + operationId);
+                        }
+                        return;
+                    }
+                    if (redemption.state() == ResearchCrystalRedemptionState.ROLLED_BACK) {
+                        clearResearchCrystalReceipt(player, operationId);
+                        player.updateInventory();
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.rollbackResearchCrystalRedemption(
+                                    operationId, Instant.now()))
+                            .whenComplete((rolledBack, rollbackFailure) -> runOnMainThread(() -> {
+                                if (rollbackFailure != null || !player.isOnline()) {
+                                    if (rollbackFailure != null) {
+                                        plugin.getLogger().warning(
+                                                "Could not roll back prepared research crystal "
+                                                        + operationId + ": "
+                                                        + rootMessage(rollbackFailure));
+                                    }
+                                    return;
+                                }
+                                if (rolledBack.isPresent()
+                                        && rolledBack.orElseThrow().state()
+                                                == ResearchCrystalRedemptionState.ROLLED_BACK) {
+                                    clearResearchCrystalReceipt(player, operationId);
+                                    player.updateInventory();
+                                }
+                            }));
+                }));
+    }
+
+    private static final class ResearchCrystalDepositSummary {
+        private int convertedQuantity;
+        private long latestResearchPoints;
+        private int skippedStacks;
+        private final List<String> failures = new ArrayList<>();
     }
 
     private void openTeamGui(Player player, UUID coreId) {

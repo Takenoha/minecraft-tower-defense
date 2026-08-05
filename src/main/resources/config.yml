@@ -24,6 +24,11 @@ core:
   repair-material-base-cost: 1
   repair-shard-base-cost: 1
   repair-cost-per-clear-level: 1
+  # Played only when a live defense core loses HP. This is not a global broadcast.
+  warning-sound: ENTITY_ZOMBIE_ATTACK_WOODEN_DOOR
+  warning-volume: 1.0
+  warning-pitch: 1.0
+  warning-min-interval-ticks: 10
 
 enemies:
   max-alive: 120

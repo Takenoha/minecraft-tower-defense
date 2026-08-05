@@ -432,32 +432,75 @@ final class DefenseEventPersistenceTest {
         assertEquals(fixture.teamId(), batch.teamId());
         assertEquals(100, batch.remainingQuantity());
 
-        UUID redemptionOperation = UUID.randomUUID();
-        ResearchCrystalRedemption prepared = repository.prepareResearchCrystalRedemption(
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> repository.prepareResearchCrystalRedemption(
+                        batch.batchId(),
+                        fixture.core().id(),
+                        fixture.ownerId(),
+                        UUID.randomUUID(),
+                        batch.issuedQuantity(),
+                        1,
+                        UUID.randomUUID(),
+                        STARTED_AT.plusSeconds(20L)));
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> repository.prepareResearchCrystalRedemption(
+                        batch.batchId(),
+                        fixture.core().id(),
+                        fixture.ownerId(),
+                        fixture.teamId(),
+                        batch.issuedQuantity() + 1,
+                        1,
+                        UUID.randomUUID(),
+                        STARTED_AT.plusSeconds(20L)));
+
+        UUID firstRedemptionOperation = UUID.randomUUID();
+        ResearchCrystalRedemption firstPrepared = repository.prepareResearchCrystalRedemption(
                 batch.batchId(),
                 fixture.core().id(),
                 fixture.ownerId(),
-                100,
-                redemptionOperation,
+                fixture.teamId(),
+                batch.issuedQuantity(),
+                40,
+                firstRedemptionOperation,
                 STARTED_AT.plusSeconds(21L));
-        assertEquals(ResearchCrystalRedemptionState.PREPARED, prepared.state());
+        assertEquals(ResearchCrystalRedemptionState.PREPARED, firstPrepared.state());
         assertEquals(
-                prepared,
+                firstPrepared,
                 repository.prepareResearchCrystalRedemption(
                         batch.batchId(),
                         fixture.core().id(),
                         fixture.ownerId(),
-                        100,
-                        redemptionOperation,
+                        fixture.teamId(),
+                        batch.issuedQuantity(),
+                        40,
+                        firstRedemptionOperation,
                         STARTED_AT.plusSeconds(22L)));
 
+        ResearchCrystalRedemptionResult firstApplied = repository.applyResearchCrystalRedemption(
+                firstRedemptionOperation, STARTED_AT.plusSeconds(23L));
+        assertEquals(OperationOutcome.APPLIED, firstApplied.outcome());
+        assertEquals(40L, firstApplied.progress().researchPoints());
+        assertEquals(ResearchCrystalBatchStatus.ISSUED, firstApplied.batch().status());
+
+        UUID secondRedemptionOperation = UUID.randomUUID();
         ResearchCrystalRedemptionResult applied = repository.applyResearchCrystalRedemption(
-                redemptionOperation, STARTED_AT.plusSeconds(23L));
+                repository.prepareResearchCrystalRedemption(
+                        batch.batchId(),
+                        fixture.core().id(),
+                        fixture.ownerId(),
+                        fixture.teamId(),
+                        batch.issuedQuantity(),
+                        60,
+                        secondRedemptionOperation,
+                        STARTED_AT.plusSeconds(24L)).operationId(),
+                STARTED_AT.plusSeconds(25L));
         assertEquals(OperationOutcome.APPLIED, applied.outcome());
         assertEquals(100L, applied.progress().researchPoints());
         assertEquals(ResearchCrystalBatchStatus.EXHAUSTED, applied.batch().status());
         ResearchCrystalRedemptionResult replay = repository.applyResearchCrystalRedemption(
-                redemptionOperation, STARTED_AT.plusSeconds(24L));
+                secondRedemptionOperation, STARTED_AT.plusSeconds(26L));
         assertEquals(OperationOutcome.ALREADY_APPLIED, replay.outcome());
         assertEquals(100L, repository.loadTeamProgress(fixture.teamId()).researchPoints());
     }

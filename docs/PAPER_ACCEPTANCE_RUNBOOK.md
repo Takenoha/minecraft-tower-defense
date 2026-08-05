@@ -38,8 +38,9 @@ server until the evidence template at the end has been completed and reviewed.
 
 1. Use `/td admin simulate 1` for a fast administrator-only lifecycle smoke. Confirm countdown,
    preparation, waves, intermissions, final boss naming, victory/defeat, and the event lock release.
-2. Craft the core with one `DIAMOND_BLOCK` and four `IRON_INGOT` items. Confirm the old diamond-8 /
-   `NETHER_STAR` recipe no longer matches.
+2. Craft the core with one `DIAMOND_BLOCK` and four `IRON_INGOT` items. Confirm the result is the
+   plugin-owned `RESIN_BRICKS` core item, and that the old diamond-8 / `NETHER_STAR` recipe no
+   longer matches.
 3. Craft stage seals 1–10 one at a time. The first ten stage ingredients are, in order,
    `GOLD_INGOT`, `DIAMOND`, `EMERALD`, `AMETHYST_SHARD`, `PRISMARINE_CRYSTALS`, `QUARTZ`,
    `GLOWSTONE_DUST`, `REDSTONE`, `LAPIS_LAZULI`, and `NETHERITE_SCRAP`; each recipe uses four
@@ -75,6 +76,33 @@ server until the evidence template at the end has been completed and reviewed.
 4. Repair a different damaged tower during preparation/intermission and confirm the team funds and
    repair operation are consumed once. Attempt the same action during `WAVE_ACTIVE` and confirm it
    is rejected without a spend.
+5. Place a newly crafted core item on a validated ordinary solid block. Confirm the placed block is
+   `DRIED_KELP_BLOCK` (乾燥した昆布ブロック), not a beacon. A normal untagged `RESIN_BRICKS` item
+   must not place a core. A normal untagged `NETHER_STAR` must not place a core either.
+6. On a disposable copy of a world/database containing a registered legacy beacon core, restart
+   the plugin and confirm only the exact DB-registered core coordinate changes from `BEACON` to
+   `DRIED_KELP_BLOCK`. Repeat the restart and confirm no further mutation. Place ordinary beacons
+   elsewhere and confirm they are untouched. Move, rebuild, and recover the core and verify every
+   resulting registered coordinate uses `DRIED_KELP_BLOCK`; an unexpected ordinary block at a
+   registered coordinate is logged and left intact rather than guessed over.
+7. Hold an old plugin-owned PDC `NETHER_STAR` core item. Confirm it remains usable for placement,
+   keeps its item/core/team UUIDs, and is removed exactly once after the DB apply. A normal
+   PDC-less nether star remains an ordinary item.
+8. During a wave, exercise `ARROW`, `CANNON`, `FROST`, `LIGHTNING`, `SNIPER`, and `FLAME` attacks.
+   Confirm each has a visually distinct vanilla-particle trail and hit effect, and that cannon
+   area targets and lightning chain targets each show a hit effect only when damage succeeds.
+   Cancel or otherwise prevent a damage event and confirm no hit effect is emitted. Confirm the
+   effects do not create entities, damage blocks, add extra damage, or change tower balance.
+9. Place a `SUPPORT` tower inside support range of an attacking tower. Confirm the support pulse
+   uses its buff effect and appears only while the configured support multiplier is applied. With
+   many simultaneous attacks, confirm particle output stays bounded and the vanilla client needs
+   no resource pack.
+10. During `WAVE_ACTIVE`, let an enemy reduce core HP. Confirm the configured
+    `core.warning-sound` (default `ENTITY_ZOMBIE_ATTACK_WOODEN_DOOR`) is heard only by online
+    players in the combat area. Repeated same-tick/near-tick hits must be debounced by
+    `core.warning-min-interval-ticks`; players outside the area and the rest of the server must
+    not hear it. Confirm mere proximity, a cancelled/non-damaging hit, victory/defeat cleanup,
+    and startup/recovery do not play the warning.
 
 ## 4. Team-management follow-up
 
@@ -214,6 +242,33 @@ following evidence exists:
    are intentionally spent, confirm the normal team lifecycle remains available. Move and rebuild
    the core and verify the wallet and voucher team binding do not change.
 
+## 8. Research-crystal inventory redemption
+
+1. Outside a defense, issue or obtain a valid `研究結晶` for the player's team and open the core
+   management GUI. Leave the main hand empty, then place valid crystals in an unselected hotbar
+   slot, an ordinary main-inventory slot, and the off-hand. Click the existing research deposit
+   action and confirm all eligible stacks are found and the success message reports the converted
+   quantity and resulting research points.
+2. Put an ordinary `AMETHYST_SHARD`, another team's crystal, a crystal with a forged team/batch/
+   issued-quantity PDC, and a crystal already carrying a redemption receipt in storage. Confirm
+   none is consumed or credited. Put crystals in an open chest, crafting grid, cursor, or armor
+   slot and confirm those locations are not candidates.
+3. Repeat with multiple valid stacks whose total is larger than one stack. Confirm the database
+   batch redeemed quantity and team research points increase by the exact total, with no unrelated
+   item removed. Click the deposit action again after the batch is exhausted and confirm the clear
+   no-item message.
+4. On a disposable copy, stop the server or plugin at each boundary: receipt tagging, `PREPARED`,
+   database `APPLIED`, and physical removal. Reconnect or re-enable the plugin and confirm the
+   operation UUID is reconciled exactly once: an applied operation consumes only its matching
+   receipt, a prepared operation rolls back without credit, and a rolled-back operation clears its
+   matching receipt. A database failure must not remove the crystal without a corresponding point
+   credit, and retrying the same operation must not credit twice.
+5. Exercise click, drag, off-hand swap, number-key swap, drop, hopper movement, pickup, death with
+   both `keepInventory` settings, and respawn while a receipt is present. Confirm the tagged
+   crystal cannot leave the player's own inventory before reconciliation, the next-tick respawn
+   reconciliation sees the restored storage/off-hand contents, and ordinary untagged items retain
+   normal behavior.
+
 ## Evidence record
 
 ```text
@@ -233,6 +288,7 @@ Terrain-enabled permitted-action evidence:
 Prepared/applied/terminal recovery evidence:
 Resource vault / legacy payment / receipt recovery evidence:
 Portable voucher withdrawal / delivery / redeem / duplicate evidence:
+Research-crystal inventory scan / PDC validation / receipt recovery evidence:
 Action Bar pickup priority and 40-tick evidence:
 Later-player-edit conflict evidence:
 Event IDs and operation UUIDs:

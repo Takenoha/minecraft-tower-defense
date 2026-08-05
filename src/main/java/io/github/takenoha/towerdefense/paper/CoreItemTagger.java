@@ -5,7 +5,6 @@ import java.util.Optional;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -34,7 +33,7 @@ public final class CoreItemTagger {
 
     /** Returns the recipe result template. A craft event replaces its temporary marker with a UUID. */
     public ItemStack recipeTemplate() {
-        ItemStack item = new ItemStack(Material.NETHER_STAR);
+        ItemStack item = new ItemStack(CoreMaterialPolicy.CURRENT_ITEM);
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(markerKey, PersistentDataType.BYTE, (byte) 1);
@@ -63,7 +62,9 @@ public final class CoreItemTagger {
     }
 
     public Optional<CoreItemIdentity> read(ItemStack item) {
-        if (item == null || item.getType() != Material.NETHER_STAR || item.getAmount() != 1) {
+        if (item == null
+                || !CoreMaterialPolicy.isCoreItemMaterial(item.getType())
+                || item.getAmount() != 1) {
             return Optional.empty();
         }
         ItemMeta meta = item.getItemMeta();
@@ -74,7 +75,7 @@ public final class CoreItemTagger {
     }
 
     public boolean isRecipeTemplate(ItemStack item) {
-        if (item == null || item.getType() != Material.NETHER_STAR) {
+        if (item == null || !CoreMaterialPolicy.isCoreItemMaterial(item.getType())) {
             return false;
         }
         ItemMeta meta = item.getItemMeta();

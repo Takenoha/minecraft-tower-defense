@@ -157,6 +157,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 regionProtection,
                 new CoreItemTagger(this));
         coreItems.registerRecipe();
+        coreItems.reconcileRegisteredCoreBlocks();
         coreItems.recoverPreparedPlacements();
         getServer().getPluginManager().registerEvents(coreItems, this);
         RaidSealTagger raidSealTagger = new RaidSealTagger(this);
@@ -170,8 +171,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 coreRegistry,
                 regionProtection,
                 raidSealTagger);
-        getServer().getPluginManager().registerEvents(
-                new CoreManagementListener(
+        CoreManagementListener coreManagementListener = new CoreManagementListener(
                         this,
                         settings,
                         repository,
@@ -182,8 +182,9 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         new DefenseShardTagger(this),
                         towerRepository,
                         new io.github.takenoha.towerdefense.paper.ResearchCrystalTagger(this),
-                        resources),
-                this);
+                        resources);
+        getServer().getPluginManager().registerEvents(coreManagementListener, this);
+        coreManagementListener.reconcileOnlineResearchCrystalReceipts();
         getServer().getPluginManager().registerEvents(
                 new ResourceVoucherListener(
                         this,

@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.runtime;
 
+import io.github.takenoha.towerdefense.config.CoreWarningSoundResolver;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
@@ -327,7 +328,8 @@ public final class DefenseSessionManager
                         Component.text("防衛戦: カウントダウン"),
                         1.0f,
                         BossBar.Color.YELLOW,
-                        BossBar.Overlay.PROGRESS));
+                        BossBar.Overlay.PROGRESS),
+                new CoreWarningSoundGate(settings.core().warningMinIntervalTicks()));
         active = next;
         addChunkTicket(next, core.blockX() >> 4, core.blockZ() >> 4);
         next.phaseDeadlineTick = deadline(settings.combat().countdownSeconds());
@@ -945,13 +947,40 @@ public final class DefenseSessionManager
             return;
         }
         defense.coreAttackCount = increment(defense.coreAttackCount);
+        long beforeHitPoints = defense.session.coreState().currentHitPoints();
         boolean coreDestroyed = defense.session.damageCore(
                 settings.core().damagePerEnemy());
+        if (defense.session.coreState().currentHitPoints() < beforeHitPoints) {
+            playCoreWarningIfDue(defense);
+        }
         if (coreDestroyed) {
             finish(defense, "コアが破壊されたため敗北しました。");
             return;
         }
         persistTransition(defense);
+    }
+
+    private void playCoreWarningIfDue(ActiveDefense defense) {
+        if (defense.ending
+                || defense.session.phase() != DefensePhase.WAVE_ACTIVE
+                || !defense.coreWarningSoundGate.tryClaim(currentTick)) {
+            return;
+        }
+        var sound = CoreWarningSoundResolver.resolve(settings.core().warningSound());
+        if (sound.isEmpty()) {
+            plugin.getLogger().warning(
+                    "Skipping invalid core warning sound " + settings.core().warningSound());
+            return;
+        }
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.isOnline() && isInside(defense, player)) {
+                player.playSound(
+                        defense.coreTarget,
+                        sound.orElseThrow(),
+                        (float) settings.core().warningVolume(),
+                        (float) settings.core().warningPitch());
+            }
+        }
     }
 
     private void onWaveCleared(ActiveDefense defense) {
@@ -1489,6 +1518,7 @@ public final class DefenseSessionManager
         private final World world;
         private final Location coreTarget;
         private final BossBar bossBar;
+        private final CoreWarningSoundGate coreWarningSoundGate;
         private final Map<UUID, Long> candidateEntryTick = new HashMap<>();
         private final Deque<UUID> pendingLogicalIds = new ArrayDeque<>();
         private final Map<UUID, UUID> entitiesByLogicalId = new LinkedHashMap<>();
@@ -1521,13 +1551,15 @@ public final class DefenseSessionManager
                 Set<UUID> teamMembers,
                 World world,
                 Location coreTarget,
-                BossBar bossBar) {
+                BossBar bossBar,
+                CoreWarningSoundGate coreWarningSoundGate) {
             this.session = session;
             this.core = core;
             this.teamMembers = teamMembers;
             this.world = world;
             this.coreTarget = coreTarget;
             this.bossBar = bossBar;
+            this.coreWarningSoundGate = coreWarningSoundGate;
         }
     }
 

@@ -88,7 +88,7 @@ public final class CoreManagementGui {
         holder.attach(inventory);
 
         inventory.setItem(4, item(
-                Material.BEACON,
+                CoreMaterialPolicy.CURRENT_BLOCK,
                 "コア状態",
                 List.of(
                         "HP: " + core.currentHitPoints() + " / " + core.maximumHitPoints(),
@@ -128,8 +128,8 @@ public final class CoreManagementGui {
                 Material.AMETHYST_SHARD,
                 "研究結晶を納品",
                 List.of(
-                        "手に持った発行元チームの研究結晶を納品します。",
-                        "納品数: 手に持っているスタック全量",
+                        "自分のインベントリ内の発行元チームの研究結晶を納品します。",
+                        "納品数: 有効な全スタックの合計",
                         "現在の研究ポイント: " + progress.researchPoints(),
                         "クリックで納品"),
                 NamedTextColor.LIGHT_PURPLE));

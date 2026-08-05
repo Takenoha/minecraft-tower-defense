@@ -404,6 +404,14 @@ public final class DefenseRepository {
                 connection -> loadResearchCrystalBatch(connection, batchId));
     }
 
+    /** Loads one redemption receipt so the Paper inventory handoff can recover after a restart. */
+    public Optional<ResearchCrystalRedemption> findResearchCrystalRedemption(UUID operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return read(
+                "load a research crystal redemption",
+                connection -> loadResearchCrystalRedemption(connection, operationId));
+    }
+
     /**
      * Reserves a team-bound crystal redemption before the Paper inventory item is removed.
      *
@@ -417,6 +425,31 @@ public final class DefenseRepository {
             int quantity,
             UUID operationId,
             Instant preparedAt) {
+        return prepareResearchCrystalRedemption(
+                batchId,
+                coreId,
+                actorId,
+                null,
+                -1,
+                quantity,
+                operationId,
+                preparedAt);
+    }
+
+    /**
+     * Reserves a redemption while validating the PDC team and issuance quantity carried by the
+     * physical item.  The compatibility overload above remains for durable records created by
+     * earlier plugin versions.
+     */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
         Objects.requireNonNull(batchId, "batchId");
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
@@ -425,8 +458,18 @@ public final class DefenseRepository {
         if (quantity <= 0) {
             throw new IllegalArgumentException("quantity must be positive");
         }
-        String fingerprint = crystalRedemptionFingerprint(
-                batchId, coreId, actorId, quantity);
+        if (itemTeamId != null && itemIssuedQuantity <= 0) {
+            throw new IllegalArgumentException("itemIssuedQuantity must be positive");
+        }
+        String fingerprint = itemTeamId == null
+                ? crystalRedemptionFingerprint(batchId, coreId, actorId, quantity)
+                : crystalRedemptionFingerprint(
+                        batchId,
+                        coreId,
+                        actorId,
+                        itemTeamId,
+                        itemIssuedQuantity,
+                        quantity);
         try {
             return database.inImmediateTransaction(connection -> {
                 Optional<ResearchCrystalRedemption> existing =
@@ -452,6 +495,14 @@ public final class DefenseRepository {
                 if (!batch.teamId().equals(core.teamId())) {
                     throw new PersistenceConflictException(
                             "Research crystals can only be redeemed at their source team's core");
+                }
+                if (itemTeamId != null && !batch.teamId().equals(itemTeamId)) {
+                    throw new PersistenceConflictException(
+                            "The research crystal PDC team does not match its issuance batch");
+                }
+                if (itemIssuedQuantity > 0 && batch.issuedQuantity() != itemIssuedQuantity) {
+                    throw new PersistenceConflictException(
+                            "The research crystal PDC issuance quantity is invalid");
                 }
                 if (batch.status() == ResearchCrystalBatchStatus.VOIDED
                         || quantity > batch.remainingQuantity()) {
@@ -5904,6 +5955,17 @@ public final class DefenseRepository {
             UUID actorId,
             int quantity) {
         return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|" + quantity;
+    }
+
+    private static String crystalRedemptionFingerprint(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            int quantity) {
+        return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|"
+                + itemTeamId + "|" + itemIssuedQuantity + "|" + quantity;
     }
 
     private static UUID deterministicUuid(UUID base, String namespace, String value) {

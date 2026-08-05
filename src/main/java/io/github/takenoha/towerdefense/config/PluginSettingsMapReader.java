@@ -100,7 +100,27 @@ final class PluginSettingsMapReader {
                             values,
                             "core",
                             "repair-cost-per-clear-level",
-                            CoreSettings.DEFAULT_REPAIR_COST_PER_CLEAR_LEVEL));
+                            CoreSettings.DEFAULT_REPAIR_COST_PER_CLEAR_LEVEL),
+                    textOrDefault(
+                            values,
+                            "core",
+                            "warning-sound",
+                            CoreSettings.DEFAULT_WARNING_SOUND),
+                    decimalOrDefault(
+                            values,
+                            "core",
+                            "warning-volume",
+                            CoreSettings.DEFAULT_WARNING_VOLUME),
+                    decimalOrDefault(
+                            values,
+                            "core",
+                            "warning-pitch",
+                            CoreSettings.DEFAULT_WARNING_PITCH),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "warning-min-interval-ticks",
+                            CoreSettings.DEFAULT_WARNING_MIN_INTERVAL_TICKS));
         }
 
         private EnemySettings enemies() {
