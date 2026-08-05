@@ -4,6 +4,7 @@ import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
+import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.OperationOutcome;
@@ -233,9 +234,11 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return true;
         }
         long stage = parseStage(arguments);
-        if (stage != FOUNDATION_STAGE) {
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+        } catch (IllegalArgumentException invalidStage) {
             sender.sendMessage(Component.text(
-                    "このwalking skeletonでプレイ可能なのはステージ1だけです。",
+                    "指定したステージは利用できません: " + invalidStage.getMessage(),
                     NamedTextColor.RED));
             return true;
         }
@@ -261,7 +264,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 player.sendMessage(Component.text("防衛戦の開始を取り消しました。", NamedTextColor.YELLOW));
                 return;
             }
-            beginStartTransaction(player, startData, FOUNDATION_STAGE, Optional.empty());
+            beginStartTransaction(player, startData, stage, Optional.empty());
         }));
         return true;
     }
@@ -275,9 +278,11 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             player.sendMessage(Component.text("すでに防衛戦が進行中です。", NamedTextColor.RED));
             return;
         }
-        if (stage != FOUNDATION_STAGE) {
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+        } catch (IllegalArgumentException invalidStage) {
             player.sendMessage(Component.text(
-                    "このwalking skeletonでプレイ可能なのはステージ1だけです。",
+                    "指定したステージは利用できません: " + invalidStage.getMessage(),
                     NamedTextColor.RED));
             return;
         }
@@ -647,7 +652,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
 
     private static void sendUsage(CommandSender sender) {
         sender.sendMessage(Component.text(
-                "/td admin <core|simulate [1]|status|abort>",
+                "/td admin <core|simulate [stage]|status|abort>",
                 NamedTextColor.YELLOW));
     }
 
@@ -667,7 +672,9 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return matching(arguments[1], List.of("core", "simulate", "status", "abort"));
         }
         if (arguments.length == 3 && arguments[1].equalsIgnoreCase("simulate")) {
-            return matching(arguments[2], List.of("1"));
+            return matching(
+                    arguments[2],
+                    RaidSealCatalog.recipeStages().stream().map(String::valueOf).toList());
         }
         return List.of();
     }

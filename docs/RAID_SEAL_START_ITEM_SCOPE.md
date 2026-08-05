@@ -7,9 +7,12 @@ transaction.
 ## Included
 
 - A versioned, non-stackable `ENDER_EYE` with `raid_seal_id` and stage-level PDC values.
-- A stage-1 recipe using eight `GOLD_INGOT` and one `NETHER_STAR`.
+- Stage-specific recipes for stages 1 through 10. Each recipe uses eight copies of its
+  stage's vanilla material and one `NETHER_STAR`; stage 1 remains eight `GOLD_INGOT`.
 - Craft-time UUID issuance and asynchronous `AVAILABLE` registration in `raid_seals`.
-- Stage-1 start from the core GUI or by right-clicking a registered core with the item.
+- Stage 1 through 10 start from compact core-GUI buttons or by right-clicking a registered core
+  with the matching item. The start path accepts every valid stage level, so later recipe catalogs
+  can extend the same PDC and escrow contract without a schema change.
 - A two-step start boundary: SQLite event/lock plus seal `RESERVED`, main-thread physical removal,
   then seal `CONSUMED`.
 - Validation and global-lock failures leave the seal untouched.
@@ -20,10 +23,11 @@ transaction.
 
 ## Deliberate boundary
 
-Only stage 1 is selectable in this walking skeleton. Stage-specific recipes, the full stage
-selector, research crystals, and tower placement/upgrades are later slices. The first team
-management GUI is documented in `docs/TEAM_MANAGEMENT_GUI_SCOPE.md`. Terrain mutation remains
-fail-closed and its three activation flags are unchanged.
+The initial vanilla recipe catalog and GUI expose stages 1 through 10. Stages above 10 already
+work through the validated administrator simulation and the physical PDC/start contract, but do
+not yet have a vanilla recipe. The first team-management GUI is documented in
+`docs/TEAM_MANAGEMENT_GUI_SCOPE.md`. Terrain mutation remains fail-closed and its three
+activation flags are unchanged.
 
 ## Verification
 

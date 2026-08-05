@@ -633,7 +633,11 @@ public final class DefenseSessionManager
                         spawnLocation.orElseThrow(),
                         Zombie.class,
                         CreatureSpawnEvent.SpawnReason.CUSTOM,
-                        entity -> configureEnemy(entity, role));
+                        entity -> configureEnemy(
+                                entity,
+                                role,
+                                defense.session.currentWave()
+                                        == defense.session.totalWaves()));
             } catch (IllegalArgumentException spawnFailure) {
                 plugin.getLogger().warning("Could not spawn event enemy: " + spawnFailure.getMessage());
                 return;
@@ -669,7 +673,7 @@ public final class DefenseSessionManager
         }
     }
 
-    private void configureEnemy(Zombie zombie, EnemyRole role) {
+    private void configureEnemy(Zombie zombie, EnemyRole role, boolean finalWave) {
         zombie.setPersistent(true);
         zombie.setRemoveWhenFarAway(false);
         zombie.setCanPickupItems(false);
@@ -686,7 +690,9 @@ public final class DefenseSessionManager
                     * settings.enemies().bossHealthMultiplier();
             maximumHealth.setBaseValue(boostedHealth);
             zombie.setHealth(boostedHealth);
-            zombie.customName(Component.text("防衛戦ボス", NamedTextColor.DARK_RED));
+            zombie.customName(Component.text(
+                    finalWave ? "防衛戦最終ボス" : "防衛戦中ボス",
+                    NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
             zombie.setGlowing(true);
         } else if (role == EnemyRole.DESTROYER) {
