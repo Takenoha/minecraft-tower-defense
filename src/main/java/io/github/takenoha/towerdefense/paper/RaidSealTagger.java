@@ -20,6 +20,10 @@ import org.bukkit.plugin.Plugin;
 public final class RaidSealTagger {
     public static final int ITEM_VERSION = 1;
     public static final long FOUNDATION_STAGE = 1L;
+    public static final Material ITEM_MATERIAL = Material.valueOf(
+            RaidSealMaterialPolicy.CURRENT_MATERIAL);
+    public static final Material LEGACY_ITEM_MATERIAL = Material.valueOf(
+            RaidSealMaterialPolicy.LEGACY_MATERIAL);
 
     private final NamespacedKey markerKey;
     private final NamespacedKey versionKey;
@@ -63,11 +67,18 @@ public final class RaidSealTagger {
     }
 
     public Optional<RaidSealItemIdentity> read(ItemStack item) {
-        if (item == null || item.getType() != Material.ENDER_EYE || item.getAmount() != 1) {
+        if (item == null || !isSupportedMaterial(item.getType()) || item.getAmount() != 1) {
             return Optional.empty();
         }
         ItemMeta meta = item.getItemMeta();
         return meta == null ? Optional.empty() : read(meta.getPersistentDataContainer());
+    }
+
+    /** Returns whether a valid seal still uses the pre-UX ENDER_EYE material. */
+    public boolean isLegacyMaterial(ItemStack item) {
+        return item != null
+                && item.getType() == LEGACY_ITEM_MATERIAL
+                && read(item).isPresent();
     }
 
     public boolean isRecipeTemplate(ItemStack item) {
@@ -76,7 +87,7 @@ public final class RaidSealTagger {
 
     /** Reads the stage encoded in a registered recipe result. */
     public OptionalLong templateStage(ItemStack item) {
-        if (item == null || item.getType() != Material.ENDER_EYE || item.getAmount() != 1) {
+        if (item == null || !isSupportedMaterial(item.getType()) || item.getAmount() != 1) {
             return OptionalLong.empty();
         }
         ItemMeta meta = item.getItemMeta();
@@ -112,7 +123,7 @@ public final class RaidSealTagger {
 
     private ItemStack createTemplate(long stageLevel) {
         requireStage(stageLevel);
-        ItemStack item = new ItemStack(Material.ENDER_EYE, 1);
+        ItemStack item = new ItemStack(ITEM_MATERIAL, 1);
         ItemMeta meta = requireMeta(item);
         PersistentDataContainer data = meta.getPersistentDataContainer();
         data.set(markerKey, PersistentDataType.BYTE, (byte) 1);
@@ -153,5 +164,9 @@ public final class RaidSealTagger {
 
     private static long requireStage(long stageLevel) {
         return StageWaveSchedule.requireValidStageLevel(stageLevel);
+    }
+
+    private static boolean isSupportedMaterial(Material material) {
+        return RaidSealMaterialPolicy.supports(material.name());
     }
 }
