@@ -4608,6 +4608,22 @@ public final class DefenseRepository {
 
     private static void requireTeamCanBeDeleted(Connection connection, UUID teamId)
             throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_resource_balances
+                WHERE team_id = ? AND balance > 0 LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "A team with resource wallet points cannot be disbanded");
+                }
+            }
+        }
+        if (ResourceVoucherRepository.hasLiveVouchers(connection, teamId)) {
+            throw new PersistenceConflictException(
+                    "A team with an unredeemed resource voucher cannot be disbanded");
+        }
         if (loadCoreByTeam(connection, teamId).isPresent()) {
             throw new PersistenceConflictException(
                     "A team with a core cannot be disbanded or left by its sole owner");

@@ -20,6 +20,8 @@ import io.github.takenoha.towerdefense.paper.RaidSealTagger;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryListener;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
 import io.github.takenoha.towerdefense.paper.RewardQueueReceiptTagger;
+import io.github.takenoha.towerdefense.paper.ResourceVoucherListener;
+import io.github.takenoha.towerdefense.paper.ResourceVoucherTagger;
 import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
 import io.github.takenoha.towerdefense.paper.TowerEntityTagger;
 import io.github.takenoha.towerdefense.paper.TowerItemTagger;
@@ -32,6 +34,7 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.RaidSealRepository;
 import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.ResourceVoucherRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
@@ -82,6 +85,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
 
         Database database = new Database(databasePath);
         ResourceRepository resources = new ResourceRepository(database);
+        ResourceVoucherRepository vouchers = new ResourceVoucherRepository(database);
         DefenseRepository repository = new DefenseRepository(database, settings.rewards());
         ThirdPartyRegionProtectionAdapter regionProtection =
                 WorldGuardRegionProtectionAdapter.discover(this);
@@ -179,6 +183,17 @@ public final class TowerDefensePlugin extends JavaPlugin {
                         towerRepository,
                         new io.github.takenoha.towerdefense.paper.ResearchCrystalTagger(this),
                         resources),
+                this);
+        getServer().getPluginManager().registerEvents(
+                new ResourceVoucherListener(
+                        this,
+                        repository,
+                        databaseExecutor,
+                        sessions,
+                        coreRegistry,
+                        resources,
+                        vouchers,
+                        new ResourceVoucherTagger(this)),
                 this);
         RaidSealListener raidSeals = new RaidSealListener(
                 this,

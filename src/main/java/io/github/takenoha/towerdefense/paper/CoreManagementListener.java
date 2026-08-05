@@ -554,6 +554,7 @@ public final class CoreManagementListener implements Listener {
     }
 
     private void openResourceVault(Player player, UUID coreId) {
+        boolean canWithdraw = !sessions.hasActiveSession();
         databaseExecutor.submit(() -> {
             CoreRecord core = repository.findCore(coreId).orElseThrow(
                     () -> new IllegalStateException("コアが永続データに存在しません"));
@@ -562,15 +563,23 @@ public final class CoreManagementListener implements Listener {
             if (!team.members().contains(player.getUniqueId())) {
                 throw new IllegalStateException("このコアへアクセスできるチームメンバーではありません");
             }
-            return resources == null
+            TeamResourceSnapshot snapshot = resources == null
                     ? new TeamResourceSnapshot(team.id(), 0L, 0L, 0L, 0L)
                     : resources.load(team.id(), player.getUniqueId());
-        }).whenComplete((snapshot, failure) -> runOnMainThread(() -> {
+            return new ResourceVaultData(
+                    snapshot,
+                    team.ownerId().equals(player.getUniqueId()),
+                    canWithdraw);
+        }).whenComplete((data, failure) -> runOnMainThread(() -> {
             if (failure != null) {
                 player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
                 return;
             }
-            player.openInventory(ResourceVaultGui.create(coreId, snapshot));
+            player.openInventory(ResourceVaultGui.create(
+                    coreId,
+                    data.snapshot(),
+                    data.owner(),
+                    data.canWithdraw()));
         }));
     }
 
@@ -1683,6 +1692,12 @@ public final class CoreManagementListener implements Listener {
             TeamProgress progress,
             CoreRepairCost repairCost,
             TeamResourceSnapshot resources) {
+    }
+
+    private record ResourceVaultData(
+            TeamResourceSnapshot snapshot,
+            boolean owner,
+            boolean canWithdraw) {
     }
 
     private record TeamGuiData(CoreRecord core, TeamRecord team) {

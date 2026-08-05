@@ -342,6 +342,28 @@ public final class ResourceRepository {
                 appliedAt);
     }
 
+    static OperationOutcome creditInTransaction(
+            Connection connection,
+            UUID teamId,
+            ResourceType resourceType,
+            long amount,
+            UUID operationId,
+            String sourceId,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        return applyDelta(
+                connection,
+                teamId,
+                null,
+                resourceType,
+                amount,
+                operationId,
+                "CREDIT",
+                sourceId,
+                payloadFingerprint,
+                appliedAt);
+    }
+
     static boolean isWalletResource(String itemId) {
         return ResourceType.fromItemId(itemId).isPresent();
     }
@@ -530,7 +552,7 @@ public final class ResourceRepository {
         }
     }
 
-    private static long balance(
+    static long balance(
             Connection connection, UUID teamId, ResourceType resourceType) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT balance FROM team_resource_balances
@@ -547,7 +569,7 @@ public final class ResourceRepository {
         }
     }
 
-    private static UUID loadEventTeam(Connection connection, UUID eventId) throws SQLException {
+    static UUID loadEventTeam(Connection connection, UUID eventId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT team_id FROM defense_events WHERE event_id = ?")) {
             statement.setString(1, eventId.toString());
@@ -582,7 +604,7 @@ public final class ResourceRepository {
         }
     }
 
-    private static void requireTeamMember(
+    static void requireTeamMember(
             Connection connection, UUID teamId, UUID playerId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT 1 FROM team_members WHERE team_id = ? AND player_id = ?
