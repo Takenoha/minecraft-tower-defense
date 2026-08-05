@@ -15,6 +15,9 @@ enabled. It does not enable terrain mutation in the production plugin.
 - Role-specific navigation speed and persisted ledger types for spawned event enemies.
 - A Paper-independent path planner that distinguishes advance, protected-obstacle recalculation,
   destroyer breaking, builder support, and bounded recovery.
+- A stalled pathfinder acceptance is no longer treated as an indefinitely usable direct path:
+  after two refresh intervals the latest classified obstacle can select the role-specific break
+  or bridge action, while the longer recovery timeout remains fail-closed.
 - A terrain authorization gate: destroyers may break, builders may build, and normal enemies may
   break only when a caller explicitly proves the fallback condition. Mandatory block protection
   still runs first.
