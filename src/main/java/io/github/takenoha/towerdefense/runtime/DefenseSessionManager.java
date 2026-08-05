@@ -365,6 +365,18 @@ public final class DefenseSessionManager
                         || defense.session.phase() == DefensePhase.INTERMISSION);
     }
 
+    /** Returns whether event-scoped funds may be spent by this team's management GUI. */
+    public boolean maySpendBattleFunds(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        return defense != null
+                && !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
+    }
+
     @Override
     public boolean mayRemain(TaggedEnemy taggedEnemy, UUID entityId) {
         requireMainThread();

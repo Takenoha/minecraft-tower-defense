@@ -1,8 +1,11 @@
 package io.github.takenoha.towerdefense.paper;
 
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
+import io.github.takenoha.towerdefense.persistence.BattleBoost;
+import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import net.kyori.adventure.text.Component;
@@ -18,6 +21,10 @@ import org.bukkit.inventory.meta.ItemMeta;
 public final class TowerManagementGui {
     public static final int SIZE = 27;
     public static final int PRIORITY_START_SLOT = 9;
+    public static final int BOOST_POWER_SLOT = 1;
+    public static final int BOOST_SPEED_SLOT = 2;
+    public static final int BOOST_RANGE_SLOT = 3;
+    public static final int REPAIR_SLOT = 5;
     public static final int UPGRADE_SLOT = 18;
     public static final int REMOVE_SLOT = 20;
     public static final int HELP_SLOT = 22;
@@ -43,8 +50,45 @@ public final class TowerManagementGui {
             int researchLevel,
             int shardCost,
             int enhancementCoreCost) {
+        return create(
+                tower,
+                canRemove,
+                removalReason,
+                researchLevel,
+                shardCost,
+                enhancementCoreCost,
+                false,
+                0L,
+                Map.of(),
+                0,
+                0,
+                0,
+                false,
+                0L,
+                0L,
+                0);
+    }
+
+    public static Inventory create(
+            TowerRecord tower,
+            boolean canRemove,
+            String removalReason,
+            int researchLevel,
+            int shardCost,
+            int enhancementCoreCost,
+            boolean canBuyBoost,
+            long battleFunds,
+        Map<BattleBoostKind, BattleBoost> boosts,
+            int powerCost,
+            int speedCost,
+            int rangeCost,
+            boolean canRepair,
+            long currentHitPoints,
+            long maximumHitPoints,
+            int repairCost) {
         Objects.requireNonNull(tower, "tower");
         Objects.requireNonNull(removalReason, "removalReason");
+        Objects.requireNonNull(boosts, "boosts");
         if (researchLevel <= 0 || shardCost < 0 || enhancementCoreCost < 0) {
             throw new IllegalArgumentException("tower management values are invalid");
         }
@@ -66,6 +110,48 @@ public final class TowerManagementGui {
                                 + ", " + tower.blockZ(),
                         "右クリックしたタワーの操作画面"),
                 NamedTextColor.AQUA));
+        setBoostItem(
+                inventory,
+                BOOST_POWER_SLOT,
+                BattleBoostKind.POWER,
+                boosts,
+                powerCost,
+                canBuyBoost,
+                battleFunds);
+        setBoostItem(
+                inventory,
+                BOOST_SPEED_SLOT,
+                BattleBoostKind.SPEED,
+                boosts,
+                speedCost,
+                canBuyBoost,
+                battleFunds);
+        setBoostItem(
+                inventory,
+                BOOST_RANGE_SLOT,
+                BattleBoostKind.RANGE,
+                boosts,
+                rangeCost,
+                canBuyBoost,
+                battleFunds);
+        boolean repairAvailable = canRepair
+                && repairCost > 0
+                && currentHitPoints < maximumHitPoints;
+        inventory.setItem(REPAIR_SLOT, item(
+                repairAvailable ? Material.ANVIL : Material.GRAY_DYE,
+                repairAvailable ? "タワーを修理" : "タワー修理（現在不可）",
+                repairAvailable
+                        ? List.of(
+                                "HP: " + currentHitPoints + " / " + maximumHitPoints,
+                                "戦闘資金: " + battleFunds,
+                                "費用: " + repairCost,
+                                "クリックでHPを回復")
+                        : List.of(
+                                "HP: " + currentHitPoints + " / " + maximumHitPoints,
+                                canRepair
+                                        ? "修理できるHPがありません。"
+                                        : "準備時間・ウェーブ間のみ修理できます。"),
+                repairAvailable ? NamedTextColor.YELLOW : NamedTextColor.GRAY));
         for (int index = 0; index < PRIORITIES.size(); index++) {
             TowerTargetPriority priority = PRIORITIES.get(index);
             boolean selected = priority == tower.targetPriority();
@@ -119,6 +205,38 @@ public final class TowerManagementGui {
                         "プレイヤー採掘・爆発・ピストンでは移動しません。"),
                 NamedTextColor.YELLOW));
         return inventory;
+    }
+
+    private static void setBoostItem(
+            Inventory inventory,
+            int slot,
+            BattleBoostKind kind,
+            Map<BattleBoostKind, BattleBoost> boosts,
+            int cost,
+            boolean canBuyBoost,
+            long battleFunds) {
+        BattleBoost boost = boosts.get(kind);
+        int level = boost == null ? 0 : boost.level();
+        boolean available = canBuyBoost && cost > 0;
+        String name = switch (kind) {
+            case POWER -> "戦闘ブースト: 威力";
+            case SPEED -> "戦闘ブースト: 攻撃速度";
+            case RANGE -> "戦闘ブースト: 射程";
+        };
+        inventory.setItem(slot, item(
+                available ? Material.NETHER_STAR : Material.GRAY_DYE,
+                name + " Lv" + level,
+                available
+                        ? List.of(
+                                "戦闘資金: " + battleFunds,
+                                "費用: " + cost,
+                                "クリックでこのタワーへ一段付与")
+                        : List.of(
+                                "戦闘資金: " + battleFunds,
+                                canBuyBoost
+                                        ? "現在購入できません。"
+                                        : "準備時間・ウェーブ間のみ購入できます。"),
+                available ? NamedTextColor.GOLD : NamedTextColor.GRAY));
     }
 
     public static Optional<TowerTargetPriority> priorityAt(int slot) {

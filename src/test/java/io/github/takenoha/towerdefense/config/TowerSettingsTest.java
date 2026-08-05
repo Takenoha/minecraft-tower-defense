@@ -45,4 +45,24 @@ final class TowerSettingsTest {
                 settings.cannonAttackIntervalTicks(),
                 settings.attackIntervalTicksFor(TowerType.CANNON));
     }
+
+    @Test
+    void defaultsExposeAllSpecialistRolesAndBattleBoostPolicy() {
+        TowerSettings settings = TowerSettings.defaults();
+
+        assertEquals(2, settings.damageFor(TowerType.FROST));
+        assertEquals(3, settings.chainCountFor(TowerType.LIGHTNING));
+        assertEquals(1.25d, settings.supportDamageMultiplier());
+        assertEquals(0.80d, settings.supportSpeedMultiplier());
+        assertEquals(2, settings.supportStackLimit());
+        assertEquals(18, settings.damageFor(TowerType.SNIPER));
+        assertEquals(3.0d, settings.areaRadiusFor(TowerType.FLAME));
+        assertEquals(80, settings.burnDurationTicksFor(TowerType.FLAME));
+        assertEquals(TowerSettings.DEFAULT_BATTLE_BOOST_BASE_COST,
+                settings.battleBoostCost(0));
+        assertEquals(
+                TowerSettings.DEFAULT_BATTLE_BOOST_BASE_COST
+                        + TowerSettings.DEFAULT_BATTLE_BOOST_COST_PER_LEVEL,
+                settings.battleBoostCost(1));
+    }
 }

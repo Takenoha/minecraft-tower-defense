@@ -31,7 +31,7 @@ public final class TowerRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                            tower_type, individual_level, target_priority,
-                           entity_id, created_at, updated_at
+                           current_hp, max_hp, entity_id, created_at, updated_at
                     FROM towers
                     ORDER BY tower_id
                     """);
@@ -649,6 +649,8 @@ public final class TowerRepository {
                         placement.type(),
                         placement.individualLevel(),
                         placement.targetPriority(),
+                        settings.towerMaximumHitPoints(),
+                        settings.towerMaximumHitPoints(),
                         entityId,
                         appliedAt,
                         appliedAt);
@@ -771,7 +773,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                        tower_type, individual_level, target_priority,
-                       entity_id, created_at, updated_at
+                       current_hp, max_hp, entity_id, created_at, updated_at
                 FROM towers
                 WHERE world_id = ? AND block_x = ? AND block_y = ? AND block_z = ?
                 """)) {
@@ -790,7 +792,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                        tower_type, individual_level, target_priority,
-                       entity_id, created_at, updated_at
+                       current_hp, max_hp, entity_id, created_at, updated_at
                 FROM towers WHERE tower_id = ?
                 """)) {
             statement.setString(1, towerId.toString());
@@ -1199,8 +1201,8 @@ public final class TowerRepository {
                 INSERT INTO towers(
                     tower_id, team_id, world_id, block_x, block_y, block_z,
                     tower_type, individual_level, target_priority,
-                    entity_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_hp, max_hp, entity_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             statement.setString(1, tower.id().toString());
             statement.setString(2, tower.teamId().toString());
@@ -1211,9 +1213,11 @@ public final class TowerRepository {
             statement.setString(7, tower.type().id());
             statement.setInt(8, tower.individualLevel());
             statement.setString(9, tower.targetPriority().id());
-            statement.setString(10, tower.entityId().toString());
-            statement.setString(11, tower.createdAt().toString());
-            statement.setString(12, tower.updatedAt().toString());
+            statement.setLong(10, tower.currentHitPoints());
+            statement.setLong(11, tower.maximumHitPoints());
+            statement.setString(12, tower.entityId().toString());
+            statement.setString(13, tower.createdAt().toString());
+            statement.setString(14, tower.updatedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -1254,6 +1258,8 @@ public final class TowerRepository {
                 TowerType.fromId(resultSet.getString("tower_type")),
                 resultSet.getInt("individual_level"),
                 TowerTargetPriority.fromId(resultSet.getString("target_priority")),
+                resultSet.getLong("current_hp"),
+                resultSet.getLong("max_hp"),
                 uuid(resultSet.getString("entity_id")),
                 instant(resultSet.getString("created_at")),
                 instant(resultSet.getString("updated_at")));

@@ -17,6 +17,8 @@ public record TowerRecord(
         TowerType type,
         int individualLevel,
         TowerTargetPriority targetPriority,
+        long currentHitPoints,
+        long maximumHitPoints,
         UUID entityId,
         Instant createdAt,
         Instant updatedAt) {
@@ -29,8 +31,9 @@ public record TowerRecord(
         Objects.requireNonNull(entityId, "entityId");
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
-        if (individualLevel <= 0) {
-            throw new IllegalArgumentException("individualLevel must be positive");
+        if (individualLevel <= 0 || maximumHitPoints <= 0L
+                || currentHitPoints < 0L || currentHitPoints > maximumHitPoints) {
+            throw new IllegalArgumentException("tower level or hit points are invalid");
         }
     }
 
@@ -57,6 +60,26 @@ public record TowerRecord(
                 type,
                 individualLevel,
                 TowerTargetPriority.CORE_NEAREST,
+                100L,
+                100L,
+                entityId,
+                createdAt,
+                updatedAt);
+    }
+
+    public TowerRecord withCurrentHitPoints(long hitPoints, Instant updatedAt) {
+        return new TowerRecord(
+                id,
+                teamId,
+                worldId,
+                blockX,
+                blockY,
+                blockZ,
+                type,
+                individualLevel,
+                targetPriority,
+                hitPoints,
+                maximumHitPoints,
                 entityId,
                 createdAt,
                 updatedAt);

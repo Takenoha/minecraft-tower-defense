@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 20;
+    public static final int CURRENT_VERSION = 24;
 
     private SchemaMigrator() {
     }
@@ -103,6 +103,22 @@ public final class SchemaMigrator {
                 if (installedVersion < 20) {
                     applyVersionTwenty(connection);
                     recordMigration(connection, 20);
+                }
+                if (installedVersion < 21) {
+                    applyVersionTwentyOne(connection);
+                    recordMigration(connection, 21);
+                }
+                if (installedVersion < 22) {
+                    applyVersionTwentyTwo(connection);
+                    recordMigration(connection, 22);
+                }
+                if (installedVersion < 23) {
+                    applyVersionTwentyThree(connection);
+                    recordMigration(connection, 23);
+                }
+                if (installedVersion < 24) {
+                    applyVersionTwentyFour(connection);
+                    recordMigration(connection, 24);
                 }
                 return null;
             });
@@ -1200,6 +1216,335 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_upgrade_operations_tower_idx
                     ON tower_upgrade_operations(tower_id, state, prepared_at)
+                    """);
+        }
+    }
+
+    /** Widens every persisted tower-type check for the five specialist towers. */
+    private static void applyVersionTwentyOne(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS towers_team_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE towers_specialists_new (
+                        tower_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                            CHECK (target_priority IN (
+                                'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                            )),
+                        entity_id TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (world_id, block_x, block_y, block_z)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO towers_specialists_new(
+                        tower_id, team_id, world_id, block_x, block_y, block_z,
+                        tower_type, individual_level, target_priority,
+                        entity_id, created_at, updated_at)
+                    SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
+                           tower_type, individual_level, target_priority,
+                           entity_id, created_at, updated_at
+                    FROM towers
+                    """);
+            statement.executeUpdate("DROP TABLE towers");
+            statement.executeUpdate("ALTER TABLE towers_specialists_new RENAME TO towers");
+            statement.executeUpdate("""
+                    CREATE INDEX towers_team_idx ON towers(team_id, tower_id)
+                    """);
+
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_placement_operations_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_placement_operations_specialists_new (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL UNIQUE,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                            CHECK (target_priority IN (
+                                'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                            )),
+                        entity_id TEXT UNIQUE,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL AND entity_id IS NOT NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL AND entity_id IS NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_placement_operations_specialists_new(
+                        operation_id, tower_id, actor_id, team_id, world_id,
+                        block_x, block_y, block_z, tower_type, individual_level,
+                        target_priority, entity_id, state, prepared_at, applied_at, rolled_back_at)
+                    SELECT operation_id, tower_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, tower_type, individual_level,
+                           target_priority, entity_id, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_placement_operations
+                    """);
+            statement.executeUpdate("DROP TABLE tower_placement_operations");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_placement_operations_specialists_new "
+                            + "RENAME TO tower_placement_operations");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_placement_operations_state_idx
+                    ON tower_placement_operations(state, prepared_at)
+                    """);
+
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_removal_operations_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_removal_operations_specialists_new (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL UNIQUE,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        entity_id TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_removal_operations_specialists_new(
+                        operation_id, tower_id, actor_id, team_id, world_id,
+                        block_x, block_y, block_z, tower_type, individual_level,
+                        entity_id, state, prepared_at, applied_at, rolled_back_at)
+                    SELECT operation_id, tower_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, tower_type, individual_level,
+                           entity_id, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_removal_operations
+                    """);
+            statement.executeUpdate("DROP TABLE tower_removal_operations");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_removal_operations_specialists_new "
+                            + "RENAME TO tower_removal_operations");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_removal_operations_state_idx
+                    ON tower_removal_operations(state, prepared_at)
+                    """);
+
+            statement.executeUpdate("""
+                    CREATE TABLE tower_research_specialists_new (
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        research_level INTEGER NOT NULL CHECK (research_level > 0),
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (team_id, tower_type)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_research_specialists_new(
+                        team_id, tower_type, research_level, updated_at)
+                    SELECT team_id, tower_type, research_level, updated_at
+                    FROM tower_research
+                    """);
+            for (String towerType : new String[] {
+                "frost", "lightning", "support", "sniper", "flame"
+            }) {
+                statement.executeUpdate("""
+                        INSERT INTO tower_research_specialists_new(
+                            team_id, tower_type, research_level, updated_at)
+                        SELECT team_id, '%s', 1, created_at
+                        FROM teams
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM tower_research_specialists_new existing
+                            WHERE existing.team_id = teams.team_id
+                              AND existing.tower_type = '%s'
+                        )
+                        """.formatted(towerType, towerType));
+            }
+            statement.executeUpdate("DROP TABLE tower_research");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_research_specialists_new RENAME TO tower_research");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_research_team_idx
+                    ON tower_research(team_id, tower_type)
+                    """);
+
+            statement.executeUpdate("""
+                    CREATE TABLE tower_research_operations_specialists_new (
+                        operation_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        actor_id TEXT NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        research_point_cost INTEGER NOT NULL CHECK (research_point_cost > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_research_operations_specialists_new(
+                        operation_id, team_id, actor_id, tower_type,
+                        research_point_cost, payload_fingerprint, applied_at)
+                    SELECT operation_id, team_id, actor_id, tower_type,
+                           research_point_cost, payload_fingerprint, applied_at
+                    FROM tower_research_operations
+                    """);
+            statement.executeUpdate("DROP TABLE tower_research_operations");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_research_operations_specialists_new "
+                            + "RENAME TO tower_research_operations");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_research_operations_team_idx
+                    ON tower_research_operations(team_id, applied_at)
+                    """);
+        }
+    }
+
+    /** Adds event-scoped, idempotent temporary tower boosts. */
+    private static void applyVersionTwentyTwo(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE event_tower_boosts (
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        tower_id TEXT NOT NULL,
+                        boost_kind TEXT NOT NULL CHECK (
+                            boost_kind IN ('power', 'speed', 'range')
+                        ),
+                        level INTEGER NOT NULL CHECK (level > 0),
+                        multiplier REAL NOT NULL CHECK (multiplier > 0),
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (event_id, tower_id, boost_kind)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_tower_boosts_event_idx
+                    ON event_tower_boosts(event_id, tower_id)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE event_tower_boost_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        actor_id TEXT NOT NULL,
+                        tower_id TEXT NOT NULL,
+                        boost_kind TEXT NOT NULL CHECK (
+                            boost_kind IN ('power', 'speed', 'range')
+                        ),
+                        cost INTEGER NOT NULL CHECK (cost > 0),
+                        boost_multiplier REAL NOT NULL CHECK (boost_multiplier > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_tower_boost_operations_event_idx
+                    ON event_tower_boost_operations(event_id, applied_at)
+                    """);
+        }
+    }
+
+    /** Adds durable current/max HP to each installed tower for battle-time repair. */
+    private static void applyVersionTwentyThree(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS towers_team_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE towers_health_new (
+                        tower_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                            CHECK (target_priority IN (
+                                'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                            )),
+                        current_hp INTEGER NOT NULL CHECK (current_hp >= 0 AND current_hp <= max_hp),
+                        max_hp INTEGER NOT NULL CHECK (max_hp > 0),
+                        entity_id TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (world_id, block_x, block_y, block_z)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO towers_health_new(
+                        tower_id, team_id, world_id, block_x, block_y, block_z,
+                        tower_type, individual_level, target_priority,
+                        current_hp, max_hp, entity_id, created_at, updated_at)
+                    SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
+                           tower_type, individual_level, target_priority,
+                           100, 100, entity_id, created_at, updated_at
+                    FROM towers
+                    """);
+            statement.executeUpdate("DROP TABLE towers");
+            statement.executeUpdate("ALTER TABLE towers_health_new RENAME TO towers");
+            statement.executeUpdate("""
+                    CREATE INDEX towers_team_idx ON towers(team_id, tower_id)
+                    """);
+        }
+    }
+
+    /** Adds the UUID ledger for event-scoped tower repairs. */
+    private static void applyVersionTwentyFour(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE event_tower_repair_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        actor_id TEXT NOT NULL,
+                        tower_id TEXT NOT NULL,
+                        repaired_hit_points INTEGER NOT NULL CHECK (repaired_hit_points > 0),
+                        cost INTEGER NOT NULL CHECK (cost > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX event_tower_repair_operations_event_idx
+                    ON event_tower_repair_operations(event_id, applied_at)
                     """);
         }
     }

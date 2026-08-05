@@ -65,6 +65,7 @@ towers:
   base-limit: 8
   limit-increment: 2
   hard-cap: 40
+  max-health: 100
   arrow:
     damage: 4
     range: 16.0
@@ -75,6 +76,46 @@ towers:
     range: 14.0
     attack-interval-ticks: 40
     splash-radius: 2.5
+  frost:
+    damage: 2
+    range: 12.0
+    attack-interval-ticks: 30
+    slow-percent: 0.35
+    slow-duration-ticks: 50
+  lightning:
+    damage: 6
+    range: 18.0
+    attack-interval-ticks: 35
+    chain-count: 3
+    chain-radius: 5.0
+  support:
+    damage: 1
+    range: 10.0
+    attack-interval-ticks: 40
+    support-radius: 8.0
+    support-damage-multiplier: 1.25
+    support-speed-multiplier: 0.80
+    support-range-multiplier: 1.15
+    support-stack-limit: 2
+  sniper:
+    damage: 18
+    range: 32.0
+    attack-interval-ticks: 60
+  flame:
+    damage: 3
+    range: 15.0
+    attack-interval-ticks: 25
+    area-radius: 3.0
+    burn-duration-ticks: 80
+  battle-boost:
+    base-cost: 25
+    cost-per-level: 15
+    power-multiplier: 1.20
+    speed-multiplier: 0.85
+    range-multiplier: 1.15
+    stack-limit: 3
+    funds-per-health: 1
+    health-per-purchase: 10
   upgrade:
     base-shard-cost: 2
     base-core-cost: 1
