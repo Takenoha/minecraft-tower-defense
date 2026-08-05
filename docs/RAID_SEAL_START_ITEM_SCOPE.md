@@ -6,9 +6,12 @@ transaction.
 
 ## Included
 
-- A versioned, non-stackable `ENDER_EYE` with `raid_seal_id` and stage-level PDC values.
-- Stage-specific recipes for stages 1 through 10. Each recipe uses eight copies of its
-  stage's vanilla material and one `NETHER_STAR`; stage 1 remains eight `GOLD_INGOT`.
+- A versioned, non-stackable `ECHO_SHARD` with `raid_seal_id` and stage-level PDC values.
+- Stage-specific recipes for stages 1 through 10. Each recipe uses four `PAPER` items and one
+  copy of its stage's vanilla material; no `NETHER_STAR` is required.
+- Existing valid `ENDER_EYE` seals remain readable with the same UUID and stage. Player-login
+  reconciliation converts database-owned `AVAILABLE` legacy items to `ECHO_SHARD`; legacy items
+  outside an inventory remain usable until reconciliation.
 - Craft-time UUID issuance and asynchronous `AVAILABLE` registration in `raid_seals`.
 - Stage 1 through 10 start from compact core-GUI buttons or by right-clicking a registered core
   with the matching item. The start path accepts every valid stage level, so later recipe catalogs
@@ -20,6 +23,8 @@ transaction.
   the existing refund table; the join reconciliation materializes that returned item once.
 - Invalid, consumed, refunded, duplicated, or unregistered physical tokens are removed during
   owner reconciliation and after successful consumption.
+- Valid seals cancel every right-click action unless the click is a registered core start, and they
+  cannot be used as vanilla crafting ingredients.
 
 ## Deliberate boundary
 

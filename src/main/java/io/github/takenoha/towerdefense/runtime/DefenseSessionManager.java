@@ -697,6 +697,9 @@ public final class DefenseSessionManager
         zombie.setLootTable(null);
         zombie.getPathfinder().setCanOpenDoors(false);
         zombie.getPathfinder().setCanPassDoors(false);
+        if (EventEnemyVisualPolicy.shouldGlow(role)) {
+            zombie.setGlowing(true);
+        }
         if (role == EnemyRole.BOSS) {
             AttributeInstance maximumHealth = Objects.requireNonNull(
                     zombie.getAttribute(Attribute.MAX_HEALTH),
@@ -709,7 +712,6 @@ public final class DefenseSessionManager
                     finalWave ? "防衛戦最終ボス" : "防衛戦中ボス",
                     NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
-            zombie.setGlowing(true);
         } else if (role == EnemyRole.DESTROYER) {
             zombie.customName(Component.text("防衛戦破壊兵", NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
@@ -737,6 +739,12 @@ public final class DefenseSessionManager
                 entity.remove();
                 requeueMissingEnemy(defense, logicalId, entityId);
                 continue;
+            }
+            EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
+                    logicalId,
+                    EnemyRole.NORMAL);
+            if (EventEnemyVisualPolicy.shouldGlow(role)) {
+                entity.setGlowing(true);
             }
             boolean atCore = entity.getLocation().distanceSquared(defense.coreTarget)
                     <= CORE_REACH_DISTANCE_SQUARED;
@@ -773,9 +781,6 @@ public final class DefenseSessionManager
             }
             if (currentTick - defense.lastPathRefreshTick >= PATH_REFRESH_TICKS
                     && entity instanceof Zombie zombie) {
-                EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
-                        logicalId,
-                        EnemyRole.NORMAL);
                 boolean accepted = zombie.getPathfinder().moveTo(
                         defense.coreTarget,
                         role.navigationSpeed(settings.enemies().moveSpeed()));

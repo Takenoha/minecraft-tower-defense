@@ -105,7 +105,7 @@ public final class CoreManagementGui {
                     NamedTextColor.YELLOW));
         }
         inventory.setItem(START_SLOT, item(
-                Material.ENDER_EYE,
+                Material.ECHO_SHARD,
                 "所持中の最高ステージを開始",
                 List.of(
                         "所持中で最も高いステージの襲撃の印を1個消費します。",
@@ -131,7 +131,7 @@ public final class CoreManagementGui {
             inventory.setItem(
                     RaidSealCatalog.slotForStage(stageLevel),
                     item(
-                            unlocked ? Material.ENDER_EYE : Material.GRAY_STAINED_GLASS_PANE,
+                            unlocked ? Material.ECHO_SHARD : Material.GRAY_STAINED_GLASS_PANE,
                             unlocked
                                     ? "ステージ" + stageLevel
                                     : "ステージ" + stageLevel + "（未解放）",

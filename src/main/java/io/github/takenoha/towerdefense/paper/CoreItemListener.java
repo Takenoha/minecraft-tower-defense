@@ -79,14 +79,25 @@ public final class CoreItemListener implements Listener {
         combatArea = new CombatAreaContext(settings);
     }
 
-    /** Registers the initial heavy-cost vanilla recipe for an unbound core item. */
+    /** Registers the compact vanilla recipe for an unbound core item. */
     public void registerRecipe() {
         NamespacedKey key = new NamespacedKey(plugin, "core");
-        ShapedRecipe recipe = new ShapedRecipe(key, itemTagger.recipeTemplate());
-        recipe.shape("DDD", "DND", "DDD");
-        recipe.setIngredient('D', Material.DIAMOND);
-        recipe.setIngredient('N', Material.NETHER_STAR);
+        ShapedRecipe recipe = configureRecipe(
+                new ShapedRecipe(key, itemTagger.recipeTemplate()));
+        Bukkit.removeRecipe(key);
         Bukkit.addRecipe(recipe);
+    }
+
+    static ShapedRecipe configureRecipe(ShapedRecipe recipe) {
+        Objects.requireNonNull(recipe, "recipe");
+        recipe.shape(CoreRecipeDefinition.shape().toArray(String[]::new));
+        recipe.setIngredient(
+                'D',
+                Material.valueOf(CoreRecipeDefinition.DIAMOND_BLOCK_MATERIAL));
+        recipe.setIngredient(
+                'I',
+                Material.valueOf(CoreRecipeDefinition.IRON_INGOT_MATERIAL));
+        return recipe;
     }
 
     /** Restores prepared physical placement intents before normal gameplay begins. */

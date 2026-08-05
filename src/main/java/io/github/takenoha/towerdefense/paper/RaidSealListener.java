@@ -64,18 +64,33 @@ public final class RaidSealListener implements Listener {
     public void registerRecipe() {
         for (long stageLevel : RaidSealCatalog.recipeStages()) {
             NamespacedKey key = new NamespacedKey(plugin, "raid_seal_stage_" + stageLevel);
-            ShapedRecipe recipe = new ShapedRecipe(key, tagger.recipeTemplate(stageLevel));
-            recipe.shape("GGG", "GNG", "GGG");
-            recipe.setIngredient(
-                    'G',
+            ShapedRecipe recipe = configureRecipe(
+                    new ShapedRecipe(key, tagger.recipeTemplate(stageLevel)),
                     Material.valueOf(RaidSealCatalog.ingredientNameFor(stageLevel)));
-            recipe.setIngredient('N', Material.NETHER_STAR);
+            Bukkit.removeRecipe(key);
             Bukkit.addRecipe(recipe);
         }
     }
 
+    static ShapedRecipe configureRecipe(ShapedRecipe recipe, Material stageMaterial) {
+        Objects.requireNonNull(recipe, "recipe");
+        Objects.requireNonNull(stageMaterial, "stageMaterial");
+        recipe.shape(RaidSealRecipeDefinition.shape().toArray(String[]::new));
+        recipe.setIngredient(
+                'P',
+                Material.valueOf(RaidSealRecipeDefinition.PAPER_MATERIAL));
+        recipe.setIngredient('S', stageMaterial);
+        return recipe;
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCraft(CraftItemEvent event) {
+        if (containsValidSeal(event.getInventory().getMatrix())) {
+            event.setCancelled(true);
+            event.getWhoClicked().sendMessage(Component.text(
+                    "有効な襲撃の印はクラフト材料に使えません。", NamedTextColor.RED));
+            return;
+        }
         if (!tagger.isRecipeTemplate(event.getCurrentItem())) {
             return;
         }
@@ -118,19 +133,26 @@ public final class RaidSealListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCoreInteract(PlayerInteractEvent event) {
         if (event.getHand() != EquipmentSlot.HAND
-                || event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+                || (event.getAction() != Action.RIGHT_CLICK_BLOCK
+                        && event.getAction() != Action.RIGHT_CLICK_AIR)) {
             return;
         }
         Optional<RaidSealItemIdentity> identity = tagger.read(event.getItem());
+        if (identity.isEmpty()) {
+            return;
+        }
+        event.setCancelled(true);
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+            return;
+        }
         Block clicked = event.getClickedBlock();
-        if (identity.isEmpty() || clicked == null) {
+        if (clicked == null) {
             return;
         }
         Optional<io.github.takenoha.towerdefense.persistence.CoreRecord> core = cores.at(clicked);
         if (core.isEmpty()) {
             return;
         }
-        event.setCancelled(true);
         RaidSealItemIdentity value = identity.orElseThrow();
         command.startWithSeal(
                 event.getPlayer(),
@@ -215,7 +237,7 @@ public final class RaidSealListener implements Listener {
                                 + rootMessage(failure));
                 return;
             }
-            removeInvalidOwnedItems(player, data.owned());
+            reconcileOwnedItems(player, data.owned());
             for (UUID refundId : data.refundIds()) {
                 if (!hasPhysicalItem(refundId)) {
                     give(player, data.owned().get(refundId));
@@ -224,7 +246,7 @@ public final class RaidSealListener implements Listener {
         }));
     }
 
-    private void removeInvalidOwnedItems(Player player, Map<UUID, RaidSeal> owned) {
+    private void reconcileOwnedItems(Player player, Map<UUID, RaidSeal> owned) {
         for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
             ItemStack item = player.getInventory().getItem(slot);
             Optional<RaidSealItemIdentity> identity = tagger.read(item);
@@ -236,8 +258,22 @@ public final class RaidSealListener implements Listener {
                     || seal.status() != RaidSealStatus.AVAILABLE
                     || seal.stageLevel() != identity.orElseThrow().stageLevel()) {
                 player.getInventory().setItem(slot, null);
+            } else if (tagger.isLegacyMaterial(item)) {
+                RaidSealItemIdentity value = identity.orElseThrow();
+                player.getInventory().setItem(
+                        slot,
+                        tagger.create(value.sealId(), value.stageLevel()));
             }
         }
+    }
+
+    private boolean containsValidSeal(ItemStack[] matrix) {
+        for (ItemStack item : matrix) {
+            if (tagger.read(item).isPresent()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void give(Player player, RaidSeal seal) {

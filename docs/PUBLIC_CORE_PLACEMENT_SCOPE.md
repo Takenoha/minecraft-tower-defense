@@ -7,7 +7,8 @@ placement path, not enemy terrain mutation.
 
 ## Included
 
-- A shaped recipe using eight diamonds and one nether star.
+- A shaped recipe using one `DIAMOND_BLOCK` and four `IRON_INGOT` items; the recipe does not
+  require a nether star.
 - A unique item UUID and versioned plugin-owned PDC on every crafted core item.
 - A fail-closed right-click interaction that only accepts a solid, non-tile Overworld block.
 - Existing combat-area safety checks, forbidden-world/rectangle checks, WorldBorder checks, and
@@ -29,10 +30,10 @@ relocation, repair-cost, and first team GUI flows. This document remains the bou
 original craft-and-place slice; towers, research, start-item reservation, and enemy terrain
 mutation remain separate work.
 
-The recipe values and item presentation are an initial implementation choice, not the final game
-economy balance. Core placement still requires the existing minimum core distance and combat-area
-clearance rules. The three terrain-mutation flags remain `false` by default and are not changed by
-this milestone.
+The core item presentation remains the plugin-owned `NETHER_STAR` stack, but its recipe uses the
+lower-cost diamond-block/iron layout above. Core placement still requires the existing minimum core
+distance and combat-area clearance rules. The three terrain-mutation flags remain `false` by
+default and are not changed by this milestone.
 
 ## Verification
 
