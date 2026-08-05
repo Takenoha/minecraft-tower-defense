@@ -20,6 +20,13 @@ public interface DefensePersistenceSink {
             UUID entityId,
             EnemyStatus status);
 
+    CompletionStage<Void> creditBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID operationId,
+            String operationKind,
+            long amount);
+
     CompletionStage<Void> finish(
             DefenseSessionSnapshot snapshot,
             UUID operationId);

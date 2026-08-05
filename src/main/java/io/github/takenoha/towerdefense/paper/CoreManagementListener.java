@@ -8,6 +8,7 @@ import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.TeamMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
+import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
@@ -47,6 +48,7 @@ public final class CoreManagementListener implements Listener {
     private final DefenseSessionManager sessions;
     private final CoreRegistry cores;
     private final CoreItemListener coreItems;
+    private final TowerRepository towerRepository;
     private final DefenseShardTagger shardTagger;
     private final ResearchCrystalTagger researchCrystals;
     private final Set<UUID> repairInFlight = new java.util.HashSet<>();
@@ -71,6 +73,7 @@ public final class CoreManagementListener implements Listener {
                 cores,
                 coreItems,
                 shardTagger,
+                null,
                 new ResearchCrystalTagger(plugin));
     }
 
@@ -84,6 +87,30 @@ public final class CoreManagementListener implements Listener {
             CoreItemListener coreItems,
             DefenseShardTagger shardTagger,
             ResearchCrystalTagger researchCrystals) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                coreItems,
+                shardTagger,
+                null,
+                researchCrystals);
+    }
+
+    public CoreManagementListener(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            CoreItemListener coreItems,
+            DefenseShardTagger shardTagger,
+            TowerRepository towerRepository,
+            ResearchCrystalTagger researchCrystals) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -92,6 +119,7 @@ public final class CoreManagementListener implements Listener {
         this.cores = Objects.requireNonNull(cores, "cores");
         this.coreItems = Objects.requireNonNull(coreItems, "coreItems");
         this.shardTagger = Objects.requireNonNull(shardTagger, "shardTagger");
+        this.towerRepository = towerRepository;
         this.researchCrystals = Objects.requireNonNull(researchCrystals, "researchCrystals");
     }
 
@@ -119,7 +147,8 @@ public final class CoreManagementListener implements Listener {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof CoreManagementInventoryHolder)
                 && !(top.getHolder() instanceof TeamManagementInventoryHolder)
-                && !(top.getHolder() instanceof TeamManagementConfirmationHolder)) {
+                && !(top.getHolder() instanceof TeamManagementConfirmationHolder)
+                && !(top.getHolder() instanceof TowerResearchInventoryHolder)) {
             return;
         }
         event.setCancelled(true);
@@ -136,6 +165,8 @@ public final class CoreManagementListener implements Listener {
                 openTeamGui(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.RESEARCH_DEPOSIT_SLOT) {
                 beginResearchCrystalDeposit(player, holder.coreId());
+            } else if (event.getRawSlot() == CoreManagementGui.TOWER_RESEARCH_SLOT) {
+                openTowerResearchGui(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.REPAIR_SLOT) {
                 beginRepair(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.RELOCATE_SLOT) {
@@ -145,6 +176,8 @@ public final class CoreManagementListener implements Listener {
             handleTeamManagementClick(player, holder, event.getRawSlot(), event.getClick());
         } else if (top.getHolder() instanceof TeamManagementConfirmationHolder holder) {
             handleTeamConfirmationClick(player, holder, event.getRawSlot());
+        } else if (top.getHolder() instanceof TowerResearchInventoryHolder holder) {
+            handleTowerResearchClick(player, holder, event.getRawSlot());
         }
     }
 
@@ -153,7 +186,8 @@ public final class CoreManagementListener implements Listener {
         Object holder = event.getView().getTopInventory().getHolder();
         if (holder instanceof CoreManagementInventoryHolder
                 || holder instanceof TeamManagementInventoryHolder
-                || holder instanceof TeamManagementConfirmationHolder) {
+                || holder instanceof TeamManagementConfirmationHolder
+                || holder instanceof TowerResearchInventoryHolder) {
             event.setCancelled(true);
         }
     }
@@ -186,6 +220,86 @@ public final class CoreManagementListener implements Listener {
                     data.progress(),
                     data.repairCost(),
                     settings.core().repairMaterial()));
+        }));
+    }
+
+    private void openTowerResearchGui(Player player, UUID coreId) {
+        if (towerRepository == null) {
+            player.sendMessage(Component.text(
+                    "タワー研究画面は現在利用できません。", NamedTextColor.RED));
+            return;
+        }
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            TeamRecord team = repository.findTeam(core.teamId()).orElseThrow(
+                    () -> new IllegalStateException("コアのチームが見つかりません"));
+            if (!team.members().contains(player.getUniqueId())) {
+                throw new IllegalStateException("このコアへアクセスできるチームメンバーではありません");
+            }
+            return new TowerResearchGuiData(
+                    repository.loadTeamProgress(team.id()),
+                    towerRepository.loadTowerResearch(team.id()));
+        }).whenComplete((data, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            player.openInventory(TowerResearchGui.create(
+                    coreId,
+                    data.progress(),
+                    data.research(),
+                    settings.towers()));
+        }));
+    }
+
+    private void handleTowerResearchClick(
+            Player player,
+            TowerResearchInventoryHolder holder,
+            int rawSlot) {
+        if (rawSlot == TowerResearchGui.CLOSE_SLOT) {
+            openCoreGui(player, holder.coreId());
+            return;
+        }
+        TowerResearchGui.towerTypeAt(rawSlot)
+                .ifPresent(type -> beginTowerResearchPurchase(player, holder.coreId(), type));
+    }
+
+    private void beginTowerResearchPurchase(
+            Player player,
+            UUID coreId,
+            io.github.takenoha.towerdefense.domain.TowerType towerType) {
+        if (towerRepository == null) {
+            return;
+        }
+        UUID actorId = player.getUniqueId();
+        UUID operationId = UUID.randomUUID();
+        player.sendMessage(Component.text("タワー研究を購入しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            TeamRecord team = repository.findTeam(core.teamId()).orElseThrow(
+                    () -> new IllegalStateException("コアのチームが見つかりません"));
+            if (!team.members().contains(actorId)) {
+                throw new IllegalStateException("このチームのメンバーではありません");
+            }
+            var current = towerRepository.findTowerResearch(team.id(), towerType).orElseThrow(
+                    () -> new IllegalStateException("タワー研究データが見つかりません"));
+            int cost = settings.towers().researchCost(current.researchLevel());
+            return towerRepository.purchaseTowerResearch(
+                    team.id(), actorId, towerType, cost, operationId, Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "タワー研究を購入できません: " + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            player.sendMessage(Component.text(
+                    towerType.displayName() + "研究をLv" + result.research().researchLevel()
+                            + "へ解放しました。",
+                    NamedTextColor.GREEN));
+            openTowerResearchGui(player, coreId);
         }));
     }
 
@@ -713,6 +827,11 @@ public final class CoreManagementListener implements Listener {
     }
 
     private record TeamGuiData(CoreRecord core, TeamRecord team) {
+    }
+
+    private record TowerResearchGuiData(
+            TeamProgress progress,
+            List<io.github.takenoha.towerdefense.domain.TowerResearch> research) {
     }
 
     private record RemovedItems(List<ItemStack> items) {

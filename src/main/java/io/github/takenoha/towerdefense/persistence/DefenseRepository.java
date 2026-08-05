@@ -1492,6 +1492,7 @@ public final class DefenseRepository {
                 validateStartCore(snapshot, core);
 
                 insertEvent(connection, request, core);
+                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt());
                 replaceParticipants(connection, snapshot, request.startedAt());
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO event_lock(singleton, event_id, acquired_at)
@@ -1519,6 +1520,329 @@ public final class DefenseRepository {
 
     public Optional<UUID> activeEventId() {
         return read("load the active event lock", DefenseRepository::loadActiveEventId);
+    }
+
+    /** Loads the event-scoped battle-funds account. */
+    public BattleFunds loadBattleFunds(UUID eventId) {
+        Objects.requireNonNull(eventId, "eventId");
+        return read(
+                "load event battle funds",
+                connection -> loadBattleFunds(connection, eventId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Defense event " + eventId + " has no battle-funds account")));
+    }
+
+    /** Credits event funds for a deterministic enemy or wave reward operation. */
+    public BattleFundsMutationResult creditBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt) {
+        return mutateBattleFunds(
+                eventId,
+                teamId,
+                null,
+                operationId,
+                operationKind,
+                amount,
+                appliedAt,
+                false);
+    }
+
+    /** Spends event funds for a team-member operation during preparation or intermission. */
+    public BattleFundsMutationResult spendBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt) {
+        return mutateBattleFunds(
+                eventId,
+                teamId,
+                actorId,
+                operationId,
+                operationKind,
+                amount,
+                appliedAt,
+                true);
+    }
+
+    /** Loads the temporary boosts that survived a restart while an event was still active. */
+    public List<BattleBoost> loadBattleBoosts(UUID eventId) {
+        Objects.requireNonNull(eventId, "eventId");
+        return read("load event tower boosts", connection -> {
+            List<BattleBoost> boosts = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                    FROM event_tower_boosts
+                    WHERE event_id = ?
+                    ORDER BY tower_id, boost_kind
+                    """)) {
+                statement.setString(1, eventId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        boosts.add(battleBoostFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(boosts);
+        });
+    }
+
+    /** Purchases one cumulative temporary boost and spends its funds in the same transaction. */
+    public BattleBoostMutationResult purchaseBattleBoost(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (cost <= 0L) {
+            throw new IllegalArgumentException("cost must be positive");
+        }
+        if (!Double.isFinite(boostMultiplier) || boostMultiplier <= 0.0d) {
+            throw new IllegalArgumentException("boostMultiplier must be finite and positive");
+        }
+        String operationKind = "BOOST_" + kind.id();
+        String fingerprint = managementFingerprint(
+                "BATTLE_BOOST",
+                eventId,
+                teamId,
+                actorId,
+                towerId,
+                kind.id(),
+                cost,
+                boostMultiplier);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<BattleBoostOperation> existing = loadBattleBoostOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingBattleBoostOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            towerId,
+                            kind,
+                            cost,
+                            boostMultiplier,
+                            fingerprint);
+                    return new BattleBoostMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireBattleBoost(connection, eventId, towerId, kind),
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, true);
+                requireTeamMember(connection, teamId, actorId);
+                requireTowerBelongsToTeam(connection, towerId, teamId);
+                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                if (!currentFunds.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The battle-boost operation belongs to another team");
+                }
+                if (currentFunds.balance() < cost) {
+                    throw new PersistenceConflictException(
+                            "The team does not have enough battle funds for this boost");
+                }
+                Optional<BattleBoost> current = loadBattleBoost(
+                        connection, eventId, towerId, kind);
+                int nextLevel = current.isPresent()
+                        ? Math.addExact(current.orElseThrow().level(), 1)
+                        : 1;
+                double previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0d);
+                double nextMultiplier = previousMultiplier * boostMultiplier;
+                if (!Double.isFinite(nextMultiplier)) {
+                    throw new PersistenceConflictException(
+                            "The battle boost multiplier is outside the supported range");
+                }
+                BattleFunds updatedFunds = new BattleFunds(
+                        currentFunds.eventId(),
+                        currentFunds.teamId(),
+                        currentFunds.balance() - cost,
+                        currentFunds.totalEarned(),
+                        Math.addExact(currentFunds.totalSpent(), cost),
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                BattleBoost updatedBoost = new BattleBoost(
+                        eventId,
+                        teamId,
+                        towerId,
+                        kind,
+                        nextLevel,
+                        nextMultiplier,
+                        appliedAt);
+                updateBattleFunds(connection, updatedFunds);
+                upsertBattleBoost(connection, updatedBoost);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                insertBattleBoostOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        towerId,
+                        kind,
+                        cost,
+                        boostMultiplier,
+                        fingerprint,
+                        appliedAt);
+                return new BattleBoostMutationResult(
+                        OperationOutcome.APPLIED, updatedBoost, updatedFunds);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The battle-boost operation conflicts with persisted data", exception);
+            }
+            throw failure("purchase a battle boost", exception);
+        } catch (ArithmeticException overflow) {
+            throw new PersistenceConflictException(
+                    "The battle-boost account cannot represent this purchase", overflow);
+        }
+    }
+
+    /** Repairs a tower's durable HP and spends battle funds atomically. */
+    public TowerRepairMutationResult repairTowerWithBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (repairedHitPoints <= 0L || cost <= 0L) {
+            throw new IllegalArgumentException("tower repair amount and cost must be positive");
+        }
+        String operationKind = "REPAIR_TOWER";
+        String fingerprint = managementFingerprint(
+                "TOWER_REPAIR",
+                eventId,
+                teamId,
+                actorId,
+                towerId,
+                repairedHitPoints,
+                cost);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerRepairOperation> existing = loadTowerRepairOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTowerRepairOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            towerId,
+                            repairedHitPoints,
+                            cost,
+                            fingerprint);
+                    return new TowerRepairMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireTowerDurability(connection, towerId),
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, true);
+                requireTeamMember(connection, teamId, actorId);
+                TowerDurability current = requireTowerDurability(connection, towerId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower repair belongs to another team");
+                }
+                if (repairedHitPoints > current.maximumHitPoints() - current.currentHitPoints()) {
+                    throw new PersistenceConflictException(
+                            "The tower repair exceeds the missing HP");
+                }
+                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                if (!currentFunds.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower repair belongs to another event team");
+                }
+                if (currentFunds.balance() < cost) {
+                    throw new PersistenceConflictException(
+                            "The team does not have enough battle funds for tower repair");
+                }
+                TowerDurability updatedDurability = new TowerDurability(
+                        towerId,
+                        teamId,
+                        current.currentHitPoints() + repairedHitPoints,
+                        current.maximumHitPoints());
+                BattleFunds updatedFunds = new BattleFunds(
+                        currentFunds.eventId(),
+                        currentFunds.teamId(),
+                        currentFunds.balance() - cost,
+                        currentFunds.totalEarned(),
+                        Math.addExact(currentFunds.totalSpent(), cost),
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                updateTowerDurability(connection, updatedDurability, appliedAt);
+                updateBattleFunds(connection, updatedFunds);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                insertTowerRepairOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        towerId,
+                        repairedHitPoints,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                return new TowerRepairMutationResult(
+                        OperationOutcome.APPLIED, updatedDurability, updatedFunds);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower repair operation conflicts with persisted data", exception);
+            }
+            throw failure("repair a tower with battle funds", exception);
+        } catch (ArithmeticException overflow) {
+            throw new PersistenceConflictException(
+                    "The tower repair account cannot represent this purchase", overflow);
+        }
     }
 
     public Optional<StoredDefenseEvent> findEvent(UUID eventId) {
@@ -1794,6 +2118,8 @@ public final class DefenseRepository {
                         connection, eventId, operationId, occurredAt);
                 RaidSealRepository.refundIfPresent(
                         connection, eventId, operationId, occurredAt);
+                clearBattleBoosts(connection, eventId);
+                settleBattleFunds(connection, eventId, occurredAt);
                 markTerminal(connection, eventId, operationId, occurredAt);
                 insertOperation(
                         connection,
@@ -2037,6 +2363,8 @@ public final class DefenseRepository {
                         terminalSnapshot.phase(),
                         occurredAt,
                         teamQueueRetention);
+                clearBattleBoosts(connection, terminalSnapshot.eventId());
+                settleBattleFunds(connection, terminalSnapshot.eventId(), occurredAt);
                 markEnemiesDespawned(
                         connection, terminalSnapshot.eventId(), occurredAt);
                 markTerminal(
@@ -2071,6 +2399,587 @@ public final class DefenseRepository {
      * turns it into exactly one TEAM row. The separate batch ledger supplies the source-team and
      * redeemed-quantity authority used by the core deposit path.</p>
      */
+    private BattleFundsMutationResult mutateBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt,
+            boolean spend) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(operationKind, "operationKind");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (operationKind.isBlank()) {
+            throw new IllegalArgumentException("operationKind must not be blank");
+        }
+        if (amount <= 0L) {
+            throw new IllegalArgumentException("amount must be positive");
+        }
+        String fingerprint = managementFingerprint(
+                spend ? "BATTLE_FUNDS_SPEND" : "BATTLE_FUNDS_CREDIT",
+                eventId,
+                teamId,
+                actorId == null ? "SYSTEM" : actorId,
+                operationKind,
+                amount);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<BattleFundsOperation> existing = loadBattleFundsOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingBattleFundsOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            operationKind,
+                            amount,
+                            fingerprint);
+                    return new BattleFundsMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, spend);
+                BattleFunds current = requireBattleFunds(connection, eventId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The battle-funds operation belongs to another team");
+                }
+                if (spend) {
+                    requireTeamMember(connection, teamId, Objects.requireNonNull(actorId, "actorId"));
+                    if (current.balance() < amount) {
+                        throw new PersistenceConflictException(
+                                "The team does not have enough battle funds");
+                    }
+                }
+                long nextBalance;
+                long nextEarned = current.totalEarned();
+                long nextSpent = current.totalSpent();
+                try {
+                    if (spend) {
+                        nextBalance = Math.subtractExact(current.balance(), amount);
+                        nextSpent = Math.addExact(current.totalSpent(), amount);
+                    } else {
+                        nextBalance = Math.addExact(current.balance(), amount);
+                        nextEarned = Math.addExact(current.totalEarned(), amount);
+                    }
+                } catch (ArithmeticException overflow) {
+                    throw new PersistenceConflictException(
+                            "The battle-funds account cannot represent this mutation", overflow);
+                }
+                BattleFunds updated = new BattleFunds(
+                        current.eventId(),
+                        current.teamId(),
+                        nextBalance,
+                        nextEarned,
+                        nextSpent,
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                updateBattleFunds(connection, updated);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        amount,
+                        fingerprint,
+                        appliedAt);
+                return new BattleFundsMutationResult(OperationOutcome.APPLIED, updated);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The battle-funds operation conflicts with persisted data", exception);
+            }
+            throw failure("mutate event battle funds", exception);
+        }
+    }
+
+    private static void requireActiveBattleFundsEvent(
+            Connection connection,
+            UUID eventId,
+            boolean spend) throws SQLException {
+        Optional<UUID> activeEvent = loadActiveEventId(connection);
+        if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
+            throw new PersistenceConflictException(
+                    "Battle funds are available only for the active defense event");
+        }
+        StoredDefenseEvent event = requireEvent(connection, eventId);
+        if (event.session().phase().isTerminal()
+                || (spend && (event.session().phase() == DefensePhase.WAVE_ACTIVE
+                        || event.session().phase() == DefensePhase.COUNTDOWN))) {
+            throw new PersistenceConflictException(
+                    spend
+                            ? "Battle funds may only be spent during preparation or intermission"
+                            : "The defense event is already terminal");
+        }
+    }
+
+    private static void insertBattleFunds(
+            Connection connection,
+            UUID eventId,
+            UUID teamId,
+            Instant createdAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_battle_funds(
+                    event_id, team_id, balance, total_earned, total_spent, state, updated_at
+                ) VALUES (?, ?, 0, 0, 0, 'ACTIVE', ?)
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.setString(2, teamId.toString());
+            statement.setString(3, createdAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void settleBattleFunds(
+            Connection connection,
+            UUID eventId,
+            Instant settledAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE event_battle_funds
+                SET balance = 0, state = 'SETTLED', updated_at = ?
+                WHERE event_id = ? AND state = 'ACTIVE'
+                """)) {
+            statement.setString(1, settledAt.toString());
+            statement.setString(2, eventId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void clearBattleBoosts(Connection connection, UUID eventId)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                DELETE FROM event_tower_boosts WHERE event_id = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void updateBattleFunds(Connection connection, BattleFunds funds)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE event_battle_funds
+                SET balance = ?, total_earned = ?, total_spent = ?, state = ?, updated_at = ?
+                WHERE event_id = ? AND state = 'ACTIVE'
+                """)) {
+            statement.setLong(1, funds.balance());
+            statement.setLong(2, funds.totalEarned());
+            statement.setLong(3, funds.totalSpent());
+            statement.setString(4, funds.state().name());
+            statement.setString(5, funds.updatedAt().toString());
+            statement.setString(6, funds.eventId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new PersistenceConflictException(
+                        "The battle-funds account was concurrently settled");
+            }
+        }
+    }
+
+    private static Optional<BattleFunds> loadBattleFunds(
+            Connection connection,
+            UUID eventId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, balance, total_earned, total_spent, state, updated_at
+                FROM event_battle_funds WHERE event_id = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(battleFundsFromRow(resultSet)) : Optional.empty();
+            }
+        }
+    }
+
+    private static BattleFunds requireBattleFunds(Connection connection, UUID eventId)
+            throws SQLException {
+        return loadBattleFunds(connection, eventId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Defense event " + eventId + " has no battle-funds account"));
+    }
+
+    private static BattleFunds battleFundsFromRow(ResultSet resultSet) throws SQLException {
+        return new BattleFunds(
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                resultSet.getLong("balance"),
+                resultSet.getLong("total_earned"),
+                resultSet.getLong("total_spent"),
+                BattleFundsState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static BattleBoost battleBoostFromRow(ResultSet resultSet) throws SQLException {
+        return new BattleBoost(
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("tower_id")),
+                battleBoostKind(resultSet.getString("boost_kind")),
+                resultSet.getInt("level"),
+                resultSet.getDouble("multiplier"),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static BattleBoostKind battleBoostKind(String id) {
+        for (BattleBoostKind kind : BattleBoostKind.values()) {
+            if (kind.id().equals(id)) {
+                return kind;
+            }
+        }
+        throw new PersistenceException("Unknown persisted battle boost kind: " + id, null);
+    }
+
+    private static Optional<BattleBoost> loadBattleBoost(
+            Connection connection,
+            UUID eventId,
+            UUID towerId,
+            BattleBoostKind kind) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                FROM event_tower_boosts
+                WHERE event_id = ? AND tower_id = ? AND boost_kind = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.setString(2, towerId.toString());
+            statement.setString(3, kind.id());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(battleBoostFromRow(resultSet)) : Optional.empty();
+            }
+        }
+    }
+
+    private static BattleBoost requireBattleBoost(
+            Connection connection,
+            UUID eventId,
+            UUID towerId,
+            BattleBoostKind kind) throws SQLException {
+        return loadBattleBoost(connection, eventId, towerId, kind).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "The battle boost was not stored for tower " + towerId));
+    }
+
+    private static void upsertBattleBoost(Connection connection, BattleBoost boost)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_boosts(
+                    event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id, tower_id, boost_kind) DO UPDATE SET
+                    team_id = excluded.team_id,
+                    level = excluded.level,
+                    multiplier = excluded.multiplier,
+                    updated_at = excluded.updated_at
+                """)) {
+            statement.setString(1, boost.eventId().toString());
+            statement.setString(2, boost.teamId().toString());
+            statement.setString(3, boost.towerId().toString());
+            statement.setString(4, boost.kind().id());
+            statement.setInt(5, boost.level());
+            statement.setDouble(6, boost.multiplier());
+            statement.setString(7, boost.updatedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void insertBattleBoostOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_boost_operations(
+                    operation_id, event_id, team_id, actor_id, tower_id, boost_kind,
+                    cost, boost_multiplier, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId.toString());
+            statement.setString(5, towerId.toString());
+            statement.setString(6, kind.id());
+            statement.setLong(7, cost);
+            statement.setDouble(8, boostMultiplier);
+            statement.setString(9, fingerprint);
+            statement.setString(10, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<BattleBoostOperation> loadBattleBoostOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, tower_id, boost_kind,
+                       cost, boost_multiplier, payload_fingerprint
+                FROM event_tower_boost_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new BattleBoostOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        battleBoostKind(resultSet.getString("boost_kind")),
+                        resultSet.getLong("cost"),
+                        resultSet.getDouble("boost_multiplier"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingBattleBoostOperation(
+            BattleBoostOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.actorId().equals(actorId)
+                || !existing.towerId().equals(towerId)
+                || existing.kind() != kind
+                || existing.cost() != cost
+                || Double.compare(existing.boostMultiplier(), boostMultiplier) != 0
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The battle-boost operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static Optional<TowerDurability> loadTowerDurability(
+            Connection connection,
+            UUID towerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT tower_id, team_id, current_hp, max_hp
+                FROM towers WHERE tower_id = ?
+                """)) {
+            statement.setString(1, towerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new TowerDurability(
+                                uuid(resultSet.getString("tower_id")),
+                                uuid(resultSet.getString("team_id")),
+                                resultSet.getLong("current_hp"),
+                                resultSet.getLong("max_hp")))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TowerDurability requireTowerDurability(
+            Connection connection,
+            UUID towerId) throws SQLException {
+        return loadTowerDurability(connection, towerId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "The tower to repair does not exist"));
+    }
+
+    private static void updateTowerDurability(
+            Connection connection,
+            TowerDurability durability,
+            Instant updatedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE towers
+                SET current_hp = ?, updated_at = ?
+                WHERE tower_id = ?
+                """)) {
+            statement.setLong(1, durability.currentHitPoints());
+            statement.setString(2, updatedAt.toString());
+            statement.setString(3, durability.towerId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The tower durability update affected no rows");
+            }
+        }
+    }
+
+    private static void insertTowerRepairOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_repair_operations(
+                    operation_id, event_id, team_id, actor_id, tower_id,
+                    repaired_hit_points, cost, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId.toString());
+            statement.setString(5, towerId.toString());
+            statement.setLong(6, repairedHitPoints);
+            statement.setLong(7, cost);
+            statement.setString(8, fingerprint);
+            statement.setString(9, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TowerRepairOperation> loadTowerRepairOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, tower_id,
+                       repaired_hit_points, cost, payload_fingerprint
+                FROM event_tower_repair_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TowerRepairOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        resultSet.getLong("repaired_hit_points"),
+                        resultSet.getLong("cost"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTowerRepairOperation(
+            TowerRepairOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.actorId().equals(actorId)
+                || !existing.towerId().equals(towerId)
+                || existing.repairedHitPoints() != repairedHitPoints
+                || existing.cost() != cost
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The tower-repair operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static void requireTowerBelongsToTeam(
+            Connection connection,
+            UUID towerId,
+            UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id FROM towers WHERE tower_id = ?
+                """)) {
+            statement.setString(1, towerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()
+                        || !teamId.toString().equals(resultSet.getString("team_id"))) {
+                    throw new PersistenceConflictException(
+                            "The tower is missing or belongs to another team");
+                }
+            }
+        }
+    }
+
+    private static void insertBattleFundsOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_battle_fund_operations(
+                    operation_id, event_id, team_id, actor_id, operation_kind,
+                    amount, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId == null ? null : actorId.toString());
+            statement.setString(5, operationKind);
+            statement.setLong(6, amount);
+            statement.setString(7, fingerprint);
+            statement.setString(8, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<BattleFundsOperation> loadBattleFundsOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, operation_kind, amount, payload_fingerprint
+                FROM event_battle_fund_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                String actor = resultSet.getString("actor_id");
+                return Optional.of(new BattleFundsOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        actor == null ? null : uuid(actor),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getLong("amount"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingBattleFundsOperation(
+            BattleFundsOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !Objects.equals(existing.actorId(), actorId)
+                || !existing.operationKind().equals(operationKind)
+                || existing.amount() != amount
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The battle-funds operation UUID is already assigned to another payload");
+        }
+    }
+
     private void issueVictoryResearchCrystals(
             Connection connection,
             DefenseSessionSnapshot terminalSnapshot,
@@ -3399,6 +4308,36 @@ public final class DefenseRepository {
             String resourceType,
             UUID resourceId,
             String operationKind,
+            String payloadFingerprint) {
+    }
+
+    private record BattleFundsOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String payloadFingerprint) {
+    }
+
+    private record BattleBoostOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String payloadFingerprint) {
+    }
+
+    private record TowerRepairOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
             String payloadFingerprint) {
     }
 

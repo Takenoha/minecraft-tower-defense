@@ -31,7 +31,7 @@ public final class TowerRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                            tower_type, individual_level, target_priority,
-                           entity_id, created_at, updated_at
+                           current_hp, max_hp, entity_id, created_at, updated_at
                     FROM towers
                     ORDER BY tower_id
                     """);
@@ -146,6 +146,162 @@ public final class TowerRepository {
                         "The tower research purchase conflicts with persisted data", exception);
             }
             throw failure("purchase tower research", exception);
+        }
+    }
+
+    /** Reserves one individual level upgrade before the physical materials are removed. */
+    public TowerUpgrade prepareTowerUpgrade(TowerUpgrade upgrade) {
+        Objects.requireNonNull(upgrade, "upgrade");
+        if (upgrade.state() != TowerUpgradeState.PREPARED) {
+            throw new IllegalArgumentException("A tower upgrade request must be PREPARED");
+        }
+        String fingerprint = upgradeFingerprint(upgrade);
+        TowerUpgrade normalized = withFingerprint(upgrade, fingerprint);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerUpgrade> existing = loadTowerUpgrade(
+                        connection, upgrade.operationId());
+                if (existing.isPresent()) {
+                    requireMatchingUpgrade(existing.orElseThrow(), normalized);
+                    return existing.orElseThrow();
+                }
+                requireTowerPlacementWindow(
+                        connection, upgrade.teamId(), "prepare a tower upgrade");
+                requireTeamMember(connection, upgrade.teamId(), upgrade.actorId());
+                TowerRecord tower = loadTower(connection, upgrade.towerId()).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The tower to upgrade does not exist"));
+                if (!tower.teamId().equals(upgrade.teamId())
+                        || tower.individualLevel() != upgrade.fromLevel()) {
+                    throw new PersistenceConflictException(
+                            "The tower level changed before the upgrade was prepared");
+                }
+                requireTowerResearch(
+                        connection,
+                        tower.teamId(),
+                        tower.type(),
+                        upgrade.toLevel());
+                insertTowerUpgrade(connection, normalized);
+                return normalized;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower upgrade conflicts with persisted tower data", exception);
+            }
+            throw failure("prepare a tower upgrade", exception);
+        }
+    }
+
+    /** Applies the durable level mutation after the Paper materials were removed. */
+    public TowerUpgradeResult applyTowerUpgrade(UUID operationId, Instant appliedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                TowerUpgrade upgrade = loadTowerUpgrade(connection, operationId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The prepared tower upgrade does not exist"));
+                if (upgrade.state() == TowerUpgradeState.APPLIED) {
+                    return new TowerUpgradeResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            loadTower(connection, upgrade.towerId()));
+                }
+                if (upgrade.state() == TowerUpgradeState.ROLLED_BACK) {
+                    throw new PersistenceConflictException(
+                            "The prepared tower upgrade was already rolled back");
+                }
+                requireTowerPlacementWindow(
+                        connection, upgrade.teamId(), "apply a tower upgrade");
+                requireTeamMember(connection, upgrade.teamId(), upgrade.actorId());
+                TowerRecord current = loadTower(connection, upgrade.towerId()).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The tower to upgrade does not exist"));
+                if (!current.teamId().equals(upgrade.teamId())
+                        || current.individualLevel() != upgrade.fromLevel()) {
+                    throw new PersistenceConflictException(
+                            "The tower level changed before the upgrade was applied");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE towers
+                        SET individual_level = ?, updated_at = ?
+                        WHERE tower_id = ? AND individual_level = ?
+                        """)) {
+                    statement.setInt(1, upgrade.toLevel());
+                    statement.setString(2, appliedAt.toString());
+                    statement.setString(3, upgrade.towerId().toString());
+                    statement.setInt(4, upgrade.fromLevel());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The tower upgrade lost its compare-and-set race");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_upgrade_operations
+                        SET state = 'APPLIED', applied_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, appliedAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The tower upgrade apply affected no rows");
+                    }
+                }
+                return new TowerUpgradeResult(
+                        OperationOutcome.APPLIED,
+                        loadTower(connection, upgrade.towerId()));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower upgrade conflicts with persisted tower data", exception);
+            }
+            throw failure("apply a tower upgrade", exception);
+        }
+    }
+
+    /** Rolls back a reservation when the Paper material handoff did not complete. */
+    public Optional<TowerUpgrade> rollbackTowerUpgrade(
+            UUID operationId,
+            Instant rolledBackAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rolledBackAt, "rolledBackAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerUpgrade> loaded = loadTowerUpgrade(connection, operationId);
+                if (loaded.isEmpty()
+                        || loaded.orElseThrow().state() != TowerUpgradeState.PREPARED) {
+                    return loaded;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_upgrade_operations
+                        SET state = 'ROLLED_BACK', rolled_back_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, rolledBackAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The tower upgrade rollback affected no rows");
+                    }
+                }
+                TowerUpgrade upgrade = loaded.orElseThrow();
+                return Optional.of(new TowerUpgrade(
+                        upgrade.operationId(),
+                        upgrade.towerId(),
+                        upgrade.actorId(),
+                        upgrade.teamId(),
+                        upgrade.fromLevel(),
+                        upgrade.toLevel(),
+                        upgrade.defenseShardCost(),
+                        upgrade.enhancementCoreCost(),
+                        upgrade.payloadFingerprint(),
+                        TowerUpgradeState.ROLLED_BACK,
+                        upgrade.preparedAt(),
+                        null,
+                        rolledBackAt));
+            });
+        } catch (SQLException exception) {
+            throw failure("roll back a tower upgrade", exception);
         }
     }
 
@@ -493,6 +649,8 @@ public final class TowerRepository {
                         placement.type(),
                         placement.individualLevel(),
                         placement.targetPriority(),
+                        settings.towerMaximumHitPoints(),
+                        settings.towerMaximumHitPoints(),
                         entityId,
                         appliedAt,
                         appliedAt);
@@ -615,7 +773,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                        tower_type, individual_level, target_priority,
-                       entity_id, created_at, updated_at
+                       current_hp, max_hp, entity_id, created_at, updated_at
                 FROM towers
                 WHERE world_id = ? AND block_x = ? AND block_y = ? AND block_z = ?
                 """)) {
@@ -634,7 +792,7 @@ public final class TowerRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tower_id, team_id, world_id, block_x, block_y, block_z,
                        tower_type, individual_level, target_priority,
-                       entity_id, created_at, updated_at
+                       current_hp, max_hp, entity_id, created_at, updated_at
                 FROM towers WHERE tower_id = ?
                 """)) {
             statement.setString(1, towerId.toString());
@@ -698,6 +856,104 @@ public final class TowerRepository {
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? Optional.of(placementFromRow(resultSet)) : Optional.empty();
             }
+        }
+    }
+
+    private static Optional<TowerUpgrade> loadTowerUpgrade(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, tower_id, actor_id, team_id, from_level, to_level,
+                       defense_shard_cost, enhancement_core_cost, payload_fingerprint,
+                       state, prepared_at, applied_at, rolled_back_at
+                FROM tower_upgrade_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(towerUpgradeFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TowerUpgrade towerUpgradeFromRow(ResultSet resultSet) throws SQLException {
+        return new TowerUpgrade(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("tower_id")),
+                uuid(resultSet.getString("actor_id")),
+                uuid(resultSet.getString("team_id")),
+                resultSet.getInt("from_level"),
+                resultSet.getInt("to_level"),
+                resultSet.getInt("defense_shard_cost"),
+                resultSet.getInt("enhancement_core_cost"),
+                resultSet.getString("payload_fingerprint"),
+                TowerUpgradeState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                nullableInstant(resultSet.getString("applied_at")),
+                nullableInstant(resultSet.getString("rolled_back_at")));
+    }
+
+    private static void insertTowerUpgrade(
+            Connection connection,
+            TowerUpgrade upgrade) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO tower_upgrade_operations(
+                    operation_id, tower_id, actor_id, team_id, from_level, to_level,
+                    defense_shard_cost, enhancement_core_cost, payload_fingerprint,
+                    state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                """)) {
+            statement.setString(1, upgrade.operationId().toString());
+            statement.setString(2, upgrade.towerId().toString());
+            statement.setString(3, upgrade.actorId().toString());
+            statement.setString(4, upgrade.teamId().toString());
+            statement.setInt(5, upgrade.fromLevel());
+            statement.setInt(6, upgrade.toLevel());
+            statement.setInt(7, upgrade.defenseShardCost());
+            statement.setInt(8, upgrade.enhancementCoreCost());
+            statement.setString(9, upgrade.payloadFingerprint());
+            statement.setString(10, upgrade.preparedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static TowerUpgrade withFingerprint(TowerUpgrade upgrade, String fingerprint) {
+        return new TowerUpgrade(
+                upgrade.operationId(),
+                upgrade.towerId(),
+                upgrade.actorId(),
+                upgrade.teamId(),
+                upgrade.fromLevel(),
+                upgrade.toLevel(),
+                upgrade.defenseShardCost(),
+                upgrade.enhancementCoreCost(),
+                fingerprint,
+                upgrade.state(),
+                upgrade.preparedAt(),
+                upgrade.appliedAt(),
+                upgrade.rolledBackAt());
+    }
+
+    private static String upgradeFingerprint(TowerUpgrade upgrade) {
+        return upgrade.towerId() + "|" + upgrade.actorId() + "|" + upgrade.teamId()
+                + "|" + upgrade.fromLevel() + "|" + upgrade.toLevel()
+                + "|" + upgrade.defenseShardCost() + "|" + upgrade.enhancementCoreCost();
+    }
+
+    private static void requireMatchingUpgrade(
+            TowerUpgrade existing,
+            TowerUpgrade requested) {
+        if (!existing.towerId().equals(requested.towerId())
+                || !existing.actorId().equals(requested.actorId())
+                || !existing.teamId().equals(requested.teamId())
+                || existing.fromLevel() != requested.fromLevel()
+                || existing.toLevel() != requested.toLevel()
+                || existing.defenseShardCost() != requested.defenseShardCost()
+                || existing.enhancementCoreCost() != requested.enhancementCoreCost()
+                || !existing.payloadFingerprint().equals(requested.payloadFingerprint())) {
+            throw new PersistenceConflictException(
+                    "The tower upgrade operation UUID is already assigned to another payload");
         }
     }
 
@@ -945,8 +1201,8 @@ public final class TowerRepository {
                 INSERT INTO towers(
                     tower_id, team_id, world_id, block_x, block_y, block_z,
                     tower_type, individual_level, target_priority,
-                    entity_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_hp, max_hp, entity_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             statement.setString(1, tower.id().toString());
             statement.setString(2, tower.teamId().toString());
@@ -957,9 +1213,11 @@ public final class TowerRepository {
             statement.setString(7, tower.type().id());
             statement.setInt(8, tower.individualLevel());
             statement.setString(9, tower.targetPriority().id());
-            statement.setString(10, tower.entityId().toString());
-            statement.setString(11, tower.createdAt().toString());
-            statement.setString(12, tower.updatedAt().toString());
+            statement.setLong(10, tower.currentHitPoints());
+            statement.setLong(11, tower.maximumHitPoints());
+            statement.setString(12, tower.entityId().toString());
+            statement.setString(13, tower.createdAt().toString());
+            statement.setString(14, tower.updatedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -1000,6 +1258,8 @@ public final class TowerRepository {
                 TowerType.fromId(resultSet.getString("tower_type")),
                 resultSet.getInt("individual_level"),
                 TowerTargetPriority.fromId(resultSet.getString("target_priority")),
+                resultSet.getLong("current_hp"),
+                resultSet.getLong("max_hp"),
                 uuid(resultSet.getString("entity_id")),
                 instant(resultSet.getString("created_at")),
                 instant(resultSet.getString("updated_at")));

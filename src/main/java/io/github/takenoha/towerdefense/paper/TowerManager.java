@@ -7,13 +7,19 @@ import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.domain.TowerTargetPriority;
 import io.github.takenoha.towerdefense.domain.TowerType;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
+import io.github.takenoha.towerdefense.persistence.BattleBoost;
+import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
 import io.github.takenoha.towerdefense.persistence.TowerPlacement;
 import io.github.takenoha.towerdefense.persistence.TowerRecord;
 import io.github.takenoha.towerdefense.persistence.TowerRemoval;
 import io.github.takenoha.towerdefense.persistence.TowerRemovalState;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
+import io.github.takenoha.towerdefense.persistence.TowerUpgrade;
+import io.github.takenoha.towerdefense.persistence.TowerUpgradeResult;
+import io.github.takenoha.towerdefense.persistence.TowerUpgradeState;
 import io.github.takenoha.towerdefense.runtime.CoreAttackSchedule;
+import io.github.takenoha.towerdefense.runtime.BattleBoostRegistry;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
@@ -72,6 +78,8 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.persistence.PersistentDataType;
 
@@ -87,14 +95,19 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final TowerRegistry towers;
     private final TowerItemTagger itemTagger;
     private final TowerEntityTagger entityTagger;
+    private final DefenseShardTagger shardTagger;
+    private final EnhancementCoreTagger enhancementCoreTagger;
     private final CombatArea combatArea;
     private final NamespacedKey towerDamageKey;
     private final Set<UUID> placementInFlight = new HashSet<>();
     private final Set<UUID> removalInFlight = new HashSet<>();
     private final Set<UUID> priorityInFlight = new HashSet<>();
+    private final Set<UUID> upgradeInFlight = new HashSet<>();
     private final Set<UUID> pendingRemovalTowerIds = new HashSet<>();
     private final Set<UUID> appliedTowerIds;
     private final Map<UUID, CoreAttackSchedule> attackSchedules = new HashMap<>();
+    private final BattleBoostRegistry battleBoosts = new BattleBoostRegistry();
+    private final Set<UUID> boostInFlight = new HashSet<>();
 
     private BukkitTask tickTask;
     private long currentTick;
@@ -120,6 +133,8 @@ public final class TowerManager implements Listener, AutoCloseable {
         this.towers = Objects.requireNonNull(towers, "towers");
         this.itemTagger = Objects.requireNonNull(itemTagger, "itemTagger");
         this.entityTagger = Objects.requireNonNull(entityTagger, "entityTagger");
+        shardTagger = new DefenseShardTagger(plugin);
+        enhancementCoreTagger = new EnhancementCoreTagger(plugin);
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -128,6 +143,8 @@ public final class TowerManager implements Listener, AutoCloseable {
                 settings.combat().coreGap());
         towerDamageKey = new NamespacedKey(plugin, "tower_damage_touched");
         appliedTowerIds = new HashSet<>(repository.loadAppliedTowerIds());
+        defenseRepository.activeEventId().ifPresent(eventId ->
+                battleBoosts.replaceAll(defenseRepository.loadBattleBoosts(eventId)));
         for (TowerRemoval removal : repository.loadPendingTowerRemovals()) {
             pendingRemovalTowerIds.add(removal.towerId());
         }
@@ -152,6 +169,51 @@ public final class TowerManager implements Listener, AutoCloseable {
         cannonRecipe.setIngredient('G', Material.GUNPOWDER);
         cannonRecipe.setIngredient('I', Material.IRON_INGOT);
         Bukkit.addRecipe(cannonRecipe);
+
+        ShapedRecipe frostRecipe = new ShapedRecipe(
+                new NamespacedKey(plugin, "tower_frost"),
+                itemTagger.recipeTemplate(TowerType.FROST));
+        frostRecipe.shape("PIP", "IDI", "PIP");
+        frostRecipe.setIngredient('P', Material.PACKED_ICE);
+        frostRecipe.setIngredient('I', Material.IRON_INGOT);
+        frostRecipe.setIngredient('D', Material.DIAMOND);
+        Bukkit.addRecipe(frostRecipe);
+
+        ShapedRecipe lightningRecipe = new ShapedRecipe(
+                new NamespacedKey(plugin, "tower_lightning"),
+                itemTagger.recipeTemplate(TowerType.LIGHTNING));
+        lightningRecipe.shape("RER", "ECE", "RER");
+        lightningRecipe.setIngredient('R', Material.REDSTONE);
+        lightningRecipe.setIngredient('E', Material.ENDER_PEARL);
+        lightningRecipe.setIngredient('C', Material.COPPER_INGOT);
+        Bukkit.addRecipe(lightningRecipe);
+
+        ShapedRecipe supportRecipe = new ShapedRecipe(
+                new NamespacedKey(plugin, "tower_support"),
+                itemTagger.recipeTemplate(TowerType.SUPPORT));
+        supportRecipe.shape("GAG", "AEA", "GAG");
+        supportRecipe.setIngredient('G', Material.GOLD_INGOT);
+        supportRecipe.setIngredient('A', Material.AMETHYST_SHARD);
+        supportRecipe.setIngredient('E', Material.EMERALD);
+        Bukkit.addRecipe(supportRecipe);
+
+        ShapedRecipe sniperRecipe = new ShapedRecipe(
+                new NamespacedKey(plugin, "tower_sniper"),
+                itemTagger.recipeTemplate(TowerType.SNIPER));
+        sniperRecipe.shape("FIF", "IEI", "FIF");
+        sniperRecipe.setIngredient('F', Material.FEATHER);
+        sniperRecipe.setIngredient('I', Material.IRON_INGOT);
+        sniperRecipe.setIngredient('E', Material.ENDER_EYE);
+        Bukkit.addRecipe(sniperRecipe);
+
+        ShapedRecipe flameRecipe = new ShapedRecipe(
+                new NamespacedKey(plugin, "tower_flame"),
+                itemTagger.recipeTemplate(TowerType.FLAME));
+        flameRecipe.shape("BBB", "BFB", "BDB");
+        flameRecipe.setIngredient('B', Material.BLAZE_POWDER);
+        flameRecipe.setIngredient('F', Material.FIRE_CHARGE);
+        flameRecipe.setIngredient('D', Material.DIAMOND);
+        Bukkit.addRecipe(flameRecipe);
     }
 
     /** Restores only known prepared operations; unknown physical states remain fail-closed. */
@@ -274,8 +336,18 @@ public final class TowerManager implements Listener, AutoCloseable {
                 TowerManagementGui.priorityAt(event.getRawSlot());
         if (event.getRawSlot() == TowerManagementGui.CLOSE_SLOT) {
             player.closeInventory();
+        } else if (event.getRawSlot() == TowerManagementGui.BOOST_POWER_SLOT) {
+            beginBattleBoost(player, holder.towerId(), BattleBoostKind.POWER);
+        } else if (event.getRawSlot() == TowerManagementGui.BOOST_SPEED_SLOT) {
+            beginBattleBoost(player, holder.towerId(), BattleBoostKind.SPEED);
+        } else if (event.getRawSlot() == TowerManagementGui.BOOST_RANGE_SLOT) {
+            beginBattleBoost(player, holder.towerId(), BattleBoostKind.RANGE);
+        } else if (event.getRawSlot() == TowerManagementGui.REPAIR_SLOT) {
+            beginTowerRepair(player, holder.towerId());
         } else if (targetPriority.isPresent()) {
             setTargetPriority(player, holder.towerId(), targetPriority.orElseThrow());
+        } else if (event.getRawSlot() == TowerManagementGui.UPGRADE_SLOT) {
+            beginUpgrade(player, holder.towerId());
         } else if (event.getRawSlot() == TowerManagementGui.REMOVE_SLOT) {
             beginRemoval(player, holder.towerId());
         }
@@ -413,8 +485,17 @@ public final class TowerManager implements Listener, AutoCloseable {
             if (!team.members().contains(player.getUniqueId())) {
                 throw new IllegalStateException("このタワーを操作できるチームメンバーではありません");
             }
-            return tower;
-        }).whenComplete((tower, failure) -> runOnMainThread(() -> {
+            var research = repository.findTowerResearch(tower.teamId(), tower.type()).orElseThrow(
+                    () -> new IllegalStateException("タワー研究データが見つかりません"));
+            Optional<UUID> eventId = defenseRepository.activeEventId();
+            List<BattleBoost> boosts = eventId.isPresent()
+                    ? defenseRepository.loadBattleBoosts(eventId.orElseThrow())
+                    : List.of();
+            long battleFunds = eventId.isPresent()
+                    ? defenseRepository.loadBattleFunds(eventId.orElseThrow()).balance()
+                    : 0L;
+            return new TowerGuiData(tower, research.researchLevel(), eventId, battleFunds, boosts);
+        }).whenComplete((data, failure) -> runOnMainThread(() -> {
             if (failure != null || !player.isOnline()) {
                 if (failure == null) {
                     return;
@@ -426,10 +507,201 @@ public final class TowerManager implements Listener, AutoCloseable {
             String reason = canRemove
                     ? ""
                     : "防衛戦開始後は回収・移設できません。";
+            int shardCost = data.tower().individualLevel() < data.researchLevel()
+                    ? settings.towers().individualUpgradeShardCost(
+                            data.tower().individualLevel())
+                    : 0;
+            int coreCost = data.tower().individualLevel() < data.researchLevel()
+                    ? settings.towers().individualUpgradeCoreCost(
+                            data.tower().individualLevel())
+                    : 0;
+            battleBoosts.replaceAll(data.boosts());
+            Map<BattleBoostKind, BattleBoost> boosts = new HashMap<>();
+            for (BattleBoost boost : data.boosts()) {
+                if (boost.towerId().equals(data.tower().id())) {
+                    boosts.put(boost.kind(), boost);
+                }
+            }
+            boolean canBuyBoost = data.eventId().isPresent()
+                    && sessions.maySpendBattleFunds(data.tower().teamId());
+            int powerCost = nextBoostCost(boosts, BattleBoostKind.POWER);
+            int speedCost = nextBoostCost(boosts, BattleBoostKind.SPEED);
+            int rangeCost = nextBoostCost(boosts, BattleBoostKind.RANGE);
+            boolean canSpendBattleFunds = data.eventId().isPresent()
+                    && sessions.maySpendBattleFunds(data.tower().teamId());
+            long repairAmount = Math.min(
+                    data.tower().maximumHitPoints() - data.tower().currentHitPoints(),
+                    settings.towers().battleRepairHealthPerPurchase());
+            long repairCostLong = repairAmount * settings.towers().battleRepairFundsPerHealth();
+            int repairCost = repairCostLong > Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE
+                    : (int) repairCostLong;
             player.openInventory(TowerManagementGui.create(
-                    tower,
+                    data.tower(),
                     canRemove,
-                    reason));
+                    reason,
+                    data.researchLevel(),
+                    shardCost,
+                    coreCost,
+                    canSpendBattleFunds,
+                    data.battleFunds(),
+                    boosts,
+                    powerCost,
+                    speedCost,
+                    rangeCost,
+                    canSpendBattleFunds,
+                    data.tower().currentHitPoints(),
+                    data.tower().maximumHitPoints(),
+                    repairCost));
+        }));
+    }
+
+    private int nextBoostCost(Map<BattleBoostKind, BattleBoost> boosts, BattleBoostKind kind) {
+        BattleBoost current = boosts.get(kind);
+        int currentLevel = current == null ? 0 : current.level();
+        if (currentLevel >= settings.towers().battleBoostStackLimit()) {
+            return 0;
+        }
+        return settings.towers().battleBoostCost(currentLevel);
+    }
+
+    private void beginBattleBoost(
+            Player player,
+            UUID towerId,
+            BattleBoostKind kind) {
+        TowerRecord tower = towers.find(towerId).orElse(null);
+        if (tower == null) {
+            player.sendMessage(Component.text(
+                    "ブースト対象のタワーが見つかりません。", NamedTextColor.RED));
+            return;
+        }
+        if (!sessions.maySpendBattleFunds(tower.teamId())) {
+            player.sendMessage(Component.text(
+                    "戦闘ブーストは準備時間またはウェーブ間だけ購入できます。",
+                    NamedTextColor.RED));
+            return;
+        }
+        if (!boostInFlight.add(towerId)) {
+            player.sendMessage(Component.text("戦闘ブーストを処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        UUID actorId = player.getUniqueId();
+        player.sendMessage(Component.text("戦闘ブーストを購入しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            UUID eventId = defenseRepository.activeEventId().orElseThrow(
+                    () -> new IllegalStateException("防衛戦が見つかりません"));
+            List<BattleBoost> existing = defenseRepository.loadBattleBoosts(eventId);
+            int currentLevel = existing.stream()
+                    .filter(boost -> boost.towerId().equals(towerId) && boost.kind() == kind)
+                    .mapToInt(BattleBoost::level)
+                    .findFirst()
+                    .orElse(0);
+            if (currentLevel >= settings.towers().battleBoostStackLimit()) {
+                throw new IllegalStateException("このタワーのブースト上限に達しています");
+            }
+            return defenseRepository.purchaseBattleBoost(
+                    eventId,
+                    tower.teamId(),
+                    actorId,
+                    towerId,
+                    kind,
+                    settings.towers().battleBoostCost(currentLevel),
+                    boostMultiplier(kind),
+                    UUID.randomUUID(),
+                    Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            boostInFlight.remove(towerId);
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "戦闘ブーストを購入できません: " + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            battleBoosts.replace(result.boost());
+            player.sendMessage(Component.text(
+                    "戦闘ブースト（" + kind.id() + "）をLv" + result.boost().level()
+                            + "へ上げました。残高: " + result.funds().balance(),
+                    NamedTextColor.GREEN));
+            openTowerGui(
+                    player,
+                    new TowerEntityIdentity(
+                            tower.id(),
+                            tower.teamId(),
+                            tower.type(),
+                            tower.individualLevel()),
+                    tower.entityId());
+        }));
+    }
+
+    private double boostMultiplier(BattleBoostKind kind) {
+        return switch (kind) {
+            case POWER -> settings.towers().battleBoostPowerMultiplier();
+            case SPEED -> settings.towers().battleBoostSpeedMultiplier();
+            case RANGE -> settings.towers().battleBoostRangeMultiplier();
+        };
+    }
+
+    private void beginTowerRepair(Player player, UUID towerId) {
+        TowerRecord tower = towers.find(towerId).orElse(null);
+        if (tower == null) {
+            player.sendMessage(Component.text(
+                    "修理対象のタワーが見つかりません。", NamedTextColor.RED));
+            return;
+        }
+        if (!sessions.maySpendBattleFunds(tower.teamId())) {
+            player.sendMessage(Component.text(
+                    "タワー修理は準備時間またはウェーブ間だけ実行できます。",
+                    NamedTextColor.RED));
+            return;
+        }
+        long missing = tower.maximumHitPoints() - tower.currentHitPoints();
+        if (missing <= 0L) {
+            player.sendMessage(Component.text("このタワーはHP満タンです。", NamedTextColor.YELLOW));
+            return;
+        }
+        long repaired = Math.min(missing, settings.towers().battleRepairHealthPerPurchase());
+        long cost = Math.multiplyExact(repaired, settings.towers().battleRepairFundsPerHealth());
+        if (!boostInFlight.add(towerId)) {
+            player.sendMessage(Component.text("タワー修理を処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        player.sendMessage(Component.text("タワー修理を処理しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            UUID eventId = defenseRepository.activeEventId().orElseThrow(
+                    () -> new IllegalStateException("防衛戦が見つかりません"));
+            return defenseRepository.repairTowerWithBattleFunds(
+                    eventId,
+                    tower.teamId(),
+                    player.getUniqueId(),
+                    towerId,
+                    repaired,
+                    cost,
+                    UUID.randomUUID(),
+                    Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            boostInFlight.remove(towerId);
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "タワーを修理できません: " + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            TowerRecord updated = tower.withCurrentHitPoints(
+                    result.durability().currentHitPoints(), Instant.now());
+            towers.replace(updated);
+            player.sendMessage(Component.text(
+                    "タワーを" + result.durability().currentHitPoints()
+                            + " / " + result.durability().maximumHitPoints()
+                            + " HPへ修理しました。残高: " + result.funds().balance(),
+                    NamedTextColor.GREEN));
+            openTowerGui(
+                    player,
+                    new TowerEntityIdentity(
+                            updated.id(),
+                            updated.teamId(),
+                            updated.type(),
+                            updated.individualLevel()),
+                    updated.entityId());
         }));
     }
 
@@ -469,15 +741,204 @@ public final class TowerManager implements Listener, AutoCloseable {
                             || !holder.towerId().equals(towerId)) {
                         return;
                     }
-                    boolean canRemove = !sessions.hasActiveSession();
-                    player.openInventory(TowerManagementGui.create(
-                            updated,
-                            canRemove,
-                            canRemove ? "" : "防衛戦開始後は回収・移設できません。"));
+                    openTowerGui(
+                            player,
+                            new TowerEntityIdentity(
+                                    updated.id(),
+                                    updated.teamId(),
+                                    updated.type(),
+                                    updated.individualLevel()),
+                            updated.entityId());
                     player.sendMessage(Component.text(
                             "対象優先を「" + updated.targetPriority().displayName() + "」に変更しました。",
                             NamedTextColor.GREEN));
                 }));
+    }
+
+    private void beginUpgrade(Player player, UUID towerId) {
+        if (pendingRemovalTowerIds.contains(towerId) || removalInFlight.contains(towerId)) {
+            player.sendMessage(Component.text(
+                    "タワー回収処理中のため強化できません。", NamedTextColor.YELLOW));
+            return;
+        }
+        TowerRecord tower = towers.find(towerId).orElse(null);
+        if (tower == null) {
+            player.sendMessage(Component.text(
+                    "強化対象のタワーが見つかりません。", NamedTextColor.RED));
+            return;
+        }
+        if (!sessions.mayUpgradeTower(tower.teamId())) {
+            player.sendMessage(Component.text(
+                    "個体Lv強化は戦闘外またはウェーブ間準備時間だけ可能です。",
+                    NamedTextColor.RED));
+            return;
+        }
+        if (!upgradeInFlight.add(towerId)) {
+            player.sendMessage(Component.text("タワー強化を処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        int shardCost = settings.towers().individualUpgradeShardCost(tower.individualLevel());
+        int coreCost = settings.towers().individualUpgradeCoreCost(tower.individualLevel());
+        TowerUpgrade request = TowerUpgrade.prepared(
+                UUID.randomUUID(),
+                tower,
+                player.getUniqueId(),
+                shardCost,
+                coreCost,
+                Instant.now());
+        player.sendMessage(Component.text("個体Lv強化を準備しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> repository.prepareTowerUpgrade(request))
+                .whenComplete((prepared, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        finishUpgrade(player, towerId,
+                                "タワーを強化できません: " + rootMessage(failure));
+                        return;
+                    }
+                    if (prepared.state() != TowerUpgradeState.PREPARED
+                            || !sessions.mayUpgradeTower(tower.teamId())
+                            || !currentTowerEntityMatches(tower)
+                            || !player.isOnline()) {
+                        rollbackUpgrade(
+                                player,
+                                prepared,
+                                null,
+                                "強化前に対象または防衛フェーズが変わったため取り消しました。");
+                        return;
+                    }
+                    RemovedItems removed = removeUpgradeItems(
+                            player,
+                            prepared.defenseShardCost(),
+                            prepared.enhancementCoreCost());
+                    if (removed == null) {
+                        rollbackUpgrade(
+                                player,
+                                prepared,
+                                null,
+                                "強化に必要な素材が不足しています。");
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.applyTowerUpgrade(
+                                    prepared.operationId(), Instant.now()))
+                            .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                                if (applyFailure != null) {
+                                    rollbackUpgrade(
+                                            player,
+                                            prepared,
+                                            removed,
+                                            "強化を永続化できなかったため素材を返却します: "
+                                                    + rootMessage(applyFailure));
+                                    return;
+                                }
+                                TowerRecord updated = result.tower().orElse(null);
+                                if (updated == null) {
+                                    finishUpgrade(player, towerId,
+                                            "強化結果のタワーを確認できません。管理者へ連絡してください。");
+                                    return;
+                                }
+                                upgradeInFlight.remove(towerId);
+                                towers.replace(updated);
+                                Entity entity = Bukkit.getEntity(updated.entityId());
+                                if (entity != null) {
+                                    entityTagger.tag(entity, new TowerEntityIdentity(
+                                            updated.id(),
+                                            updated.teamId(),
+                                            updated.type(),
+                                            updated.individualLevel()));
+                                }
+                                player.sendMessage(Component.text(
+                                        "タワーを個体Lv" + updated.individualLevel()
+                                                + "へ強化しました。",
+                                        NamedTextColor.GREEN));
+                                openTowerGui(
+                                        player,
+                                        new TowerEntityIdentity(
+                                                updated.id(),
+                                                updated.teamId(),
+                                                updated.type(),
+                                                updated.individualLevel()),
+                                        updated.entityId());
+                            }));
+                }));
+    }
+
+    private void rollbackUpgrade(
+            Player player,
+            TowerUpgrade upgrade,
+            RemovedItems removed,
+            String message) {
+        databaseExecutor.submit(() -> repository.rollbackTowerUpgrade(
+                        upgrade.operationId(), Instant.now()))
+                .whenComplete((result, failure) -> runOnMainThread(() -> {
+                    upgradeInFlight.remove(upgrade.towerId());
+                    if (failure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.SEVERE,
+                                "Could not roll back tower upgrade " + upgrade.operationId(),
+                                failure);
+                        player.sendMessage(Component.text(
+                                "タワー強化の復旧を保留しています。管理者へ連絡してください。",
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (removed != null
+                            && result.isPresent()
+                            && result.orElseThrow().state() == TowerUpgradeState.ROLLED_BACK) {
+                        for (ItemStack item : removed.items()) {
+                            if (!giveOrDrop(player, item)) {
+                                plugin.getLogger().warning(
+                                        "Could not refund a tower upgrade material");
+                            }
+                        }
+                    }
+                    player.sendMessage(Component.text(message, NamedTextColor.RED));
+                }));
+    }
+
+    private void finishUpgrade(Player player, UUID towerId, String message) {
+        upgradeInFlight.remove(towerId);
+        player.sendMessage(Component.text(message, NamedTextColor.RED));
+    }
+
+    private RemovedItems removeUpgradeItems(
+            Player player,
+            int shardCost,
+            int enhancementCoreCost) {
+        int shardsRemaining = shardCost;
+        int coresRemaining = enhancementCoreCost;
+        List<ItemStack> removed = new ArrayList<>();
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (item == null) {
+                continue;
+            }
+            boolean shard = shardTagger.isShard(item);
+            boolean core = enhancementCoreTagger.isEnhancementCore(item);
+            int remaining = shard ? shardsRemaining : (core ? coresRemaining : 0);
+            if (remaining <= 0) {
+                continue;
+            }
+            int quantity = Math.min(item.getAmount(), remaining);
+            ItemStack taken = item.clone();
+            taken.setAmount(quantity);
+            removed.add(taken);
+            int left = item.getAmount() - quantity;
+            player.getInventory().setItem(slot, left == 0 ? null : item.clone());
+            if (left > 0) {
+                player.getInventory().getItem(slot).setAmount(left);
+            }
+            if (shard) {
+                shardsRemaining -= quantity;
+            } else {
+                coresRemaining -= quantity;
+            }
+        }
+        if (shardsRemaining > 0 || coresRemaining > 0) {
+            for (ItemStack item : removed) {
+                giveOrDrop(player, item);
+            }
+            return null;
+        }
+        return new RemovedItems(List.copyOf(removed));
     }
 
     private void beginRemoval(Player player, UUID towerId) {
@@ -803,6 +1264,9 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     private void tick() {
         currentTick++;
+        if (!sessions.hasActiveSession() && !battleBoosts.isEmpty()) {
+            battleBoosts.clear();
+        }
         for (TowerRecord tower : towers.all()) {
             Entity entity = Bukkit.getEntity(tower.entityId());
             if (!(entity instanceof ArmorStand stand)
@@ -812,30 +1276,41 @@ public final class TowerManager implements Listener, AutoCloseable {
                             !identity.towerId().equals(tower.id())
                                     || !identity.teamId().equals(tower.teamId())
                                     || identity.type() != tower.type()
-                                    || identity.individualLevel() != tower.individualLevel())
+                            || identity.individualLevel() != tower.individualLevel())
                             .orElse(true)) {
+                continue;
+            }
+            if (tower.currentHitPoints() <= 0L) {
+                continue;
+            }
+            if (tower.type() == TowerType.SUPPORT) {
                 continue;
             }
             Optional<LivingEntity> target = findTarget(tower, stand);
             if (target.isEmpty()) {
                 continue;
             }
+            int supportStacks = supportStacksFor(tower, stand);
             CoreAttackSchedule schedule = attackSchedules.computeIfAbsent(
                     tower.id(), ignored -> new CoreAttackSchedule(
-                            settings.towers().attackIntervalTicksFor(tower.type())));
+                            effectiveAttackInterval(tower, supportStacks)));
+            schedule.updateInterval(effectiveAttackInterval(tower, supportStacks), currentTick);
             if (schedule.tryClaim(currentTick)) {
-                if (tower.type() == TowerType.ARROW) {
-                    target.orElseThrow().damage(
-                            settings.towers().damageFor(tower.type()), stand);
-                } else if (tower.type() == TowerType.CANNON) {
-                    damageCannonTargets(tower, stand, target.orElseThrow());
+                LivingEntity center = target.orElseThrow();
+                switch (tower.type()) {
+                    case ARROW, SNIPER -> center.damage(effectiveDamage(tower, supportStacks), stand);
+                    case CANNON -> damageCannonTargets(tower, stand, center, supportStacks);
+                    case FROST -> damageFrostTarget(tower, stand, center, supportStacks);
+                    case LIGHTNING -> damageLightningTargets(tower, stand, center, supportStacks);
+                    case FLAME -> damageFlameTargets(tower, stand, center, supportStacks);
+                    case SUPPORT -> throw new IllegalStateException("support tower reached attack path");
                 }
             }
         }
     }
 
     private Optional<LivingEntity> findTarget(TowerRecord tower, ArmorStand stand) {
-        double range = settings.towers().rangeFor(tower.type());
+        double range = effectiveRange(tower, stand);
         List<LivingEntity> candidates = new ArrayList<>();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         Map<UUID, TaggedEnemy> eventTags = new HashMap<>();
@@ -894,7 +1369,8 @@ public final class TowerManager implements Listener, AutoCloseable {
     private void damageCannonTargets(
             TowerRecord tower,
             ArmorStand stand,
-            LivingEntity center) {
+            LivingEntity center,
+            int supportStacks) {
         double radius = settings.towers().cannonSplashRadius();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         for (Entity entity : center.getWorld().getNearbyEntities(
@@ -912,8 +1388,143 @@ public final class TowerManager implements Listener, AutoCloseable {
                     tagged.orElseThrow(), tower.teamId())) {
                 continue;
             }
-            monster.damage(settings.towers().cannonDamage(), stand);
+            monster.damage(effectiveDamage(tower, supportStacks), stand);
         }
+    }
+
+    private void damageFrostTarget(
+            TowerRecord tower,
+            ArmorStand stand,
+            LivingEntity target,
+            int supportStacks) {
+        TowerSettings towerSettings = settings.towers();
+        target.damage(effectiveDamage(tower, supportStacks), stand);
+        int duration = towerSettings.slowDurationTicksFor(tower.type());
+        if (duration <= 0) {
+            return;
+        }
+        int amplifier = Math.max(
+                0,
+                (int) Math.ceil(towerSettings.slowPercentFor(tower.type()) * 4.0d) - 1);
+        target.addPotionEffect(new PotionEffect(
+                PotionEffectType.SLOWNESS,
+                duration,
+                amplifier,
+                true,
+                true,
+                true));
+    }
+
+    private void damageLightningTargets(
+            TowerRecord tower,
+            ArmorStand stand,
+            LivingEntity center,
+            int supportStacks) {
+        TowerSettings towerSettings = settings.towers();
+        double radius = towerSettings.chainRadiusFor(tower.type());
+        EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        List<LivingEntity> candidates = new ArrayList<>();
+        candidates.add(center);
+        for (Entity entity : center.getWorld().getNearbyEntities(
+                center.getLocation(), radius, radius, radius)) {
+            if (!(entity instanceof Monster monster)
+                    || monster.equals(center)
+                    || !monster.isValid()
+                    || monster.isDead()
+                    || entityTagger.read(entity).isPresent()
+                    || entity.getLocation().distanceSquared(center.getLocation()) > radius * radius
+                    || !stand.hasLineOfSight(entity)) {
+                continue;
+            }
+            Optional<TaggedEnemy> tagged = eventTagger.read(entity);
+            if (tagged.isPresent() && !sessions.mayAffectFromTower(
+                    tagged.orElseThrow(), tower.teamId())) {
+                continue;
+            }
+            candidates.add(monster);
+        }
+        candidates.stream()
+                .skip(1)
+                .sorted(Comparator.comparingDouble(
+                        candidate -> candidate.getLocation().distanceSquared(center.getLocation())))
+                .limit(Math.max(0, towerSettings.chainCountFor(tower.type()) - 1L))
+                .forEach(candidate -> candidate.damage(
+                        effectiveDamage(tower, supportStacks), stand));
+        center.damage(effectiveDamage(tower, supportStacks), stand);
+    }
+
+    private void damageFlameTargets(
+            TowerRecord tower,
+            ArmorStand stand,
+            LivingEntity center,
+            int supportStacks) {
+        TowerSettings towerSettings = settings.towers();
+        double radius = towerSettings.areaRadiusFor(tower.type());
+        EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
+        for (Entity entity : center.getWorld().getNearbyEntities(
+                center.getLocation(), radius, radius, radius)) {
+            if (!(entity instanceof Monster monster)
+                    || !monster.isValid()
+                    || monster.isDead()
+                    || entityTagger.read(entity).isPresent()
+                    || entity.getLocation().distanceSquared(center.getLocation()) > radius * radius
+                    || !stand.hasLineOfSight(entity)) {
+                continue;
+            }
+            Optional<TaggedEnemy> tagged = eventTagger.read(entity);
+            if (tagged.isPresent() && !sessions.mayAffectFromTower(
+                    tagged.orElseThrow(), tower.teamId())) {
+                continue;
+            }
+            monster.damage(effectiveDamage(tower, supportStacks), stand);
+            monster.setFireTicks(Math.max(
+                    monster.getFireTicks(), towerSettings.burnDurationTicksFor(tower.type())));
+        }
+    }
+
+    private int supportStacksFor(TowerRecord tower, ArmorStand stand) {
+        TowerSettings towerSettings = settings.towers();
+        if (towerSettings.supportStackLimit() <= 0) {
+            return 0;
+        }
+        double radiusSquared = towerSettings.supportRadius() * towerSettings.supportRadius();
+        return (int) towers.all().stream()
+                .filter(candidate -> candidate.type() == TowerType.SUPPORT)
+                .filter(candidate -> candidate.teamId().equals(tower.teamId()))
+                .filter(candidate -> !candidate.id().equals(tower.id()))
+                .filter(candidate -> candidate.worldId().equals(tower.worldId()))
+                .filter(candidate -> {
+                    Entity entity = Bukkit.getEntity(candidate.entityId());
+                    return entity instanceof ArmorStand support
+                            && support.isValid()
+                            && !support.isDead()
+                            && support.getLocation().distanceSquared(stand.getLocation())
+                                    <= radiusSquared;
+                })
+                .sorted(Comparator.comparing(candidate -> candidate.id().toString()))
+                .limit(towerSettings.supportStackLimit())
+                .count();
+    }
+
+    private double effectiveRange(TowerRecord tower, ArmorStand stand) {
+        int supportStacks = supportStacksFor(tower, stand);
+        return settings.towers().rangeFor(tower.type())
+                * Math.pow(settings.towers().supportRangeMultiplier(), supportStacks)
+                * battleBoosts.multiplier(tower.id(), BattleBoostKind.RANGE);
+    }
+
+    private int effectiveAttackInterval(TowerRecord tower, int supportStacks) {
+        long interval = Math.round(settings.towers().attackIntervalTicksFor(tower.type())
+                * Math.pow(settings.towers().supportSpeedMultiplier(), supportStacks)
+                * battleBoosts.multiplier(tower.id(), BattleBoostKind.SPEED));
+        return (int) Math.max(1L, Math.min(Integer.MAX_VALUE, interval));
+    }
+
+    private int effectiveDamage(TowerRecord tower, int supportStacks) {
+        long damage = Math.round(settings.towers().damageFor(tower.type())
+                * Math.pow(settings.towers().supportDamageMultiplier(), supportStacks)
+                * battleBoosts.multiplier(tower.id(), BattleBoostKind.POWER));
+        return (int) Math.max(1L, Math.min(Integer.MAX_VALUE, damage));
     }
 
     private boolean touchesTower(Block block) {
@@ -1018,6 +1629,17 @@ public final class TowerManager implements Listener, AutoCloseable {
         return root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
     }
 
+    private record TowerGuiData(
+            TowerRecord tower,
+            int researchLevel,
+            Optional<UUID> eventId,
+            long battleFunds,
+            List<BattleBoost> boosts) {
+    }
+
+    private record RemovedItems(List<ItemStack> items) {
+    }
+
     @Override
     public void close() {
         if (tickTask != null) {
@@ -1025,5 +1647,6 @@ public final class TowerManager implements Listener, AutoCloseable {
             tickTask = null;
         }
         attackSchedules.clear();
+        upgradeInFlight.clear();
     }
 }

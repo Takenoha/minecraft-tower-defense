@@ -5,11 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.takenoha.towerdefense.config.TowerSettings;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
+import io.github.takenoha.towerdefense.domain.TowerType;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -135,6 +140,188 @@ final class DefenseEventPersistenceTest {
         DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
         assertEquals(stored, reopened.findEvent(eventId).orElseThrow());
         assertTrue(reopened.activeEventId().isEmpty());
+    }
+
+    @Test
+    void battleFundsAreTeamSharedIdempotentAndSettledAtTerminal() {
+        DefenseRepository repository = new DefenseRepository(
+                new Database(temporaryDirectory.resolve("battle-funds.sqlite")));
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        UUID eventId = UUID.randomUUID();
+        StartRequest request = startRequest(fixture, eventId);
+        assertEquals(StartOutcome.STARTED, repository.tryStart(request));
+        assertEquals(0L, repository.loadBattleFunds(eventId).balance());
+
+        UUID enemyOperation = UUID.randomUUID();
+        String enemyKind = "ENEMY_NORMAL:" + UUID.randomUUID();
+        BattleFundsMutationResult earned = repository.creditBattleFunds(
+                eventId,
+                fixture.teamId(),
+                enemyOperation,
+                enemyKind,
+                10L,
+                STARTED_AT.plusSeconds(1L));
+        assertEquals(OperationOutcome.APPLIED, earned.outcome());
+        assertEquals(10L, earned.funds().balance());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.creditBattleFunds(
+                        eventId,
+                        fixture.teamId(),
+                        enemyOperation,
+                        enemyKind,
+                        10L,
+                        STARTED_AT.plusSeconds(2L)).outcome());
+        assertEquals(10L, repository.loadBattleFunds(eventId).balance());
+
+        DefenseSession session = DefenseSession.restore(request.session());
+        session.completeCountdown(Set.of(fixture.ownerId()));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.saveTransition(
+                        session.snapshot(), 0L, UUID.randomUUID(), STARTED_AT.plusSeconds(3L)));
+        UUID spendOperation = UUID.randomUUID();
+        BattleFundsMutationResult spent = repository.spendBattleFunds(
+                eventId,
+                fixture.teamId(),
+                fixture.ownerId(),
+                spendOperation,
+                "REPAIR",
+                4L,
+                STARTED_AT.plusSeconds(4L));
+        assertEquals(OperationOutcome.APPLIED, spent.outcome());
+        assertEquals(6L, spent.funds().balance());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.spendBattleFunds(
+                        eventId,
+                        fixture.teamId(),
+                        fixture.ownerId(),
+                        spendOperation,
+                        "REPAIR",
+                        4L,
+                        STARTED_AT.plusSeconds(5L)).outcome());
+
+        assertTrue(session.abort());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), 1L, UUID.randomUUID(), STARTED_AT.plusSeconds(6L)));
+        BattleFunds settled = repository.loadBattleFunds(eventId);
+        assertEquals(BattleFundsState.SETTLED, settled.state());
+        assertEquals(0L, settled.balance());
+        assertEquals(10L, settled.totalEarned());
+        assertEquals(4L, settled.totalSpent());
+    }
+
+    @Test
+    void battleBoostAndTowerRepairAreAtomicAndClearedAtTerminal() throws SQLException {
+        Database database = new Database(
+                temporaryDirectory.resolve("battle-boost-repair.sqlite"));
+        DefenseRepository repository = new DefenseRepository(database);
+        TowerRepository towerRepository = new TowerRepository(database);
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        UUID eventId = UUID.randomUUID();
+        StartRequest request = startRequest(fixture, eventId);
+        assertEquals(StartOutcome.STARTED, repository.tryStart(request));
+
+        DefenseSession session = DefenseSession.restore(request.session());
+        session.completeCountdown(Set.of(fixture.ownerId()));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.saveTransition(
+                        session.snapshot(), 0L, UUID.randomUUID(), STARTED_AT.plusSeconds(1L)));
+
+        TowerPlacement placement = TowerPlacement.prepared(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                fixture.ownerId(),
+                fixture.teamId(),
+                fixture.core().worldId(),
+                1,
+                64,
+                1,
+                TowerType.FROST,
+                STARTED_AT.plusSeconds(2L));
+        towerRepository.prepareTowerPlacement(placement, TowerSettings.defaults());
+        TowerRecord tower = towerRepository.applyTowerPlacement(
+                placement.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                STARTED_AT.plusSeconds(3L));
+        assertEquals(100L, tower.currentHitPoints());
+
+        repository.creditBattleFunds(
+                eventId,
+                fixture.teamId(),
+                UUID.randomUUID(),
+                "ENEMY_SPECIAL",
+                100L,
+                STARTED_AT.plusSeconds(4L));
+        UUID boostOperation = UUID.randomUUID();
+        BattleBoostMutationResult boost = repository.purchaseBattleBoost(
+                eventId,
+                fixture.teamId(),
+                fixture.ownerId(),
+                tower.id(),
+                BattleBoostKind.POWER,
+                25L,
+                1.20d,
+                boostOperation,
+                STARTED_AT.plusSeconds(5L));
+        assertEquals(OperationOutcome.APPLIED, boost.outcome());
+        assertEquals(1, boost.boost().level());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.purchaseBattleBoost(
+                        eventId,
+                        fixture.teamId(),
+                        fixture.ownerId(),
+                        tower.id(),
+                        BattleBoostKind.POWER,
+                        25L,
+                        1.20d,
+                        boostOperation,
+                        STARTED_AT.plusSeconds(6L)).outcome());
+
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "UPDATE towers SET current_hp = 80 WHERE tower_id = ?")) {
+            statement.setString(1, tower.id().toString());
+            assertEquals(1, statement.executeUpdate());
+        }
+        UUID repairOperation = UUID.randomUUID();
+        TowerRepairMutationResult repair = repository.repairTowerWithBattleFunds(
+                eventId,
+                fixture.teamId(),
+                fixture.ownerId(),
+                tower.id(),
+                10L,
+                10L,
+                repairOperation,
+                STARTED_AT.plusSeconds(7L));
+        assertEquals(OperationOutcome.APPLIED, repair.outcome());
+        assertEquals(90L, repair.durability().currentHitPoints());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                repository.repairTowerWithBattleFunds(
+                        eventId,
+                        fixture.teamId(),
+                        fixture.ownerId(),
+                        tower.id(),
+                        10L,
+                        10L,
+                        repairOperation,
+                        STARTED_AT.plusSeconds(8L)).outcome());
+        assertEquals(65L, repository.loadBattleFunds(eventId).balance());
+
+        assertTrue(session.abort());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), 1L, UUID.randomUUID(), STARTED_AT.plusSeconds(9L)));
+        assertTrue(repository.loadBattleBoosts(eventId).isEmpty());
+        assertEquals(BattleFundsState.SETTLED, repository.loadBattleFunds(eventId).state());
     }
 
     @Test

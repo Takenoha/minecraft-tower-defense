@@ -22,6 +22,7 @@ public final class CoreManagementGui {
     public static final int SIZE = 27;
     public static final int TEAM_SLOT = 0;
     public static final int RESEARCH_DEPOSIT_SLOT = 9;
+    public static final int TOWER_RESEARCH_SLOT = 10;
     public static final int REPAIR_SLOT = 11;
     public static final int START_SLOT = 13;
     public static final int RELOCATE_SLOT = 15;
@@ -73,6 +74,14 @@ public final class CoreManagementGui {
                         "納品数: 手に持っているスタック全量",
                         "現在の研究ポイント: " + progress.researchPoints(),
                         "クリックで納品"),
+                NamedTextColor.LIGHT_PURPLE));
+        inventory.setItem(TOWER_RESEARCH_SLOT, item(
+                Material.ENCHANTING_TABLE,
+                "タワー研究",
+                List.of(
+                        "現在の研究ポイント: " + progress.researchPoints(),
+                        "タワー種別ごとの研究Lvを上げます。",
+                        "クリックで研究画面を開きます。"),
                 NamedTextColor.LIGHT_PURPLE));
 
         if (repairCost == null) {
