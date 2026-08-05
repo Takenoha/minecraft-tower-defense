@@ -13,10 +13,10 @@ public final class RaidSealAutomationPolicy {
     public static boolean cancelCrafter(
             boolean pluginRecipe,
             boolean resultIsTemplate,
-            boolean echoShardIngredient,
-            boolean legacyEnderEyeIngredient) {
+            boolean currentSealIngredient,
+            boolean legacySealIngredient) {
         return pluginRecipe || resultIsTemplate
-                || echoShardIngredient
-                || legacyEnderEyeIngredient;
+                || currentSealIngredient
+                || legacySealIngredient;
     }
 }

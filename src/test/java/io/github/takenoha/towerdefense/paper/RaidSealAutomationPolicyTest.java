@@ -15,11 +15,19 @@ class RaidSealAutomationPolicyTest {
     }
 
     @Test
-    void crafterPolicyClosesPluginTemplatesAndSealMaterials() {
+    void crafterPolicyClosesPluginRecipesAndTemplates() {
         assertTrue(RaidSealAutomationPolicy.cancelCrafter(true, false, false, false));
         assertTrue(RaidSealAutomationPolicy.cancelCrafter(false, true, false, false));
+    }
+
+    @Test
+    void crafterPolicyClosesNewAndLegacyTaggedSealIngredients() {
         assertTrue(RaidSealAutomationPolicy.cancelCrafter(false, false, true, false));
         assertTrue(RaidSealAutomationPolicy.cancelCrafter(false, false, false, true));
+    }
+
+    @Test
+    void untaggedEchoShardAndEnderEyeRemainAllowed() {
         assertFalse(RaidSealAutomationPolicy.cancelCrafter(false, false, false, false));
     }
 }

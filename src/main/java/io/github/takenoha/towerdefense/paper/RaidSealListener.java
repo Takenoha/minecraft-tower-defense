@@ -21,6 +21,7 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.Crafter;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -129,7 +130,7 @@ public final class RaidSealListener implements Listener {
     /** Vanilla Crafter has no player inventory matrix callback; keep plugin and seal paths closed. */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCrafterCraft(CrafterCraftEvent event) {
-        if (!shouldCancelCrafter(event.getRecipe(), event.getResult())) {
+        if (!shouldCancelCrafter(event)) {
             return;
         }
         event.setCancelled(true);
@@ -289,23 +290,35 @@ public final class RaidSealListener implements Listener {
         return false;
     }
 
-    private boolean shouldCancelCrafter(CraftingRecipe recipe, ItemStack result) {
+    private boolean shouldCancelCrafter(CrafterCraftEvent event) {
+        CraftingRecipe recipe = event.getRecipe();
         boolean pluginRecipe = recipe instanceof ShapedRecipe shaped
                 && shaped.getKey().getNamespace().equals(plugin.getName().toLowerCase())
                 && (shaped.getKey().getKey().equals("core")
                         || shaped.getKey().getKey().startsWith("raid_seal_stage_"));
-        boolean resultTemplate = tagger.isRecipeTemplate(result);
+        boolean resultTemplate = tagger.isRecipeTemplate(event.getResult());
+        if (pluginRecipe || resultTemplate) {
+            return true;
+        }
+        if (!(event.getBlock().getState() instanceof Crafter crafter)) {
+            return false;
+        }
+        boolean currentSealIngredient = false;
+        boolean legacySealIngredient = false;
+        for (ItemStack item : crafter.getInventory().getContents()) {
+            if (tagger.read(item).isPresent()) {
+                if (tagger.isLegacyMaterial(item)) {
+                    legacySealIngredient = true;
+                } else {
+                    currentSealIngredient = true;
+                }
+            }
+        }
         return RaidSealAutomationPolicy.cancelCrafter(
-                pluginRecipe,
-                resultTemplate,
-                recipe instanceof ShapedRecipe shaped
-                        && shaped.getChoiceMap().values().stream()
-                                .filter(Objects::nonNull)
-                                .anyMatch(choice -> choice.test(new ItemStack(Material.ECHO_SHARD))),
-                recipe instanceof ShapedRecipe shaped
-                        && shaped.getChoiceMap().values().stream()
-                                .filter(Objects::nonNull)
-                                .anyMatch(choice -> choice.test(new ItemStack(Material.ENDER_EYE))));
+                false,
+                false,
+                currentSealIngredient,
+                legacySealIngredient);
     }
 
     private void give(Player player, RaidSeal seal) {
