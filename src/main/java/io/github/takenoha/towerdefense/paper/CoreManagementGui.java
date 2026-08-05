@@ -3,7 +3,9 @@ package io.github.takenoha.towerdefense.paper;
 import io.github.takenoha.towerdefense.domain.CoreRepairCost;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
+import io.github.takenoha.towerdefense.persistence.ResourceType;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSnapshot;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -22,9 +24,11 @@ import org.bukkit.inventory.meta.ItemMeta;
 public final class CoreManagementGui {
     public static final int SIZE = 27;
     public static final int TEAM_SLOT = 0;
+    public static final int RESOURCE_VAULT_SLOT = 1;
     public static final int RESEARCH_DEPOSIT_SLOT = 9;
     public static final int TOWER_RESEARCH_SLOT = 10;
     public static final int REPAIR_SLOT = 11;
+    public static final int LEGACY_REPAIR_SLOT = 12;
     public static final int START_SLOT = 13;
     public static final int RELOCATE_SLOT = 15;
     public static final int CLOSE_SLOT = 22;
@@ -38,9 +42,44 @@ public final class CoreManagementGui {
             TeamProgress progress,
             CoreRepairCost repairCost,
             String repairMaterialName) {
+        return create(
+                core,
+                team,
+                progress,
+                repairCost,
+                repairMaterialName,
+                new TeamResourceSnapshot(team.id(), 0L, 0L, 0L, 0L));
+    }
+
+    public static Inventory create(
+            CoreRecord core,
+            TeamRecord team,
+            TeamProgress progress,
+            CoreRepairCost repairCost,
+            String repairMaterialName,
+            TeamResourceSnapshot resources) {
+        return create(
+                core,
+                team,
+                progress,
+                repairCost,
+                repairMaterialName,
+                resources,
+                false);
+    }
+
+    public static Inventory create(
+            CoreRecord core,
+            TeamRecord team,
+            TeamProgress progress,
+            CoreRepairCost repairCost,
+            String repairMaterialName,
+            TeamResourceSnapshot resources,
+            boolean legacyPaymentsEnabled) {
         Objects.requireNonNull(core, "core");
         Objects.requireNonNull(team, "team");
         Objects.requireNonNull(progress, "progress");
+        Objects.requireNonNull(resources, "resources");
         CoreManagementInventoryHolder holder = new CoreManagementInventoryHolder(core.id());
         Inventory inventory = Bukkit.createInventory(
                 holder,
@@ -69,6 +108,22 @@ public final class CoreManagementGui {
                 .forEach(memberLore::add);
         memberLore.add("クリックでチーム管理を開きます。");
         inventory.setItem(TEAM_SLOT, item(Material.PLAYER_HEAD, "チーム", memberLore, NamedTextColor.GREEN));
+        inventory.setItem(RESOURCE_VAULT_SLOT, item(
+                Material.PRISMARINE_SHARD,
+                "コア資源庫",
+                List.of(
+                        "防衛ポイント: " + resources.balance(ResourceType.DEFENSE_POINTS),
+                        "強化ポイント: " + resources.balance(ResourceType.ENHANCEMENT_POINTS),
+                        "今回のチーム仮確保（防衛）: "
+                                + resources.teamProvisional(ResourceType.DEFENSE_POINTS),
+                        "あなたの今回の仮確保（防衛）: "
+                                + resources.provisional(ResourceType.DEFENSE_POINTS),
+                        "今回のチーム仮確保（強化）: "
+                                + resources.teamProvisional(ResourceType.ENHANCEMENT_POINTS),
+                        "あなたの今回の仮確保（強化）: "
+                                + resources.provisional(ResourceType.ENHANCEMENT_POINTS),
+                        "クリックでコア資源庫を開きます。"),
+                NamedTextColor.LIGHT_PURPLE));
         inventory.setItem(RESEARCH_DEPOSIT_SLOT, item(
                 Material.AMETHYST_SHARD,
                 "研究結晶を納品",
@@ -100,8 +155,25 @@ public final class CoreManagementGui {
                     List.of(
                             "不足HP: " + repairCost.repairAmount(),
                             repairMaterialName + ": " + repairCost.vanillaMaterialAmount(),
-                            "防衛の欠片: " + repairCost.defenseShardAmount(),
-                            "クリックで材料を消費して修繕"),
+                            "防衛ポイント: " + repairCost.defenseShardAmount()
+                                    + "（残高: "
+                                    + resources.balance(ResourceType.DEFENSE_POINTS) + ")",
+                            "不足: " + Math.max(
+                                    0L,
+                                    repairCost.defenseShardAmount()
+                                            - resources.balance(ResourceType.DEFENSE_POINTS))
+                                    + "P",
+                            "クリックで資源庫と材料を消費して修繕"),
+                    NamedTextColor.YELLOW));
+        }
+        if (legacyPaymentsEnabled && repairCost != null) {
+            inventory.setItem(LEGACY_REPAIR_SLOT, item(
+                    Material.IRON_INGOT,
+                    "旧素材でコアを修繕",
+                    List.of(
+                            "右クリックで旧素材支払いを明示的に選択します。",
+                            "防衛ポイント残高があっても旧素材を使用します。",
+                            "旧方式は廃止予定です。"),
                     NamedTextColor.YELLOW));
         }
         inventory.setItem(START_SLOT, item(

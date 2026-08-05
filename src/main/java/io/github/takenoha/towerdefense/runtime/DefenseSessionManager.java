@@ -22,6 +22,8 @@ import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSettlement;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -96,6 +98,8 @@ public final class DefenseSessionManager
     private final EnemyRoleSchedule enemyRoles;
     private final DefenseShardTagger defenseShards;
     private final EnhancementCoreTagger enhancementCores;
+    private final ResourceRepository resources;
+    private final ActionBarBroker actionBars;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -173,6 +177,56 @@ public final class DefenseSessionManager
             RewardQueueDeliveryManager rewardQueues,
             CoreRegistry coreRegistry,
             ThirdPartyRegionProtectionAdapter regionProtection) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                null);
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                resources,
+                new ActionBarBroker());
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources,
+            ActionBarBroker actionBars) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -182,6 +236,8 @@ public final class DefenseSessionManager
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
         this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
+        this.resources = resources;
+        this.actionBars = Objects.requireNonNull(actionBars, "actionBars");
         pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -533,11 +589,22 @@ public final class DefenseSessionManager
     private void tick() {
         requireMainThread();
         currentTick++;
+        actionBars.advance(currentTick);
         ActiveDefense defense = active;
         if (defense == null) {
             return;
         }
         if (defense.ending) {
+            // Claims can complete while terminal persistence is draining.  Keep rendering the
+            // broker here so the pickup notice receives its full TTL instead of being lost behind
+            // the ending short-circuit.
+            renderActionBars(defense);
+            if (defense.finishComplete) {
+                if (currentTick >= defense.finishActionBarDeadlineTick) {
+                    active = null;
+                }
+                return;
+            }
             if (!defense.finishInFlight && currentTick >= defense.finishRetryTick) {
                 submitFinish(defense);
             }
@@ -558,6 +625,7 @@ public final class DefenseSessionManager
                     defense,
                     "終端状態を検出したため防衛戦を清掃します。");
         }
+        renderActionBars(defense);
     }
 
     private void tickCountdown(ActiveDefense defense) {
@@ -1071,9 +1139,47 @@ public final class DefenseSessionManager
             escrowDrops.removeEventDisplays(defense.session.eventId());
             if (defense.finishSnapshot.phase() != DefensePhase.RECOVERY) {
                 rewardQueues.onEventSettled(defense.session.eventId());
+                notifyResourceSettlement(defense);
+            } else {
+                broadcast(
+                        defense,
+                        Component.text(
+                                "技術的復旧のため、今回の仮確保ポイントは失効しました。",
+                                NamedTextColor.YELLOW));
             }
-            active = null;
+            // Keep the ending state alive while the shared broker renders a pickup notice that
+            // completed at the terminal boundary. The event lock is released after the same
+            // 40-tick TTL used by the broker and PaperEscrowDropManager cleanup.
+            defense.finishComplete = true;
+            defense.finishActionBarDeadlineTick = currentTick
+                    + ActionBarBroker.PICKUP_TTL_TICKS;
         }));
+    }
+
+    private void notifyResourceSettlement(ActiveDefense defense) {
+        if (resources == null || defense.finishSnapshot == null) {
+            return;
+        }
+        UUID eventId = defense.session.eventId();
+        DefensePhase phase = defense.finishSnapshot.phase();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                TeamResourceSettlement settlement = resources.loadTerminalSettlement(eventId, phase);
+                runOnMainThread(() -> broadcast(
+                        defense,
+                        Component.text(
+                                "資源庫へ確定しました。防衛ポイント +"
+                                        + settlement.defensePoints()
+                                        + "P / 強化ポイント +"
+                                        + settlement.enhancementPoints() + "P",
+                                NamedTextColor.GREEN)));
+            } catch (RuntimeException failure) {
+                plugin.getLogger().log(
+                        java.util.logging.Level.WARNING,
+                        "Could not load resource settlement message for " + eventId,
+                        failure);
+            }
+        });
     }
 
     private boolean prepareTerrainSettlement(ActiveDefense defense) {
@@ -1285,12 +1391,23 @@ public final class DefenseSessionManager
     private void showCountdownActionBar(ActiveDefense defense) {
         long remainingTicks = Math.max(0L, defense.phaseDeadlineTick - currentTick);
         long remainingSeconds = (remainingTicks + TICKS_PER_SECOND - 1L) / TICKS_PER_SECOND;
-        Component message = Component.text("準備: " + remainingSeconds + "秒", NamedTextColor.YELLOW);
+        String message = "準備: " + remainingSeconds + "秒";
         for (UUID memberId : defense.teamMembers) {
             Player player = Bukkit.getPlayer(memberId);
             if (player != null && isInside(defense, player)) {
-                player.sendActionBar(message);
+                actionBars.publishCountdown(memberId, message, currentTick);
             }
+        }
+    }
+
+    private void renderActionBars(ActiveDefense defense) {
+        for (UUID memberId : defense.teamMembers) {
+            Player player = Bukkit.getPlayer(memberId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+            actionBars.current(memberId).ifPresent(notice ->
+                    player.sendActionBar(Component.text(notice.text())));
         }
     }
 
@@ -1389,8 +1506,10 @@ public final class DefenseSessionManager
         private long coreAttackCount;
         private boolean ending;
         private boolean finishInFlight;
+        private boolean finishComplete;
         private int finishAttempts;
         private long finishRetryTick;
+        private long finishActionBarDeadlineTick;
         private UUID finishOperationId;
         private DefenseSessionSnapshot finishSnapshot;
         private boolean terrainSettlementComplete;

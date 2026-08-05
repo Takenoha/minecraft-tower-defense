@@ -111,6 +111,101 @@ following evidence exists:
    the target server profile. Never commit live-server attestation values to the repository's
    default configuration.
 
+## 6. Resource vault, legacy payment, and receipt stop boundaries
+
+1. Complete a victory with at least one picked-up defense drop and one unpicked drop. Confirm the
+   pickup plays one experience-orb sound and shows the added quantity plus the player's cumulative
+   provisional amount in the Action Bar. Start a countdown while the pickup message is visible;
+   the pickup must remain visible for at least 40 ticks, and repeated pickups for the same event
+   must coalesce instead of cancelling the first notice. Complete a claim during the terminal
+   `ending` window and verify it is rendered before the event lock is released; after disconnecting
+   for more than 40 ticks, reconnect and confirm an expired notice is not joined to a new pickup.
+2. Open the resource-vault GUI during preparation and intermission. Confirm settled wallet points
+   are spendable in those phases, while provisional points remain unavailable until terminal
+   settlement. Confirm the displayed wording says that provisional points are locked until the
+   event ends. Repeat a claim retry and verify no second sound or duplicate wallet credit.
+3. On a copy of a v26 database, remove one or both `team_resource_balances` rows and restart the
+   plugin. Confirm the rows are backfilled at zero without changing team progress. Run the legacy
+   reward-queue migration and verify operationless `PENDING` rows become wallet credit exactly
+   once, while delivery `PREPARED` and `DELIVERED` rows remain physical-delivery rows.
+4. Set `rewards.legacy-resource-payments-enabled: true`, spend a legacy defense-shard and
+   vanilla-material quote for a core repair, and spend both legacy materials for a tower upgrade.
+   Confirm the warning identifies the path as deprecated and each receipt is consumed once. Set
+   the flag false and confirm the same insufficient-wallet operation is rejected without touching
+   inventory. Verify a team with either non-zero wallet balance cannot disband or let its sole
+   owner leave.
+5. During core repair and legacy tower upgrade, stop the server or disconnect the player at each
+   prepare, receipt-reserve, receipt-secure, apply, and physical-clear step. On restart/login,
+   confirm `RESERVED`/`SECURED` operations reconcile from tagged stacks, `CLEAR_PENDING` removes
+   any remaining tagged stacks and clears once, and no ordinary surplus material is guessed,
+   minted, or removed. A logout before physical receipt handoff must roll back durably; a logout
+   after handoff must defer reconciliation to the saved inventory on join. Exercise both
+   `keepInventory=true` and `keepInventory=false`; death must retain tagged receipts through the
+   death keep-list, and respawn/restart must resolve `RETURN_PENDING`, `SECURED`, and
+   `CLEAR_PENDING` exactly once.
+6. Attempt to move or use a tagged receipt through normal click, number-key hotbar swap,
+   off-hand swap, drag, pickup, drop, place, dispense, craft, Crafter, item-frame, and every
+   entity-interaction route, including `PlayerInteractAtEntityEvent` and
+   `PlayerArmorStandManipulateEvent`. Test both directions of number-key/off-hand swaps and both
+   hands on ordinary entities, ArmorStands, and ItemFrames. Every tagged route must be cancelled;
+   ordinary untagged items must remain usable.
+7. Fill the storage inventory so a partial stack split has no compatible capacity, then attempt a
+   core repair for each material and a tower upgrade requiring both materials. Confirm the
+   operation is rejected before inventory or receipt mutation. Repeat with one safe compatible
+   stack/slot and stop between the receipt replacement and remainder return; after restart, the
+   remainder and receipt must reconcile without a ground drop or duplicate payment.
+   After a receipt-bearing team is restored, verify wallet credit, receipt state, and physical
+   stacks are unchanged by a restart.
+
+## 7. Portable point vouchers
+
+1. Outside a defense and with no prepared core placement, open the resource-vault GUI as the team
+   owner. Confirm the defense-point buttons withdraw 10P, 100P, or the current full balance, and
+   the enhancement-point buttons withdraw 1P, 10P, or the current full balance. Confirm a member
+   can view the vault but cannot withdraw, and that withdrawal debits the wallet once even when
+   the same click/operation is retried.
+2. Confirm each withdrawal produces exactly one `PRISMARINE_CRYSTALS` item named
+   `携帯ポイント証票`, amount 1 with max stack size 1, and lore matching the DB voucher. The
+   delivery recipient must remain the original withdrawing owner. A full inventory must leave the
+   voucher `PENDING_DELIVERY` for login/retry; it must not be dropped to the ground or silently
+   reissued.
+3. Stop the server or disconnect at each delivery boundary: delivery `PREPARED`, after the
+   receipt item enters the inventory, after DB `AVAILABLE`, and before receipt stripping. On
+   restart/login, confirm the same voucher UUID is reconciled at most once, a tagged delivery
+   receipt is stripped only after DB apply, and an `AVAILABLE` voucher is never duplicated.
+4. Hold a voucher from the same team and click the matching resource row in the vault. Confirm a
+   team member (not only the owner) can start a deposit, while another team's voucher, a forged
+   PDC quantity, a missing voucher row, an active defense, or a prepared core placement is
+   rejected. Stop at `RESERVED`, after redeem receipt tagging, after wallet credit, and before
+   physical removal. Quit while `prepareRedeem` is queued or committing, then rejoin immediately.
+   Because `DatabaseExecutor` is single-threaded, the quit-held source binding must cancel click,
+   held-slot, drop, and off-hand swaps until join reconciliation completes; the matching operation
+   must resume exactly once without requiring a second join. Reconnect after the
+   receipt-tagged/DB-ACK-before-removal boundary and confirm the matching redeem operation credits
+   exactly once, reaches `REDEEMED`, removes every physical copy, and releases the player's pending
+   hold for a subsequent voucher operation. A missing physical item must remain an auditable hold
+   and must not mint points.
+5. Duplicate a voucher item in a disposable test inventory and attempt two deposits. Confirm only
+   the first valid copy can credit the wallet, the voucher reaches `REDEEMED` once, and remaining
+   copies are invalidated. Verify operation UUID retries do not debit or credit twice.
+6. Exercise voucher delivery/redeem receipts through both hands, number-key swaps in both
+   directions, off-hand swaps in both directions, drag, hopper movement, pickup, drop, death with
+   `keepInventory` on and off, respawn, item-frame/entity/interact-at/ArmorStand interaction,
+   crafting, Crafter, anvil, grindstone, smithing (including the initial cursor insertion), consume,
+   place, and dispense. Receipt stacks and a voucher reserved before receipt tagging must remain
+   protected; ordinary untagged items must keep their normal behavior. After a server restart, test
+   the join/reconcile guard before it completes: click, drag, drop, held-slot, and off-hand actions
+   must be blocked, then ordinary actions must resume immediately after a no-open-recovery join.
+   Repeat the same boundary immediately after respawn; the guard must start in the respawn event,
+   before the next-tick inventory-aware reconcile.
+   For an untagged ordinary voucher already in an anvil, grindstone, or smithing input, reject
+   cursor placement, shift-click, number-key, and off-hand insertion, but allow clicking the top
+   input back out to the player's inventory. Repeat with a receipt and an ordinary non-voucher.
+7. While a team has a non-zero wallet or a `PENDING_DELIVERY`/`AVAILABLE`/`RESERVED` voucher,
+   confirm disband and sole-owner leave are rejected. After all vouchers are redeemed and balances
+   are intentionally spent, confirm the normal team lifecycle remains available. Move and rebuild
+   the core and verify the wallet and voucher team binding do not change.
+
 ## Evidence record
 
 ```text
@@ -128,6 +223,9 @@ Team invitation / name / limit / chat evidence:
 Terrain-disabled evidence:
 Terrain-enabled permitted-action evidence:
 Prepared/applied/terminal recovery evidence:
+Resource vault / legacy payment / receipt recovery evidence:
+Portable voucher withdrawal / delivery / redeem / duplicate evidence:
+Action Bar pickup priority and 40-tick evidence:
 Later-player-edit conflict evidence:
 Event IDs and operation UUIDs:
 Reviewed by:

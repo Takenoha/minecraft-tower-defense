@@ -5,7 +5,10 @@ import io.github.takenoha.towerdefense.persistence.EscrowDrop;
 import io.github.takenoha.towerdefense.persistence.EscrowDropStatus;
 import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
+import io.github.takenoha.towerdefense.persistence.ResourcePickupFeedback;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
 import io.github.takenoha.towerdefense.persistence.StoredEscrowDrop;
+import io.github.takenoha.towerdefense.runtime.ActionBarBroker;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -18,9 +21,13 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.Sound;
+import org.bukkit.SoundCategory;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
@@ -36,6 +43,8 @@ public final class PaperEscrowDropManager {
     private final EscrowRepository escrow;
     private final DatabaseExecutor databaseExecutor;
     private final EscrowDropTagger tagger;
+    private final ResourceRepository resources;
+    private final ActionBarBroker actionBars = new ActionBarBroker();
     private final Map<UUID, Set<UUID>> pendingClaims = new HashMap<>();
     private final Set<UUID> terminalEvents = new HashSet<>();
 
@@ -44,10 +53,20 @@ public final class PaperEscrowDropManager {
             EscrowRepository escrow,
             DatabaseExecutor databaseExecutor,
             EscrowDropTagger tagger) {
+        this(plugin, escrow, databaseExecutor, tagger, null);
+    }
+
+    public PaperEscrowDropManager(
+            Plugin plugin,
+            EscrowRepository escrow,
+            DatabaseExecutor databaseExecutor,
+            EscrowDropTagger tagger,
+            ResourceRepository resources) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.escrow = Objects.requireNonNull(escrow, "escrow");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
+        this.resources = resources;
     }
 
     /** Captures ordinary block drops before the corresponding block WAL apply. */
@@ -279,20 +298,63 @@ public final class PaperEscrowDropManager {
                             pendingClaims.remove(drop.eventId());
                         }
                     }
-                    if (failure == null && tagger.read(item)
+                    if (failure == null
+                            && result != null
+                            && (result.outcome() == io.github.takenoha.towerdefense.persistence
+                                    .OperationOutcome.APPLIED
+                                    || result.outcome() == io.github.takenoha.towerdefense.persistence
+                                            .OperationOutcome.ALREADY_APPLIED)
+                            && tagger.read(item)
                             .map(drop::equals)
                             .orElse(false)) {
                         item.remove();
                         databaseExecutor.execute(() -> escrow.clearDisplayEntity(
                                 drop.eventId(), drop.dropId(), Instant.now()));
+                        if (result.outcome() == io.github.takenoha.towerdefense.persistence
+                                .OperationOutcome.APPLIED) {
+                            result.pickupFeedback().ifPresent(feedback ->
+                                    showResourcePickupFeedback(player, drop.eventId(), feedback));
+                        }
                     }
                 }));
+    }
+
+    private void showResourcePickupFeedback(
+            Player player,
+            UUID eventId,
+            ResourcePickupFeedback feedback) {
+        if (!player.isOnline()) {
+            return;
+        }
+        String message = feedback.resourceType().displayName() + " +"
+                + feedback.claimedQuantity()
+                + "｜この防衛戦の仮確保: "
+                + feedback.eventPlayerTotal() + "P";
+        player.playSound(
+                player.getLocation(),
+                Sound.ENTITY_EXPERIENCE_ORB_PICKUP,
+                SoundCategory.PLAYERS,
+                0.7f,
+                1.2f);
+        actionBars.publishPickup(player.getUniqueId(), eventId, message);
+        // The claim callback is already on the main thread. Render the broker's winner now so a
+        // terminal callback cannot race the next DefenseSessionManager tick and lose the first
+        // pickup frame while the ending state is being finalized.
+        actionBars.current(player.getUniqueId()).ifPresent(notice ->
+                player.sendActionBar(Component.text(notice.text())));
     }
 
     /** Removes all loaded displays for one event after normal or technical termination. */
     public void removeEventDisplays(UUID eventId) {
         requireMainThread();
         Objects.requireNonNull(eventId, "eventId");
+        // Physical drops are terminal immediately, but a claim that completed during ending
+        // still owns a 40-tick pickup notice.  Defer only the broker cleanup so the notice can be
+        // rendered by DefenseSessionManager's ending path.
+        Bukkit.getScheduler().runTaskLater(
+                plugin,
+                () -> actionBars.clearEvent(eventId),
+                ActionBarBroker.PICKUP_TTL_TICKS);
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntities()) {
                 if (!(entity instanceof Item item)) {
@@ -349,6 +411,10 @@ public final class PaperEscrowDropManager {
         return tagger;
     }
 
+    public ActionBarBroker actionBarBroker() {
+        return actionBars;
+    }
+
     private Optional<Item> findDisplay(UUID dropId) {
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntities()) {
@@ -378,4 +444,5 @@ public final class PaperEscrowDropManager {
             Objects.requireNonNull(itemStack, "itemStack");
         }
     }
+
 }

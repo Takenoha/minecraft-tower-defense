@@ -53,6 +53,14 @@ final class DatabaseTest {
         assertTrue(tableExists(reopened, "event_tower_repair_operations"));
         assertTrue(tableExists(reopened, "event_tower_damage_operations"));
         assertTrue(tableExists(reopened, "tower_upgrade_operations"));
+        assertTrue(tableExists(reopened, "tower_upgrade_receipts"));
+        assertTrue(tableExists(reopened, "core_repair_receipts"));
+        assertTrue(checkConstraintContains(
+                reopened, "core_repair_receipts", "CLEAR_PENDING"));
+        assertTrue(checkConstraintContains(
+                reopened, "tower_upgrade_receipts", "CLEAR_PENDING"));
+        assertTrue(columnExists(
+                reopened, "core_repair_operations", "legacy_defense_shard_amount"));
         assertTrue(columnExists(reopened, "towers", "target_priority"));
         assertTrue(columnExists(reopened, "towers", "current_hp"));
         assertTrue(columnExists(reopened, "towers", "max_hp"));
@@ -108,6 +116,21 @@ final class DatabaseTest {
             statement.setString(1, table);
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next();
+            }
+        }
+    }
+
+    private static boolean checkConstraintContains(
+            Database database,
+            String table,
+            String expected) throws SQLException {
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?
+                        """)) {
+            statement.setString(1, table);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getString(1).contains(expected);
             }
         }
     }

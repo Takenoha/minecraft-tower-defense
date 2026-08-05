@@ -5,10 +5,16 @@ import io.github.takenoha.towerdefense.domain.CoreRepairCost;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.persistence.CoreMutationResult;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
+import io.github.takenoha.towerdefense.persistence.CoreRepairOperation;
+import io.github.takenoha.towerdefense.persistence.CoreRepairOperationState;
+import io.github.takenoha.towerdefense.persistence.CoreRepairReceipt;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
+import io.github.takenoha.towerdefense.persistence.PaymentMode;
 import io.github.takenoha.towerdefense.persistence.TeamMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSnapshot;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
@@ -25,14 +31,37 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.entity.EntityPortalEvent;
+import org.bukkit.event.entity.EntityTeleportEvent;
+import org.bukkit.event.entity.ItemDespawnEvent;
+import org.bukkit.event.entity.ItemMergeEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.block.CrafterCraftEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerItemConsumeEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
@@ -51,6 +80,8 @@ public final class CoreManagementListener implements Listener {
     private final TowerRepository towerRepository;
     private final DefenseShardTagger shardTagger;
     private final ResearchCrystalTagger researchCrystals;
+    private final ResourceRepository resources;
+    private final CoreRepairReceiptTagger repairReceipts;
     private final Set<UUID> repairInFlight = new java.util.HashSet<>();
     private final Set<UUID> teamActionInFlight = new java.util.HashSet<>();
     private final Set<UUID> crystalInFlight = new java.util.HashSet<>();
@@ -74,7 +105,8 @@ public final class CoreManagementListener implements Listener {
                 coreItems,
                 shardTagger,
                 null,
-                new ResearchCrystalTagger(plugin));
+                new ResearchCrystalTagger(plugin),
+                null);
     }
 
     public CoreManagementListener(
@@ -97,7 +129,8 @@ public final class CoreManagementListener implements Listener {
                 coreItems,
                 shardTagger,
                 null,
-                researchCrystals);
+                researchCrystals,
+                null);
     }
 
     public CoreManagementListener(
@@ -111,6 +144,32 @@ public final class CoreManagementListener implements Listener {
             DefenseShardTagger shardTagger,
             TowerRepository towerRepository,
             ResearchCrystalTagger researchCrystals) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                coreItems,
+                shardTagger,
+                towerRepository,
+                researchCrystals,
+                null);
+    }
+
+    public CoreManagementListener(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            CoreItemListener coreItems,
+            DefenseShardTagger shardTagger,
+            TowerRepository towerRepository,
+            ResearchCrystalTagger researchCrystals,
+            ResourceRepository resources) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -121,6 +180,8 @@ public final class CoreManagementListener implements Listener {
         this.shardTagger = Objects.requireNonNull(shardTagger, "shardTagger");
         this.towerRepository = towerRepository;
         this.researchCrystals = Objects.requireNonNull(researchCrystals, "researchCrystals");
+        this.resources = resources;
+        this.repairReceipts = new CoreRepairReceiptTagger(plugin);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -142,10 +203,265 @@ public final class CoreManagementListener implements Listener {
         openCoreGui(event.getPlayer(), core.orElseThrow().id());
     }
 
+    @EventHandler
+    public void onRepairReceiptJoin(PlayerJoinEvent event) {
+        reconcileOpenRepairReceipts(event.getPlayer());
+    }
+
+    /** Reconciles a receipt after death, when the server has restored the respawn inventory. */
+    @EventHandler
+    public void onRepairReceiptRespawn(PlayerRespawnEvent event) {
+        Bukkit.getScheduler().runTaskLater(
+                plugin,
+                () -> reconcileOpenRepairReceipts(event.getPlayer()),
+                1L);
+    }
+
+    /**
+     * A quit may happen while an async prepare/reserve callback is outstanding. Do not touch a
+     * saved offline inventory. Operations without a physical receipt can be rolled back now;
+     * receipt-bearing operations are intentionally left for join reconciliation.
+     */
+    @EventHandler
+    public void onRepairReceiptQuit(PlayerQuitEvent event) {
+        UUID playerId = event.getPlayer().getUniqueId();
+        repairInFlight.remove(playerId);
+        databaseExecutor.submit(() -> repository.loadPreparedCoreRepairs(playerId))
+                .whenComplete((operations, failure) -> {
+                    if (failure != null || operations == null) {
+                        return;
+                    }
+                    for (CoreRepairOperation operation : operations) {
+                        repository.findCoreRepairReceipt(operation.operationId()).ifPresentOrElse(
+                                receipt -> plugin.getLogger().info(
+                                        "Deferring core repair receipt reconciliation until player "
+                                                + playerId + " rejoins: " + operation.operationId()
+                                                + " (" + receipt.state() + ")"),
+                                () -> repository.rollbackPreparedCoreRepair(
+                                        operation.operationId(), Instant.now()));
+                    }
+                });
+    }
+
+    private void reconcileOpenRepairReceipts(Player player) {
+        UUID playerId = player.getUniqueId();
+        databaseExecutor.submit(() -> {
+            List<CoreRepairOperation> operations =
+                    new ArrayList<>(repository.loadPreparedCoreRepairs(playerId));
+            for (CoreRepairOperation terminal
+                    : repository.loadTerminalCoreRepairReceipts(playerId)) {
+                if (operations.stream().noneMatch(existing ->
+                        existing.operationId().equals(terminal.operationId()))) {
+                    operations.add(terminal);
+                }
+            }
+            return List.copyOf(operations);
+        })
+                .whenComplete((operations, failure) -> runOnMainThread(() -> {
+                    if (failure != null || operations == null) {
+                        if (failure != null) {
+                            plugin.getLogger().warning(
+                                    "Could not reconcile core repair receipts for " + playerId
+                                            + ": " + rootMessage(failure));
+                        }
+                        return;
+                    }
+                    for (CoreRepairOperation operation : operations) {
+                        reconcileRepairReceipt(player, operation);
+                    }
+                }));
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInventoryClick(InventoryClickEvent event) {
+        if (containsRepairReceipt(event)) {
+            event.setCancelled(true);
+        }
+    }
+
+    private boolean containsRepairReceipt(InventoryClickEvent event) {
+        ItemStack auxiliary = null;
+        if (event.getWhoClicked() instanceof Player player) {
+            if (event.getClick() == ClickType.NUMBER_KEY) {
+                auxiliary = player.getInventory().getItem(event.getHotbarButton());
+            } else if (event.getClick() == ClickType.SWAP_OFFHAND) {
+                auxiliary = player.getInventory().getItemInOffHand();
+            }
+        }
+        return ReceiptTransferPolicy.containsTagged(
+                repairReceipts::isTagged,
+                event.getCurrentItem(),
+                event.getCursor(),
+                auxiliary);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInventoryDrag(InventoryDragEvent event) {
+        if (repairReceipts.isTagged(event.getOldCursor())
+                || event.getNewItems().values().stream().anyMatch(repairReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInventoryMove(InventoryMoveItemEvent event) {
+        if (repairReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInventoryPickup(InventoryPickupItemEvent event) {
+        if (repairReceipts.isTagged(event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptEntityPickup(EntityPickupItemEvent event) {
+        if (repairReceipts.isTagged(event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptDrop(PlayerDropItemEvent event) {
+        if (repairReceipts.isTagged(event.getItemDrop().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptCraft(CraftItemEvent event) {
+        if (event.getInventory().getMatrix() != null
+                && java.util.Arrays.stream(event.getInventory().getMatrix())
+                        .anyMatch(repairReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptCrafter(CrafterCraftEvent event) {
+        if (event.getBlock().getState() instanceof org.bukkit.block.Crafter crafter
+                && java.util.Arrays.stream(crafter.getInventory().getContents())
+                        .anyMatch(repairReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptPlace(BlockPlaceEvent event) {
+        if (repairReceipts.isTagged(event.getItemInHand())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptDispense(BlockDispenseEvent event) {
+        if (repairReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInteract(PlayerInteractEvent event) {
+        if (repairReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptConsume(org.bukkit.event.player.PlayerItemConsumeEvent event) {
+        if (repairReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInteractEntity(PlayerInteractEntityEvent event) {
+        if (repairReceipts.isTagged(
+                event.getPlayer().getInventory().getItem(event.getHand()))) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptInteractAtEntity(PlayerInteractAtEntityEvent event) {
+        onRepairReceiptInteractEntity(event);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
+        if (repairReceipts.isTagged(event.getPlayerItem())
+                || repairReceipts.isTagged(event.getArmorStandItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptSwapHands(PlayerSwapHandItemsEvent event) {
+        if (repairReceipts.isTagged(event.getMainHandItem())
+                || repairReceipts.isTagged(event.getOffHandItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptDeath(PlayerDeathEvent event) {
+        var iterator = event.getDrops().iterator();
+        while (iterator.hasNext()) {
+            ItemStack item = iterator.next();
+            if (repairReceipts.isTagged(item)) {
+                event.getItemsToKeep().add(item.clone());
+                iterator.remove();
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptMerge(ItemMergeEvent event) {
+        if (repairReceipts.isTagged(event.getEntity().getItemStack())
+                || repairReceipts.isTagged(event.getTarget().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptDespawn(ItemDespawnEvent event) {
+        if (repairReceipts.isTagged(event.getEntity().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Item item
+                && repairReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptPortal(EntityPortalEvent event) {
+        if (event.getEntity() instanceof Item item
+                && repairReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onRepairReceiptTeleport(EntityTeleportEvent event) {
+        if (event.getEntity() instanceof Item item
+                && repairReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInventoryClick(InventoryClickEvent event) {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof CoreManagementInventoryHolder)
+                && !(top.getHolder() instanceof ResourceVaultInventoryHolder)
                 && !(top.getHolder() instanceof TeamManagementInventoryHolder)
                 && !(top.getHolder() instanceof TeamManagementConfirmationHolder)
                 && !(top.getHolder() instanceof TowerResearchInventoryHolder)) {
@@ -163,14 +479,22 @@ public final class CoreManagementListener implements Listener {
                 player.closeInventory();
             } else if (event.getRawSlot() == CoreManagementGui.TEAM_SLOT) {
                 openTeamGui(player, holder.coreId());
+            } else if (event.getRawSlot() == CoreManagementGui.RESOURCE_VAULT_SLOT) {
+                openResourceVault(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.RESEARCH_DEPOSIT_SLOT) {
                 beginResearchCrystalDeposit(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.TOWER_RESEARCH_SLOT) {
                 openTowerResearchGui(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.REPAIR_SLOT) {
-                beginRepair(player, holder.coreId());
+                beginRepair(player, holder.coreId(), false);
+            } else if (event.getRawSlot() == CoreManagementGui.LEGACY_REPAIR_SLOT) {
+                beginRepair(player, holder.coreId(), true);
             } else if (event.getRawSlot() == CoreManagementGui.RELOCATE_SLOT) {
                 beginRelocation(player, holder.coreId());
+            }
+        } else if (top.getHolder() instanceof ResourceVaultInventoryHolder holder) {
+            if (event.getRawSlot() == ResourceVaultGui.CLOSE_SLOT) {
+                openCoreGui(player, holder.coreId());
             }
         } else if (top.getHolder() instanceof TeamManagementInventoryHolder holder) {
             handleTeamManagementClick(player, holder, event.getRawSlot(), event.getClick());
@@ -185,6 +509,7 @@ public final class CoreManagementListener implements Listener {
     public void onInventoryDrag(InventoryDragEvent event) {
         Object holder = event.getView().getTopInventory().getHolder();
         if (holder instanceof CoreManagementInventoryHolder
+                || holder instanceof ResourceVaultInventoryHolder
                 || holder instanceof TeamManagementInventoryHolder
                 || holder instanceof TeamManagementConfirmationHolder
                 || holder instanceof TowerResearchInventoryHolder) {
@@ -208,7 +533,10 @@ public final class CoreManagementListener implements Listener {
                             core.maximumHitPoints() - core.currentHitPoints(),
                             progress.highestClearedLevel(),
                             settings.core());
-            return new CoreGuiData(core, team, progress, repairCost);
+            TeamResourceSnapshot resourceSnapshot = resources == null
+                    ? new TeamResourceSnapshot(team.id(), 0L, 0L, 0L, 0L)
+                    : resources.load(team.id(), player.getUniqueId());
+            return new CoreGuiData(core, team, progress, repairCost, resourceSnapshot);
         }).whenComplete((data, failure) -> runOnMainThread(() -> {
             if (failure != null) {
                 player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
@@ -219,7 +547,39 @@ public final class CoreManagementListener implements Listener {
                     data.team(),
                     data.progress(),
                     data.repairCost(),
-                    settings.core().repairMaterial()));
+                    settings.core().repairMaterial(),
+                    data.resources(),
+                    settings.rewards().legacyResourcePaymentsEnabled()));
+        }));
+    }
+
+    private void openResourceVault(Player player, UUID coreId) {
+        boolean canWithdraw = !sessions.hasActiveSession();
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが永続データに存在しません"));
+            TeamRecord team = repository.findTeam(core.teamId()).orElseThrow(
+                    () -> new IllegalStateException("コアのチームが永続データに存在しません"));
+            if (!team.members().contains(player.getUniqueId())) {
+                throw new IllegalStateException("このコアへアクセスできるチームメンバーではありません");
+            }
+            TeamResourceSnapshot snapshot = resources == null
+                    ? new TeamResourceSnapshot(team.id(), 0L, 0L, 0L, 0L)
+                    : resources.load(team.id(), player.getUniqueId());
+            return new ResourceVaultData(
+                    snapshot,
+                    team.ownerId().equals(player.getUniqueId()),
+                    canWithdraw);
+        }).whenComplete((data, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            player.openInventory(ResourceVaultGui.create(
+                    coreId,
+                    data.snapshot(),
+                    data.owner(),
+                    data.canWithdraw()));
         }));
     }
 
@@ -633,7 +993,7 @@ public final class CoreManagementListener implements Listener {
         }));
     }
 
-    private void beginRepair(Player player, UUID coreId) {
+    private void beginRepair(Player player, UUID coreId, boolean explicitLegacy) {
         UUID actorId = player.getUniqueId();
         if (!repairInFlight.add(actorId)) {
             player.sendMessage(Component.text("修繕を処理中です。", NamedTextColor.YELLOW));
@@ -658,10 +1018,17 @@ public final class CoreManagementListener implements Listener {
                     CoreRepairCost.forMissing(
                             core.maximumHitPoints() - core.currentHitPoints(),
                             progress.highestClearedLevel(),
-                            settings.core()));
+                            settings.core()),
+                    resources == null
+                            ? new TeamResourceSnapshot(team.id(), 0L, 0L, 0L, 0L)
+                            : resources.load(team.id(), actorId));
         }).whenComplete((data, lookupFailure) -> runOnMainThread(() -> {
             if (lookupFailure != null) {
                 finishRepair(player, rootMessage(lookupFailure));
+                return;
+            }
+            if (!player.isOnline()) {
+                repairInFlight.remove(player.getUniqueId());
                 return;
             }
             if (sessions.hasActiveSession()) {
@@ -673,40 +1040,427 @@ public final class CoreManagementListener implements Listener {
                 finishRepair(player, "core.repair-material のMaterialが不正です。");
                 return;
             }
-            RemovedItems removed = removeCostItems(
-                    player,
-                    repairMaterial,
-                    data.repairCost().vanillaMaterialAmount(),
-                    data.repairCost().defenseShardAmount());
-            if (removed == null) {
-                finishRepair(player, "修繕に必要な素材が不足しています。");
+            long shardCost = data.repairCost().defenseShardAmount();
+            boolean walletPayment = data.resources().defensePoints() >= shardCost;
+            PaymentMode paymentMode;
+            try {
+                paymentMode = PaymentSelectionPolicy.choose(
+                        explicitLegacy,
+                        walletPayment,
+                        settings.rewards().legacyResourcePaymentsEnabled());
+            } catch (IllegalStateException selectionFailure) {
+                finishRepair(player, selectionFailure.getMessage());
                 return;
             }
+            if (paymentMode == PaymentMode.LEGACY_ITEMS) {
+                player.sendMessage(Component.text(
+                        explicitLegacy
+                                ? "旧素材支払いを明示的に選択しました（旧方式は廃止予定です）。"
+                                : "防衛ポイント不足のため旧素材支払いを使用します（旧方式は廃止予定です）。",
+                        NamedTextColor.YELLOW));
+            }
             UUID operationId = UUID.randomUUID();
-            databaseExecutor.submit(() -> repository.repairCore(
+            if (paymentMode == PaymentMode.LEGACY_ITEMS) {
+                plugin.getLogger().info(
+                        "Legacy core repair payment selected actor=" + player.getUniqueId()
+                                + " team=" + data.team().id()
+                                + " operation=" + operationId
+                                + " cost=" + data.repairCost().vanillaMaterialAmount()
+                                + "+" + shardCost
+                                + " mode=" + paymentMode);
+            }
+            databaseExecutor.submit(() -> repository.prepareCoreRepair(
                             data.core().id(),
                             player.getUniqueId(),
                             data.repairCost().repairAmount(),
+                            paymentMode == PaymentMode.POINT_WALLET ? shardCost : 0L,
+                            paymentMode,
+                            repairMaterial.name(),
+                            data.repairCost().vanillaMaterialAmount(),
+                            paymentMode == PaymentMode.LEGACY_ITEMS ? shardCost : 0L,
                             operationId,
                             Instant.now()))
-                    .whenComplete((result, failure) -> runOnMainThread(() -> {
-                        if (failure != null) {
-                            refund(player, removed.items());
-                            finishRepair(player, "修繕を永続化できなかったため素材を返却しました: "
-                                    + rootMessage(failure));
+                    .whenComplete((prepared, prepareFailure) -> runOnMainThread(() -> {
+                        if (prepareFailure != null) {
+                            finishRepair(player, rootMessage(prepareFailure));
                             return;
                         }
-                        CoreRecord repaired = result.core().orElseThrow(
-                                () -> new IllegalStateException("修繕結果にコアがありません"));
-                        cores.replace(repaired);
-                        repairInFlight.remove(player.getUniqueId());
-                        player.sendMessage(Component.text(
-                                "コアを修繕しました。HP: " + repaired.currentHitPoints()
-                                        + " / " + repaired.maximumHitPoints(),
-                                NamedTextColor.GREEN));
-                        openCoreGui(player, repaired.id());
+                        if (!player.isOnline()) {
+                            rollbackPreparedRepair(
+                                    player,
+                                    Objects.requireNonNull(prepared, "prepared repair"),
+                                    "プレイヤーが切断したため修繕を取り消しました。");
+                            return;
+                        }
+                        reserveAndSecureRepairReceipt(
+                                player,
+                                repairMaterial,
+                                Objects.requireNonNull(prepared, "prepared repair"));
                     }));
         }));
+    }
+
+    private void reserveAndSecureRepairReceipt(
+            Player player,
+            Material repairMaterial,
+            CoreRepairOperation prepared) {
+        if (expectedReceiptQuantity(prepared) == 0L) {
+            applyPreparedRepair(player, prepared);
+            return;
+        }
+        String receiptMaterial = expectedReceiptMaterial(prepared);
+        long receiptQuantity = expectedReceiptQuantity(prepared);
+        databaseExecutor.submit(() -> repository.reserveCoreRepairReceipt(
+                        prepared.operationId(),
+                        player.getUniqueId(),
+                        receiptMaterial,
+                        receiptQuantity,
+                        Instant.now()))
+                .whenComplete((receipt, reserveFailure) -> runOnMainThread(() -> {
+                    if (reserveFailure != null) {
+                        rollbackPreparedRepair(player, prepared, rootMessage(reserveFailure));
+                        return;
+                    }
+                    if (!player.isOnline()
+                            || !secureReceiptItemsInPlace(player, repairMaterial, prepared)) {
+                        if (player.isOnline()) {
+                            restoreAndRollbackRepair(
+                                    player,
+                                    prepared,
+                                    "修繕に必要な素材を安全に確保できませんでした。");
+                        } else {
+                            rollbackPreparedRepair(
+                                    player,
+                                    prepared,
+                                    "プレイヤーが切断したため修繕を取り消しました。");
+                        }
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.secureCoreRepairReceipt(
+                                    prepared.operationId(), Instant.now()))
+                            .whenComplete((secured, secureFailure) -> runOnMainThread(() -> {
+                                if (secureFailure != null) {
+                                    if (!player.isOnline()) {
+                                        plugin.getLogger().warning(
+                                                "Deferring core repair receipt recovery until "
+                                                        + "player rejoins: " + prepared.operationId());
+                                        return;
+                                    }
+                                    restoreAndRollbackRepair(
+                                            player,
+                                            prepared,
+                                            rootMessage(secureFailure));
+                                    return;
+                                }
+                                if (!player.isOnline()) {
+                                    return;
+                                }
+                                applyPreparedRepair(player, prepared);
+                            }));
+                }));
+    }
+
+    private void applyPreparedRepair(Player player, CoreRepairOperation prepared) {
+        if (!player.isOnline()) {
+            return;
+        }
+        if (expectedReceiptQuantity(prepared) > 0L
+                && countReceiptItems(player, prepared.operationId())
+                        < expectedReceiptQuantity(prepared)) {
+            restoreAndRollbackRepair(
+                    player,
+                    prepared,
+                    "修繕receiptの現物確認に失敗しました。");
+            return;
+        }
+        databaseExecutor.submit(() -> repository.applyPreparedCoreRepair(
+                        prepared.operationId(), Instant.now()))
+                .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                    if (applyFailure != null) {
+                        if (player.isOnline()) {
+                            reconcileRepairReceipt(player, prepared);
+                        }
+                        return;
+                    }
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    CoreRecord repaired = Objects.requireNonNull(result, "repair result")
+                            .core().orElseThrow(
+                                    () -> new IllegalStateException("修繕結果にコアがありません"));
+                    if (expectedReceiptQuantity(prepared) == 0L) {
+                        finishAppliedRepair(player, repaired);
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.markCoreRepairReceiptClearPending(
+                                    prepared.operationId(), Instant.now()))
+                            .whenComplete((pendingResult, pendingFailure) -> runOnMainThread(() -> {
+                                if (pendingFailure != null) {
+                                    if (player.isOnline()) {
+                                        reconcileRepairReceipt(player, prepared);
+                                    }
+                                    return;
+                                }
+                                if (!player.isOnline()) {
+                                    return;
+                                }
+                                // CLEAR_PENDING is durable before touching the physical inventory.
+                                // A restart now can distinguish a not-yet-removed receipt from one
+                                // that was already removed and can safely finish the clear.
+                                if (!saveAfterReceiptRemoval(
+                                        player, prepared.operationId())) {
+                                    return;
+                                }
+                                databaseExecutor.submit(() -> repository.clearCoreRepairReceipt(
+                                                prepared.operationId(), Instant.now()))
+                                        .whenComplete((clearResult, clearFailure) ->
+                                                runOnMainThread(() -> {
+                                                    if (!player.isOnline()) {
+                                                        return;
+                                                    }
+                                                    finishAppliedRepair(player, repaired);
+                                                    if (clearFailure != null) {
+                                                        player.sendMessage(Component.text(
+                                                                "修繕receiptの後処理は再起動時に再試行されます。",
+                                                                NamedTextColor.YELLOW));
+                                                    }
+                                                }));
+                            }));
+                }));
+    }
+
+    private void finishAppliedRepair(
+            Player player,
+            CoreRecord repaired) {
+        cores.replace(repaired);
+        repairInFlight.remove(player.getUniqueId());
+        player.sendMessage(Component.text(
+                "コアを修繕しました。HP: " + repaired.currentHitPoints()
+                        + " / " + repaired.maximumHitPoints(),
+                NamedTextColor.GREEN));
+        openCoreGui(player, repaired.id());
+    }
+
+    private void rollbackPreparedRepair(
+            Player player,
+            CoreRepairOperation prepared,
+            String reason) {
+        databaseExecutor.submit(() -> repository.rollbackPreparedCoreRepair(
+                        prepared.operationId(), Instant.now()))
+                .whenComplete((ignored, rollbackFailure) -> runOnMainThread(() -> {
+                    if (rollbackFailure != null) {
+                        if (player.isOnline()) {
+                            finishRepair(
+                                    player,
+                                    reason + " receiptのrollbackにも失敗しました: "
+                                            + rootMessage(rollbackFailure));
+                        }
+                        return;
+                    }
+                    completeRolledBackRepair(player, prepared, reason);
+                }));
+    }
+
+    private void reconcileRepairReceipt(Player player, CoreRepairOperation operation) {
+        databaseExecutor.submit(() -> repository.findCoreRepairReceipt(operation.operationId()))
+                .whenComplete((receipt, lookupFailure) -> runOnMainThread(() -> {
+                    if (lookupFailure != null) {
+                        plugin.getLogger().warning(
+                                "Could not inspect core repair receipt "
+                                        + operation.operationId() + ": "
+                                        + rootMessage(lookupFailure));
+                        return;
+                    }
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (operation.state() == CoreRepairOperationState.ROLLED_BACK) {
+                        if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence
+                                                .CoreRepairReceiptState.RETURN_PENDING) {
+                            completeRolledBackRepair(
+                                    player,
+                                    operation,
+                                    "切断前に取り消した修繕素材を返却しました。");
+                        } else if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence
+                                                .CoreRepairReceiptState.RESTORED) {
+                            if (countReceiptItems(player, operation.operationId()) > 0L) {
+                                stripReceiptItemsInPlace(player, operation.operationId());
+                                player.updateInventory();
+                                player.saveData();
+                            }
+                            repairInFlight.remove(player.getUniqueId());
+                        }
+                        return;
+                    }
+                    if (operation.state() == CoreRepairOperationState.APPLIED) {
+                        if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence
+                                                .CoreRepairReceiptState.CLEARED) {
+                            if (countReceiptItems(player, operation.operationId()) > 0L) {
+                                saveAfterReceiptRemoval(player, operation.operationId());
+                            }
+                            repairInFlight.remove(player.getUniqueId());
+                        } else if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence
+                                                .CoreRepairReceiptState.SECURED) {
+                            databaseExecutor.submit(() -> repository.markCoreRepairReceiptClearPending(
+                                            operation.operationId(), Instant.now()))
+                                    .whenComplete((ignored, pendingFailure) -> runOnMainThread(() -> {
+                                        if (pendingFailure != null || !player.isOnline()) {
+                                            return;
+                                        }
+                                        clearCoreRepairReceiptAfterSave(
+                                                player, operation.operationId());
+                                    }));
+                        } else if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence.CoreRepairReceiptState.CLEAR_PENDING) {
+                            clearCoreRepairReceiptAfterSave(
+                                    player, operation.operationId());
+                        } else if (receipt.isPresent()
+                                && receipt.orElseThrow().state()
+                                        == io.github.takenoha.towerdefense.persistence.CoreRepairReceiptState.RESERVED) {
+                            plugin.getLogger().warning(
+                                    "Applied core repair has an unresolved pre-handoff receipt; "
+                                            + "leaving it for durable audit: " + operation.operationId());
+                        }
+                        return;
+                    }
+                    if (receipt.isEmpty()) {
+                        rollbackPreparedRepair(
+                                player, operation, "修繕receiptが見つからないため取り消しました。");
+                        return;
+                    }
+                    io.github.takenoha.towerdefense.persistence.CoreRepairReceipt currentReceipt =
+                            receipt.orElseThrow();
+                    long secured = countReceiptItems(player, operation.operationId());
+                    long receiptQuantity = currentReceipt.quantity();
+                    if (secured >= receiptQuantity
+                            && currentReceipt.state()
+                                    == io.github.takenoha.towerdefense.persistence.CoreRepairReceiptState.RESERVED) {
+                        databaseExecutor.submit(() -> repository.secureCoreRepairReceipt(
+                                        operation.operationId(), Instant.now()))
+                                .whenComplete((ignored, secureFailure) -> runOnMainThread(() -> {
+                                    if (secureFailure != null) {
+                                        restoreAndRollbackRepair(
+                                                player, operation,
+                                                rootMessage(secureFailure));
+                                    } else if (player.isOnline()) {
+                                        applyPreparedRepair(player, operation);
+                                    }
+                                }));
+                        return;
+                    }
+                    if (secured >= receiptQuantity
+                            && currentReceipt.state()
+                                    == io.github.takenoha.towerdefense.persistence.CoreRepairReceiptState.SECURED) {
+                        applyPreparedRepair(player, operation);
+                        return;
+                    }
+                    if (currentReceipt.state()
+                            == io.github.takenoha.towerdefense.persistence.CoreRepairReceiptState.SECURED) {
+                        restoreAndRollbackRepair(
+                                player, operation,
+                                "修繕receiptの現物が不足していたため取り消しました。");
+                    } else {
+                        restoreAndRollbackRepair(
+                                player, operation,
+                                "修繕receiptの確保が完了していないため取り消しました。");
+                    }
+                }));
+    }
+
+    private long countReceiptItems(Player player, UUID operationId) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (repairReceipts.isFor(item, operationId)) {
+                total += item.getAmount();
+            }
+        }
+        return total;
+    }
+
+    private void restoreAndRollbackRepair(
+            Player player,
+            CoreRepairOperation operation,
+            String reason) {
+        databaseExecutor.submit(() -> repository.rollbackPreparedCoreRepair(
+                        operation.operationId(), Instant.now()))
+                .whenComplete((ignored, rollbackFailure) -> runOnMainThread(() -> {
+                    if (rollbackFailure != null) {
+                        if (player.isOnline()) {
+                            player.sendMessage(Component.text(
+                                    reason + " receiptのrollbackにも失敗しました: "
+                                            + rootMessage(rollbackFailure),
+                                    NamedTextColor.RED));
+                        }
+                        return;
+                    }
+                    completeRolledBackRepair(player, operation, reason);
+                }));
+    }
+
+    private void completeRolledBackRepair(
+            Player player,
+            CoreRepairOperation operation,
+            String reason) {
+        if (!player.isOnline()) {
+            return;
+        }
+        databaseExecutor.submit(() -> repository.findCoreRepairReceipt(operation.operationId()))
+                .whenComplete((receipt, lookupFailure) -> runOnMainThread(() -> {
+                    if (lookupFailure != null) {
+                        player.sendMessage(Component.text(
+                                reason + " receiptの復旧確認に失敗しました。再接続後に再試行します。",
+                                NamedTextColor.YELLOW));
+                        return;
+                    }
+                    // The async lookup may complete after PlayerQuitEvent. Never mutate or save
+                    // an offline Player object; RETURN_PENDING remains durable until join
+                    // reconciliation can prove the physical handoff.
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (receipt != null
+                            && receipt.isPresent()
+                            && receipt.orElseThrow().state()
+                                    == io.github.takenoha.towerdefense.persistence
+                                            .CoreRepairReceiptState.RETURN_PENDING) {
+                        stripReceiptItemsInPlace(player, operation.operationId());
+                        try {
+                            player.updateInventory();
+                            player.saveData();
+                        } catch (RuntimeException saveFailure) {
+                            plugin.getLogger().log(
+                                    java.util.logging.Level.WARNING,
+                                    "Could not durably save a rolled-back core repair receipt "
+                                            + operation.operationId(),
+                                    saveFailure);
+                            return;
+                        }
+                        databaseExecutor.submit(() -> repository.restoreCoreRepairReceipt(
+                                        operation.operationId(), Instant.now()))
+                                .whenComplete((restored, restoreFailure) -> runOnMainThread(() -> {
+                                    if (restoreFailure != null) {
+                                        plugin.getLogger().log(
+                                                java.util.logging.Level.WARNING,
+                                                "Could not complete core repair receipt restore "
+                                                        + operation.operationId(),
+                                                restoreFailure);
+                                        return;
+                                    }
+                                    finishRepair(player, reason);
+                                }));
+                        return;
+                    }
+                    finishRepair(player, reason);
+                }));
     }
 
     private void beginRelocation(Player player, UUID coreId) {
@@ -732,48 +1486,150 @@ public final class CoreManagementListener implements Listener {
                 }));
     }
 
-    private RemovedItems removeCostItems(
+    private boolean secureReceiptItemsInPlace(
             Player player,
-            Material vanillaMaterial,
-            long materialAmount,
-            long shardAmount) {
-        if (materialAmount > Integer.MAX_VALUE || shardAmount > Integer.MAX_VALUE) {
-            return null;
+            Material material,
+            CoreRepairOperation operation) {
+        long materialQuantity = operation.vanillaMaterialAmount();
+        long shardQuantity = operation.legacyDefenseShardAmount();
+        // addItem/setItem below address storage slots only. Preflight the same slot domain so
+        // armor/offhand capacity cannot make a full storage inventory look safely splittable.
+        ItemStack[] contents = player.getInventory().getStorageContents();
+        Optional<List<ReceiptInventoryPlanner.Extraction>> materialPlan =
+                ReceiptInventoryPlanner.plan(
+                        contents,
+                        item -> item != null
+                                && item.getType() == material
+                                && !repairReceipts.isTagged(item),
+                        materialQuantity,
+                        material.name());
+        Optional<List<ReceiptInventoryPlanner.Extraction>> shardPlan =
+                ReceiptInventoryPlanner.plan(
+                        contents,
+                        item -> shardTagger.isShard(item) && !repairReceipts.isTagged(item),
+                        shardQuantity,
+                        "DEFENSE_SHARD");
+        if (materialPlan.isEmpty() || shardPlan.isEmpty()) {
+            return false;
         }
-        long materialRemaining = materialAmount;
-        long shardsRemaining = shardAmount;
+        List<ReceiptInventoryPlanner.Extraction> plan = new ArrayList<>();
+        plan.addAll(materialPlan.orElseThrow());
+        plan.addAll(shardPlan.orElseThrow());
+        if (!ReceiptInventoryPlanner.canApply(contents, plan)) {
+            return false;
+        }
+        List<ItemStack> remainders = new ArrayList<>();
+        for (ReceiptInventoryPlanner.Extraction extraction : plan) {
+            ItemStack current = player.getInventory().getItem(extraction.slot());
+            ItemStack tagged = current.clone();
+            tagged.setAmount(extraction.amount());
+            player.getInventory().setItem(
+                    extraction.slot(), repairReceipts.tag(tagged, operation.operationId()));
+            int remainder = current.getAmount() - extraction.amount();
+            if (remainder > 0) {
+                ItemStack ordinary = current.clone();
+                ordinary.setAmount(remainder);
+                remainders.add(ordinary);
+            }
+        }
+        for (ItemStack remainder : remainders) {
+            if (!addWithoutDrop(player, remainder)) {
+                throw new IllegalStateException(
+                        "Receipt inventory preflight disagreed with the live inventory");
+            }
+        }
+        return true;
+    }
+
+    private long countOrdinaryRepairMaterial(Player player, Material material) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.getType() == material && !repairReceipts.isTagged(item)) {
+                total += item.getAmount();
+            }
+        }
+        return total;
+    }
+
+    private long countOrdinaryShards(Player player) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (shardTagger.isShard(item) && !repairReceipts.isTagged(item)) {
+                total += item.getAmount();
+            }
+        }
+        return total;
+    }
+
+    private static String expectedReceiptMaterial(CoreRepairOperation operation) {
+        return operation.paymentMode() == PaymentMode.LEGACY_ITEMS
+                && operation.legacyDefenseShardAmount() > 0L
+                ? "CORE_REPAIR_BUNDLE"
+                : operation.vanillaMaterial();
+    }
+
+    private static long expectedReceiptQuantity(CoreRepairOperation operation) {
+        return Math.addExact(
+                operation.vanillaMaterialAmount(), operation.legacyDefenseShardAmount());
+    }
+
+    /** Removes receipt-tagged stacks and strips their PDC before they become ordinary items. */
+    private List<ItemStack> takeReceiptItems(Player player, UUID operationId) {
         List<ItemStack> removed = new ArrayList<>();
         for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
             ItemStack item = player.getInventory().getItem(slot);
-            if (item == null || item.getType().isAir()) {
+            if (!repairReceipts.isFor(item, operationId)) {
                 continue;
             }
-            boolean isVanilla = item.getType() == vanillaMaterial && !shardTagger.isShard(item);
-            boolean isShard = shardTagger.isShard(item);
-            long remaining = isVanilla ? materialRemaining : (isShard ? shardsRemaining : 0L);
-            if (remaining <= 0L) {
-                continue;
-            }
-            int quantity = (int) Math.min((long) item.getAmount(), remaining);
-            ItemStack taken = item.clone();
-            taken.setAmount(quantity);
-            removed.add(taken);
-            int left = item.getAmount() - quantity;
-            player.getInventory().setItem(slot, left == 0 ? null : item.clone());
-            if (left > 0) {
-                player.getInventory().getItem(slot).setAmount(left);
-            }
-            if (isVanilla) {
-                materialRemaining -= quantity;
-            } else {
-                shardsRemaining -= quantity;
+            removed.add(repairReceipts.strip(item));
+            player.getInventory().setItem(slot, null);
+        }
+        return List.copyOf(removed);
+    }
+
+    /** Strips a receipt in place when rollback returns the same physical stack to the owner. */
+    private void stripReceiptItemsInPlace(Player player, UUID operationId) {
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (repairReceipts.isFor(item, operationId)) {
+                player.getInventory().setItem(slot, repairReceipts.strip(item));
             }
         }
-        if (materialRemaining > 0L || shardsRemaining > 0L) {
-            refund(player, removed);
-            return null;
+    }
+
+    /** Removes a paid receipt, saves the player data, and only then advances the DB state. */
+    private boolean saveAfterReceiptRemoval(Player player, UUID operationId) {
+        if (!player.isOnline()) {
+            return false;
         }
-        return new RemovedItems(List.copyOf(removed));
+        takeReceiptItems(player, operationId);
+        try {
+            player.updateInventory();
+            player.saveData();
+            return true;
+        } catch (RuntimeException saveFailure) {
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not durably save cleared core repair receipt " + operationId,
+                    saveFailure);
+            return false;
+        }
+    }
+
+    private void clearCoreRepairReceiptAfterSave(Player player, UUID operationId) {
+        if (!saveAfterReceiptRemoval(player, operationId)) {
+            return;
+        }
+        databaseExecutor.submit(() -> repository.clearCoreRepairReceipt(
+                        operationId, Instant.now()))
+                .whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.WARNING,
+                                "Could not clear core repair receipt " + operationId,
+                                failure);
+                    }
+                });
     }
 
     private void refund(Player player, List<ItemStack> items) {
@@ -793,6 +1649,10 @@ public final class CoreManagementListener implements Listener {
                     player.getLocation(), value));
         }
         return new MapResult(left == 0);
+    }
+
+    private boolean addWithoutDrop(Player player, ItemStack item) {
+        return player.getInventory().addItem(item).isEmpty();
     }
 
     private void finishRepair(Player player, String message) {
@@ -830,7 +1690,14 @@ public final class CoreManagementListener implements Listener {
             CoreRecord core,
             TeamRecord team,
             TeamProgress progress,
-            CoreRepairCost repairCost) {
+            CoreRepairCost repairCost,
+            TeamResourceSnapshot resources) {
+    }
+
+    private record ResourceVaultData(
+            TeamResourceSnapshot snapshot,
+            boolean owner,
+            boolean canWithdraw) {
     }
 
     private record TeamGuiData(CoreRecord core, TeamRecord team) {
@@ -839,9 +1706,6 @@ public final class CoreManagementListener implements Listener {
     private record TowerResearchGuiData(
             TeamProgress progress,
             List<io.github.takenoha.towerdefense.domain.TowerResearch> research) {
-    }
-
-    private record RemovedItems(List<ItemStack> items) {
     }
 
     private record MapResult(boolean complete) {

@@ -216,7 +216,12 @@ final class PluginSettingsMapReader {
                             values,
                             "rewards",
                             "enhancement-core-drop-percent",
-                            RewardSettings.DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT));
+                            RewardSettings.DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT),
+                    booleanOrDefault(
+                            values,
+                            "rewards",
+                            "legacy-resource-payments-enabled",
+                            true));
         }
 
         private TerrainMutationSettings terrainMutation() {

@@ -18,7 +18,8 @@ public record TowerUpgrade(
         TowerUpgradeState state,
         Instant preparedAt,
         Instant appliedAt,
-        Instant rolledBackAt) {
+        Instant rolledBackAt,
+        PaymentMode paymentMode) {
     public TowerUpgrade {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(towerId, "towerId");
@@ -27,6 +28,7 @@ public record TowerUpgrade(
         Objects.requireNonNull(payloadFingerprint, "payloadFingerprint");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(preparedAt, "preparedAt");
+        Objects.requireNonNull(paymentMode, "paymentMode");
         if (fromLevel <= 0 || toLevel != fromLevel + 1) {
             throw new IllegalArgumentException("an upgrade must raise one positive level");
         }
@@ -68,6 +70,32 @@ public record TowerUpgrade(
                 TowerUpgradeState.PREPARED,
                 preparedAt,
                 null,
-                null);
+                null,
+                PaymentMode.LEGACY_ITEMS);
+    }
+
+    public static TowerUpgrade preparedWallet(
+            UUID operationId,
+            TowerRecord tower,
+            UUID actorId,
+            int defensePointCost,
+            int enhancementPointCost,
+            Instant preparedAt) {
+        Objects.requireNonNull(tower, "tower");
+        return new TowerUpgrade(
+                operationId,
+                tower.id(),
+                actorId,
+                tower.teamId(),
+                tower.individualLevel(),
+                tower.individualLevel() + 1,
+                defensePointCost,
+                enhancementPointCost,
+                "",
+                TowerUpgradeState.PREPARED,
+                preparedAt,
+                null,
+                null,
+                PaymentMode.POINT_WALLET);
     }
 }
