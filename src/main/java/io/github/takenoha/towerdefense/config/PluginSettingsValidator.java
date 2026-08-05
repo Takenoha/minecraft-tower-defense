@@ -425,6 +425,16 @@ public final class PluginSettingsValidator {
                 enemies.basePerWave(),
                 unreadablePaths,
                 violations);
+        requirePositive(
+                "enemies.tower-attack-damage",
+                enemies.towerAttackDamage(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "enemies.tower-attack-interval-ticks",
+                enemies.towerAttackIntervalTicks(),
+                unreadablePaths,
+                violations);
         if (isReadable("enemies.added-per-wave", unreadablePaths)
                 && enemies.addedPerWave() < 0) {
             violations.add("enemies.added-per-wave: must be >= 0 (was "
@@ -450,6 +460,17 @@ public final class PluginSettingsValidator {
             } else if (enemies.moveSpeed() <= 0.0) {
                 violations.add(speedPath + ": must be > 0 (was "
                         + enemies.moveSpeed() + ")");
+            }
+        }
+
+        String towerAttackRangePath = "enemies.tower-attack-range";
+        if (isReadable(towerAttackRangePath, unreadablePaths)) {
+            if (!Double.isFinite(enemies.towerAttackRange())) {
+                violations.add(towerAttackRangePath + ": must be finite (was "
+                        + enemies.towerAttackRange() + ")");
+            } else if (enemies.towerAttackRange() <= 0.0d) {
+                violations.add(towerAttackRangePath + ": must be > 0 (was "
+                        + enemies.towerAttackRange() + ")");
             }
         }
 

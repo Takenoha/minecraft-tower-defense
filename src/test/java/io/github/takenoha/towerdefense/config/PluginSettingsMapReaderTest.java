@@ -121,6 +121,21 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsConfiguredDestroyerTowerAttackValues() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "enemies").putAll(Map.of(
+                "tower-attack-damage", 13,
+                "tower-attack-interval-ticks", 27,
+                "tower-attack-range", 3.5d));
+
+        EnemySettings enemies = PluginSettings.from(values).enemies();
+
+        assertEquals(13, enemies.towerAttackDamage());
+        assertEquals(27, enemies.towerAttackIntervalTicks());
+        assertEquals(3.5d, enemies.towerAttackRange());
+    }
+
+    @Test
     void readsTheIndependentTerrainMutationActivationInputs() {
         Map<String, Object> values = validValues();
         values.put("terrain-mutation", Map.of(

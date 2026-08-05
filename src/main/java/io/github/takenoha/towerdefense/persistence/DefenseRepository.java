@@ -1845,6 +1845,91 @@ public final class DefenseRepository {
         }
     }
 
+    /** Applies one destroyer attack to a tower and deletes the tower atomically at zero HP. */
+    public TowerDamageMutationResult damageTowerByEnemy(
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(attackerLogicalEnemyId, "attackerLogicalEnemyId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (damage <= 0L) {
+            throw new IllegalArgumentException("tower damage must be positive");
+        }
+        String fingerprint = managementFingerprint(
+                "TOWER_DAMAGE",
+                eventId,
+                teamId,
+                attackerLogicalEnemyId,
+                towerId,
+                damage);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerDamageOperation> existing = loadTowerDamageOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    TowerDamageOperation operation = existing.orElseThrow();
+                    requireMatchingTowerDamageOperation(
+                            operation,
+                            eventId,
+                            teamId,
+                            attackerLogicalEnemyId,
+                            towerId,
+                            damage,
+                            fingerprint);
+                    return damageResult(operation, OperationOutcome.ALREADY_APPLIED);
+                }
+
+                requireActiveTowerDamageEvent(connection, eventId, teamId);
+                TowerDurability current = requireTowerDurability(connection, towerId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower damage belongs to another team");
+                }
+                boolean destroyed = current.currentHitPoints() <= damage;
+                long remainingHitPoints = destroyed
+                        ? 0L
+                        : current.currentHitPoints() - damage;
+                if (destroyed) {
+                    deleteTower(connection, towerId, teamId);
+                } else {
+                    updateTowerDurability(
+                            connection,
+                            new TowerDurability(
+                                    towerId,
+                                    teamId,
+                                    remainingHitPoints,
+                                    current.maximumHitPoints()),
+                            appliedAt);
+                }
+                TowerDamageOperation operation = new TowerDamageOperation(
+                        eventId,
+                        teamId,
+                        attackerLogicalEnemyId,
+                        towerId,
+                        damage,
+                        remainingHitPoints,
+                        destroyed,
+                        fingerprint);
+                insertTowerDamageOperation(connection, operation, operationId, appliedAt);
+                return damageResult(operation, OperationOutcome.APPLIED);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower damage operation conflicts with persisted data", exception);
+            }
+            throw failure("damage a tower by an event enemy", exception);
+        }
+    }
+
     public Optional<StoredDefenseEvent> findEvent(UUID eventId) {
         Objects.requireNonNull(eventId, "eventId");
         return read("load a defense event", connection -> loadEvent(connection, eventId));
@@ -2522,6 +2607,23 @@ public final class DefenseRepository {
         }
     }
 
+    private static void requireActiveTowerDamageEvent(
+            Connection connection,
+            UUID eventId,
+            UUID teamId) throws SQLException {
+        Optional<UUID> activeEvent = loadActiveEventId(connection);
+        if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
+            throw new PersistenceConflictException(
+                    "Tower damage is available only for the active defense event");
+        }
+        StoredDefenseEvent event = requireEvent(connection, eventId);
+        if (!event.session().teamId().equals(teamId)
+                || event.session().phase() != DefensePhase.WAVE_ACTIVE) {
+            throw new PersistenceConflictException(
+                    "Tower damage is available only during the owning team's active wave");
+        }
+    }
+
     private static void insertBattleFunds(
             Connection connection,
             UUID eventId,
@@ -2813,6 +2915,104 @@ public final class DefenseRepository {
                 throw new SQLException("The tower durability update affected no rows");
             }
         }
+    }
+
+    private static void deleteTower(
+            Connection connection,
+            UUID towerId,
+            UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM towers WHERE tower_id = ? AND team_id = ?")) {
+            statement.setString(1, towerId.toString());
+            statement.setString(2, teamId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The destroyed tower delete affected no rows");
+            }
+        }
+    }
+
+    private static void insertTowerDamageOperation(
+            Connection connection,
+            TowerDamageOperation operation,
+            UUID operationId,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_damage_operations(
+                    operation_id, event_id, team_id, attacker_enemy_id, tower_id,
+                    damage, remaining_hp, destroyed, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, operation.eventId().toString());
+            statement.setString(3, operation.teamId().toString());
+            statement.setString(4, operation.attackerLogicalEnemyId().toString());
+            statement.setString(5, operation.towerId().toString());
+            statement.setLong(6, operation.damage());
+            statement.setLong(7, operation.remainingHitPoints());
+            statement.setInt(8, operation.destroyed() ? 1 : 0);
+            statement.setString(9, operation.payloadFingerprint());
+            statement.setString(10, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TowerDamageOperation> loadTowerDamageOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, attacker_enemy_id, tower_id,
+                       damage, remaining_hp, destroyed, payload_fingerprint
+                FROM event_tower_damage_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TowerDamageOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("attacker_enemy_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        resultSet.getLong("damage"),
+                        resultSet.getLong("remaining_hp"),
+                        resultSet.getInt("destroyed") == 1,
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTowerDamageOperation(
+            TowerDamageOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.attackerLogicalEnemyId().equals(attackerLogicalEnemyId)
+                || !existing.towerId().equals(towerId)
+                || existing.damage() != damage
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The tower-damage operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static TowerDamageMutationResult damageResult(
+            TowerDamageOperation operation,
+            OperationOutcome outcome) {
+        return new TowerDamageMutationResult(
+                outcome,
+                operation.eventId(),
+                operation.teamId(),
+                operation.towerId(),
+                operation.attackerLogicalEnemyId(),
+                operation.damage(),
+                operation.remainingHitPoints(),
+                operation.destroyed());
     }
 
     private static void insertTowerRepairOperation(
@@ -4338,6 +4538,17 @@ public final class DefenseRepository {
             UUID towerId,
             long repairedHitPoints,
             long cost,
+            String payloadFingerprint) {
+    }
+
+    private record TowerDamageOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            long remainingHitPoints,
+            boolean destroyed,
             String payloadFingerprint) {
     }
 
