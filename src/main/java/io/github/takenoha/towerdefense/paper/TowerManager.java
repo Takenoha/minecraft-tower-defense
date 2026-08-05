@@ -11,6 +11,7 @@ import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.BattleBoost;
 import io.github.takenoha.towerdefense.persistence.BattleBoostKind;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
+import io.github.takenoha.towerdefense.persistence.PaymentMode;
 import io.github.takenoha.towerdefense.persistence.ResourceRepository;
 import io.github.takenoha.towerdefense.persistence.TeamResourceSnapshot;
 import io.github.takenoha.towerdefense.persistence.TowerPlacement;
@@ -20,6 +21,8 @@ import io.github.takenoha.towerdefense.persistence.TowerRemoval;
 import io.github.takenoha.towerdefense.persistence.TowerRemovalState;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
 import io.github.takenoha.towerdefense.persistence.TowerUpgrade;
+import io.github.takenoha.towerdefense.persistence.TowerUpgradeReceipt;
+import io.github.takenoha.towerdefense.persistence.TowerUpgradeReceiptState;
 import io.github.takenoha.towerdefense.persistence.TowerUpgradeResult;
 import io.github.takenoha.towerdefense.persistence.TowerUpgradeState;
 import io.github.takenoha.towerdefense.runtime.CoreAttackSchedule;
@@ -62,22 +65,36 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.CrafterCraftEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.entity.ItemDespawnEvent;
+import org.bukkit.event.entity.ItemMergeEvent;
+import org.bukkit.event.entity.EntityPortalEvent;
+import org.bukkit.event.entity.EntityTeleportEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.inventory.InventoryPickupItemEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -102,6 +119,9 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final TowerEntityTagger entityTagger;
     private final EventEnemyTagger eventEnemyTagger;
     private final ResourceRepository resources;
+    private final DefenseShardTagger shardTagger;
+    private final EnhancementCoreTagger enhancementCoreTagger;
+    private final TowerUpgradeReceiptTagger upgradeReceipts;
     private final CombatArea combatArea;
     private final NamespacedKey towerDamageKey;
     private final Set<UUID> placementInFlight = new HashSet<>();
@@ -168,6 +188,9 @@ public final class TowerManager implements Listener, AutoCloseable {
         this.entityTagger = Objects.requireNonNull(entityTagger, "entityTagger");
         eventEnemyTagger = new EventEnemyTagger(plugin);
         this.resources = resources;
+        shardTagger = new DefenseShardTagger(plugin);
+        enhancementCoreTagger = new EnhancementCoreTagger(plugin);
+        upgradeReceipts = new TowerUpgradeReceiptTagger(plugin);
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -285,6 +308,26 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
     }
 
+    /**
+     * Reconciles legacy upgrade stop windows at startup. Existing PREPARED rows from the wallet
+     * migration had no physical receipt and are rolled back fail-closed; receipt-bearing rows
+     * remain until the owning player joins and the inventory can be inspected safely.
+     */
+    public void recoverPreparedUpgrades() {
+        for (TowerUpgrade upgrade : repository.loadPreparedTowerUpgrades()) {
+            List<TowerUpgradeReceipt> receipts = repository.findTowerUpgradeReceipts(
+                    upgrade.operationId());
+            if (receipts.isEmpty()) {
+                databaseExecutor.submit(() -> repository.rollbackTowerUpgrade(
+                        upgrade.operationId(), Instant.now()));
+            } else {
+                plugin.getLogger().info(
+                        "Deferring legacy tower upgrade receipt reconciliation until player "
+                                + upgrade.actorId() + " rejoins: " + upgrade.operationId());
+            }
+        }
+    }
+
     /** Finishes the physical side of removals that committed immediately before a restart. */
     public void recoverAppliedRemovals() {
         for (TowerRemoval removal : repository.loadAppliedTowerRemovals()) {
@@ -317,6 +360,7 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
+        reconcilePreparedUpgradeReceipts(event.getPlayer());
         reconcileAppliedItems(event.getPlayer());
         for (UUID towerId : pendingRemovalTowerIds) {
             removeMatchingItemsFromPlayer(event.getPlayer(), towerId);
@@ -337,6 +381,162 @@ public final class TowerManager implements Listener, AutoCloseable {
         Block clicked = event.getClickedBlock();
         Block target = clicked.getRelative(event.getBlockFace());
         beginPlacement(event.getPlayer(), clicked, target, identity.orElseThrow());
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptClick(InventoryClickEvent event) {
+        ItemStack source = event.getCurrentItem();
+        if (event.getWhoClicked() instanceof Player player) {
+            if (event.getClick() == ClickType.NUMBER_KEY) {
+                source = player.getInventory().getItem(event.getHotbarButton());
+            } else if (event.getClick() == ClickType.SWAP_OFFHAND) {
+                source = player.getInventory().getItemInOffHand();
+            }
+        }
+        if (upgradeReceipts.isTagged(source)
+                || upgradeReceipts.isTagged(event.getCursor())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDrag(InventoryDragEvent event) {
+        if (upgradeReceipts.isTagged(event.getOldCursor())
+                || event.getNewItems().values().stream().anyMatch(upgradeReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptMove(InventoryMoveItemEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptPickup(InventoryPickupItemEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptEntityPickup(EntityPickupItemEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDrop(PlayerDropItemEvent event) {
+        if (upgradeReceipts.isTagged(event.getItemDrop().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptPlace(BlockPlaceEvent event) {
+        if (upgradeReceipts.isTagged(event.getItemInHand())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDispense(BlockDispenseEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptInteract(PlayerInteractEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptInteractEntity(PlayerInteractEntityEvent event) {
+        if (upgradeReceipts.isTagged(event.getPlayer().getInventory().getItem(event.getHand()))) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptSwapHands(PlayerSwapHandItemsEvent event) {
+        if (upgradeReceipts.isTagged(event.getMainHandItem())
+                || upgradeReceipts.isTagged(event.getOffHandItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptConsume(PlayerItemConsumeEvent event) {
+        if (upgradeReceipts.isTagged(event.getItem())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptCraft(CraftItemEvent event) {
+        if (java.util.Arrays.stream(event.getInventory().getMatrix())
+                .anyMatch(upgradeReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptCrafter(CrafterCraftEvent event) {
+        if (event.getBlock().getState() instanceof org.bukkit.block.Crafter crafter
+                && java.util.Arrays.stream(crafter.getInventory().getContents())
+                        .anyMatch(upgradeReceipts::isTagged)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDeath(PlayerDeathEvent event) {
+        event.getDrops().removeIf(upgradeReceipts::isTagged);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptMerge(ItemMergeEvent event) {
+        if (upgradeReceipts.isTagged(event.getEntity().getItemStack())
+                || upgradeReceipts.isTagged(event.getTarget().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDespawn(ItemDespawnEvent event) {
+        if (upgradeReceipts.isTagged(event.getEntity().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Item item
+                && upgradeReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptPortal(EntityPortalEvent event) {
+        if (event.getEntity() instanceof Item item
+                && upgradeReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onUpgradeReceiptTeleport(EntityTeleportEvent event) {
+        if (event.getEntity() instanceof Item item
+                && upgradeReceipts.isTagged(item.getItemStack())) {
+            event.setCancelled(true);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -822,71 +1022,398 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
         int shardCost = settings.towers().individualUpgradeShardCost(tower.individualLevel());
         int coreCost = settings.towers().individualUpgradeCoreCost(tower.individualLevel());
-        TowerUpgrade request = TowerUpgrade.preparedWallet(
-                UUID.randomUUID(),
-                tower,
-                player.getUniqueId(),
-                shardCost,
-                coreCost,
-                Instant.now());
         player.sendMessage(Component.text("個体Lv強化を準備しています…", NamedTextColor.GRAY));
-        databaseExecutor.submit(() -> repository.prepareTowerUpgrade(request))
-                .whenComplete((prepared, failure) -> runOnMainThread(() -> {
-                    if (failure != null) {
-                        finishUpgrade(player, towerId,
-                                "タワーを強化できません: " + rootMessage(failure));
-                        return;
-                    }
-                    if (prepared.state() != TowerUpgradeState.PREPARED
-                            || !sessions.mayUpgradeTower(tower.teamId())
-                            || !currentTowerEntityMatches(tower)
-                            || !player.isOnline()) {
+        databaseExecutor.submit(() -> {
+            TeamResourceSnapshot snapshot = resources == null
+                    ? new TeamResourceSnapshot(tower.teamId(), 0L, 0L, 0L, 0L)
+                    : resources.load(tower.teamId(), player.getUniqueId());
+            boolean walletPayment = snapshot.defensePoints() >= shardCost
+                    && snapshot.enhancementPoints() >= coreCost;
+            if (!walletPayment && !settings.rewards().legacyResourcePaymentsEnabled()) {
+                throw new IllegalStateException(
+                        "ポイント不足です。legacy-resource-payments-enabled=trueなら旧素材で支払えます");
+            }
+            return walletPayment ? PaymentMode.POINT_WALLET : PaymentMode.LEGACY_ITEMS;
+        }).whenComplete((paymentMode, quoteFailure) -> runOnMainThread(() -> {
+            if (quoteFailure != null) {
+                finishUpgrade(player, towerId, rootMessage(quoteFailure));
+                return;
+            }
+            if (!player.isOnline()) {
+                upgradeInFlight.remove(towerId);
+                return;
+            }
+            if (paymentMode == PaymentMode.LEGACY_ITEMS) {
+                player.sendMessage(Component.text(
+                        "ポイント不足のため旧素材支払いを使用します（旧方式は廃止予定です）。",
+                        NamedTextColor.YELLOW));
+            }
+            TowerUpgrade request = paymentMode == PaymentMode.POINT_WALLET
+                    ? TowerUpgrade.preparedWallet(
+                            UUID.randomUUID(),
+                            tower,
+                            player.getUniqueId(),
+                            shardCost,
+                            coreCost,
+                            Instant.now())
+                    : TowerUpgrade.prepared(
+                            UUID.randomUUID(),
+                            tower,
+                            player.getUniqueId(),
+                            shardCost,
+                            coreCost,
+                            Instant.now());
+            databaseExecutor.submit(() -> repository.prepareTowerUpgrade(request))
+                    .whenComplete((prepared, prepareFailure) -> runOnMainThread(() -> {
+                        if (prepareFailure != null) {
+                            finishUpgrade(player, towerId,
+                                    "タワーを強化できません: " + rootMessage(prepareFailure));
+                            return;
+                        }
+                        if (prepared.state() != TowerUpgradeState.PREPARED
+                                || !sessions.mayUpgradeTower(tower.teamId())
+                                || !currentTowerEntityMatches(tower)
+                                || !player.isOnline()) {
+                            rollbackUpgrade(
+                                    player,
+                                    prepared,
+                                    "強化前に対象または防衛フェーズが変わったため取り消しました。");
+                            return;
+                        }
+                        if (prepared.paymentMode() == PaymentMode.LEGACY_ITEMS) {
+                            beginLegacyUpgradeReceipt(player, prepared);
+                        } else {
+                            applyWalletUpgrade(player, prepared);
+                        }
+                    }));
+        }));
+    }
+
+    private void applyWalletUpgrade(Player player, TowerUpgrade prepared) {
+        databaseExecutor.submit(() -> repository.applyTowerUpgradeFromWallet(
+                        prepared.operationId(), Instant.now()))
+                .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                    if (applyFailure != null) {
                         rollbackUpgrade(
                                 player,
                                 prepared,
-                                "強化前に対象または防衛フェーズが変わったため取り消しました。");
+                                "強化を永続化できなかったためポイントは消費されていません: "
+                                        + rootMessage(applyFailure));
                         return;
                     }
-                    databaseExecutor.submit(() -> repository.applyTowerUpgradeFromWallet(
+                    finishAppliedUpgrade(player, prepared, result.tower().orElse(null));
+                }));
+    }
+
+    private void beginLegacyUpgradeReceipt(Player player, TowerUpgrade prepared) {
+        databaseExecutor.submit(() -> repository.reserveTowerUpgradeReceipts(
+                        prepared.operationId(), player.getUniqueId(), Instant.now()))
+                .whenComplete((receipts, reserveFailure) -> runOnMainThread(() -> {
+                    if (reserveFailure != null) {
+                        rollbackUpgrade(player, prepared, rootMessage(reserveFailure));
+                        return;
+                    }
+                    if (!player.isOnline() || !secureUpgradeItemsInPlace(player, prepared)) {
+                        rollbackLegacyUpgrade(
+                                player,
+                                prepared,
+                                "強化素材を安全に確保できなかったため取り消しました。");
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.secureTowerUpgradeReceipts(
                                     prepared.operationId(), Instant.now()))
-                            .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
-                                if (applyFailure != null) {
-                                    rollbackUpgrade(
+                            .whenComplete((secured, secureFailure) -> runOnMainThread(() -> {
+                                if (secureFailure != null) {
+                                    if (!player.isOnline()) {
+                                        plugin.getLogger().warning(
+                                                "Deferring tower upgrade receipt recovery until "
+                                                        + "player rejoins: " + prepared.operationId());
+                                        return;
+                                    }
+                                    rollbackLegacyUpgrade(
                                             player,
                                             prepared,
-                                            "強化を永続化できなかったためポイントは消費されていません: "
-                                                    + rootMessage(applyFailure));
+                                            rootMessage(secureFailure));
                                     return;
                                 }
-                                TowerRecord updated = result.tower().orElse(null);
-                                if (updated == null) {
-                                    finishUpgrade(player, towerId,
-                                            "強化結果のタワーを確認できません。管理者へ連絡してください。");
+                                if (!player.isOnline()) {
                                     return;
                                 }
-                                upgradeInFlight.remove(towerId);
-                                towers.replace(updated);
-                                Entity entity = Bukkit.getEntity(updated.entityId());
-                                if (entity != null) {
-                                    entityTagger.tag(entity, new TowerEntityIdentity(
-                                            updated.id(),
-                                            updated.teamId(),
-                                            updated.type(),
-                                            updated.individualLevel()));
-                                }
-                                player.sendMessage(Component.text(
-                                        "タワーを個体Lv" + updated.individualLevel()
-                                                + "へ強化しました。",
-                                        NamedTextColor.GREEN));
-                                openTowerGui(
-                                        player,
-                                        new TowerEntityIdentity(
-                                                updated.id(),
-                                                updated.teamId(),
-                                                updated.type(),
-                                                updated.individualLevel()),
-                                        updated.entityId());
+                                applyLegacyUpgrade(player, prepared);
                             }));
+                }));
+    }
+
+    private void applyLegacyUpgrade(Player player, TowerUpgrade prepared) {
+        if (!player.isOnline()) {
+            return;
+        }
+        if (!hasUpgradeReceiptItems(player, prepared)) {
+            rollbackLegacyUpgrade(
+                    player,
+                    prepared,
+                    "強化receiptの現物確認に失敗したため取り消しました。");
+            return;
+        }
+        databaseExecutor.submit(() -> repository.applyTowerUpgrade(
+                        prepared.operationId(), Instant.now()))
+                .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                    if (applyFailure != null) {
+                        rollbackLegacyUpgrade(player, prepared, rootMessage(applyFailure));
+                        return;
+                    }
+                    databaseExecutor.submit(() -> repository.markTowerUpgradeReceiptsClearPending(
+                                    prepared.operationId(), Instant.now()))
+                            .whenComplete((pendingResult, pendingFailure) ->
+                                    runOnMainThread(() -> {
+                                        if (pendingFailure != null) {
+                                            if (player.isOnline()) {
+                                                reconcilePreparedUpgradeReceipt(player, prepared);
+                                            }
+                                            return;
+                                        }
+                                        if (!player.isOnline()) {
+                                            return;
+                                        }
+                                        // CLEAR_PENDING is durable before physical removal, so a
+                                        // restart can safely finish the receipt clear either way.
+                                        takeUpgradeReceiptItems(player, prepared.operationId());
+                                        databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
+                                                        prepared.operationId(), Instant.now()));
+                                        finishAppliedUpgrade(player, prepared, result.tower().orElse(null));
+                                    }));
+                }));
+    }
+
+    private void finishAppliedUpgrade(
+            Player player,
+            TowerUpgrade prepared,
+            TowerRecord updated) {
+        if (updated == null) {
+            finishUpgrade(player, prepared.towerId(),
+                    "強化結果のタワーを確認できません。管理者へ連絡してください。");
+            return;
+        }
+        upgradeInFlight.remove(prepared.towerId());
+        towers.replace(updated);
+        Entity entity = Bukkit.getEntity(updated.entityId());
+        if (entity != null) {
+            entityTagger.tag(entity, new TowerEntityIdentity(
+                    updated.id(), updated.teamId(), updated.type(), updated.individualLevel()));
+        }
+        player.sendMessage(Component.text(
+                "タワーを個体Lv" + updated.individualLevel() + "へ強化しました。",
+                NamedTextColor.GREEN));
+        openTowerGui(
+                player,
+                new TowerEntityIdentity(
+                        updated.id(), updated.teamId(), updated.type(), updated.individualLevel()),
+                updated.entityId());
+    }
+
+    private boolean secureUpgradeItemsInPlace(Player player, TowerUpgrade upgrade) {
+        if (countOrdinaryItems(player, "DEFENSE_SHARD") < upgrade.defenseShardCost()
+                || countOrdinaryItems(player, "ENHANCEMENT_CORE")
+                        < upgrade.enhancementCoreCost()) {
+            return false;
+        }
+        return tagUpgradeItems(
+                player,
+                item -> shardTagger.isShard(item) && !upgradeReceipts.isTagged(item),
+                upgrade.defenseShardCost(),
+                upgrade.operationId(),
+                "DEFENSE_SHARD")
+                && tagUpgradeItems(
+                        player,
+                        item -> enhancementCoreTagger.isEnhancementCore(item)
+                                && !upgradeReceipts.isTagged(item),
+                        upgrade.enhancementCoreCost(),
+                        upgrade.operationId(),
+                        "ENHANCEMENT_CORE");
+    }
+
+    private long countOrdinaryItems(Player player, String material) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (material.equals("DEFENSE_SHARD")
+                    ? shardTagger.isShard(item) && !upgradeReceipts.isTagged(item)
+                    : enhancementCoreTagger.isEnhancementCore(item)
+                            && !upgradeReceipts.isTagged(item)) {
+                total += item.getAmount();
+            }
+        }
+        return total;
+    }
+
+    private boolean tagUpgradeItems(
+            Player player,
+            java.util.function.Predicate<ItemStack> predicate,
+            long quantity,
+            UUID operationId,
+            String material) {
+        long remaining = quantity;
+        for (int slot = 0; slot < player.getInventory().getSize() && remaining > 0L; slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (!predicate.test(item)) {
+                continue;
+            }
+            int taggedAmount = (int) Math.min((long) item.getAmount(), remaining);
+            ItemStack tagged = item.clone();
+            tagged.setAmount(taggedAmount);
+            int ordinaryAmount = item.getAmount() - taggedAmount;
+            player.getInventory().setItem(
+                    slot,
+                    upgradeReceipts.tag(tagged, operationId, material));
+            if (ordinaryAmount > 0) {
+                ItemStack ordinary = item.clone();
+                ordinary.setAmount(ordinaryAmount);
+                giveOrDrop(player, ordinary);
+            }
+            remaining -= taggedAmount;
+        }
+        return remaining == 0L;
+    }
+
+    private boolean hasUpgradeReceiptItems(Player player, TowerUpgrade upgrade) {
+        return countReceiptItems(player, upgrade.operationId(), "DEFENSE_SHARD")
+                        >= upgrade.defenseShardCost()
+                && countReceiptItems(player, upgrade.operationId(), "ENHANCEMENT_CORE")
+                        >= upgrade.enhancementCoreCost();
+    }
+
+    private long countReceiptItems(Player player, UUID operationId, String material) {
+        long total = 0L;
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (upgradeReceipts.isFor(item, operationId, material)) {
+                total += item.getAmount();
+            }
+        }
+        return total;
+    }
+
+    private List<ItemStack> takeUpgradeReceiptItems(Player player, UUID operationId) {
+        List<ItemStack> removed = new ArrayList<>();
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            ItemStack item = player.getInventory().getItem(slot);
+            if (!upgradeReceipts.operationId(item).filter(operationId::equals).isPresent()) {
+                continue;
+            }
+            removed.add(upgradeReceipts.strip(item));
+            player.getInventory().setItem(slot, null);
+        }
+        return List.copyOf(removed);
+    }
+
+    private void rollbackLegacyUpgrade(
+            Player player,
+            TowerUpgrade upgrade,
+            String message) {
+        if (!player.isOnline()) {
+            plugin.getLogger().warning(
+                    "Deferring legacy tower upgrade rollback until player rejoins: "
+                            + upgrade.operationId());
+            return;
+        }
+        for (ItemStack item : takeUpgradeReceiptItems(player, upgrade.operationId())) {
+            giveOrDrop(player, item);
+        }
+        databaseExecutor.submit(() -> {
+            repository.restoreTowerUpgradeReceipts(upgrade.operationId(), Instant.now());
+            return repository.rollbackTowerUpgrade(upgrade.operationId(), Instant.now());
+        }).whenComplete((ignored, failure) -> runOnMainThread(() -> {
+            upgradeInFlight.remove(upgrade.towerId());
+            if (failure != null) {
+                plugin.getLogger().log(
+                        java.util.logging.Level.SEVERE,
+                        "Could not roll back legacy tower upgrade " + upgrade.operationId(),
+                        failure);
+                if (player.isOnline()) {
+                    player.sendMessage(Component.text(
+                            "タワー強化の復旧を保留しています。管理者へ連絡してください。",
+                            NamedTextColor.RED));
+                }
+                return;
+            }
+            if (player.isOnline()) {
+                player.sendMessage(Component.text(message, NamedTextColor.YELLOW));
+            }
+        }));
+    }
+
+    private void reconcilePreparedUpgradeReceipts(Player player) {
+        UUID playerId = player.getUniqueId();
+        databaseExecutor.submit(() -> repository.loadPreparedTowerUpgrades().stream()
+                        .filter(upgrade -> upgrade.actorId().equals(playerId))
+                        .toList())
+                .whenComplete((upgrades, failure) -> runOnMainThread(() -> {
+                    if (failure != null || upgrades == null || !player.isOnline()) {
+                        return;
+                    }
+                    for (TowerUpgrade upgrade : upgrades) {
+                        reconcilePreparedUpgradeReceipt(player, upgrade);
+                    }
+                }));
+    }
+
+    private void reconcilePreparedUpgradeReceipt(Player player, TowerUpgrade upgrade) {
+        databaseExecutor.submit(() -> repository.findTowerUpgradeReceipts(
+                        upgrade.operationId()))
+                .whenComplete((receipts, lookupFailure) -> runOnMainThread(() -> {
+                    if (lookupFailure != null || !player.isOnline()) {
+                        return;
+                    }
+                    if (receipts.isEmpty()) {
+                        rollbackUpgrade(player, upgrade, "未完了の旧素材強化を安全に取り消しました。");
+                        return;
+                    }
+                    boolean secured = hasUpgradeReceiptItems(player, upgrade);
+                    boolean allSecured = receipts.stream().allMatch(
+                            receipt -> receipt.state() == TowerUpgradeReceiptState.SECURED);
+                    if (upgrade.state() == TowerUpgradeState.APPLIED) {
+                        boolean clearPending = receipts.stream().allMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.CLEAR_PENDING
+                                        || receipt.state() == TowerUpgradeReceiptState.CLEARED);
+                        if (clearPending) {
+                            if (secured) {
+                                takeUpgradeReceiptItems(player, upgrade.operationId());
+                            }
+                            databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
+                                    upgrade.operationId(), Instant.now()));
+                        } else if (secured) {
+                            databaseExecutor.submit(() -> repository.markTowerUpgradeReceiptsClearPending(
+                                            upgrade.operationId(), Instant.now()))
+                                    .whenComplete((ignored, pendingFailure) -> runOnMainThread(() -> {
+                                        if (pendingFailure != null || !player.isOnline()) {
+                                            return;
+                                        }
+                                        takeUpgradeReceiptItems(player, upgrade.operationId());
+                                        databaseExecutor.submit(() -> repository.clearTowerUpgradeReceipts(
+                                                upgrade.operationId(), Instant.now()));
+                                    }));
+                        }
+                        return;
+                    }
+                    if (!secured) {
+                        rollbackLegacyUpgrade(
+                                player,
+                                upgrade,
+                                "旧素材強化receiptの現物が不足していたため取り消しました。");
+                        return;
+                    }
+                    if (!allSecured) {
+                        databaseExecutor.submit(() -> repository.secureTowerUpgradeReceipts(
+                                        upgrade.operationId(), Instant.now()))
+                                .whenComplete((ignored, secureFailure) -> runOnMainThread(() -> {
+                                    if (secureFailure != null) {
+                                        rollbackLegacyUpgrade(
+                                                player, upgrade, rootMessage(secureFailure));
+                                    } else {
+                                        applyLegacyUpgrade(player, upgrade);
+                                    }
+                                }));
+                    } else {
+                        applyLegacyUpgrade(player, upgrade);
+                    }
                 }));
     }
 

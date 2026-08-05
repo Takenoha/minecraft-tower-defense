@@ -302,7 +302,15 @@ public final class EscrowRepository {
                 ResourceOperation operation = requireResourceOperation(
                         connection, operationId, eventId, "DROP_CLAIM", targetId, fingerprint);
                 if (operation.state() == ResourceOperationState.APPLIED) {
-                    return new EscrowClaimResult(OperationOutcome.ALREADY_APPLIED, quantity);
+                    StoredEscrowDrop existingDrop = requireDrop(connection, dropId);
+                    Optional<ResourcePickupFeedback> feedback = loadResourcePickupFeedback(
+                            connection,
+                            eventId,
+                            existingDrop.drop().itemId(),
+                            recipientId,
+                            quantity);
+                    return new EscrowClaimResult(
+                            OperationOutcome.ALREADY_APPLIED, quantity, feedback);
                 }
                 requireActiveEvent(connection, eventId);
                 requireRegisteredParticipant(connection, eventId, recipientId);
@@ -345,7 +353,13 @@ public final class EscrowRepository {
                     statement.executeUpdate();
                 }
                 markResourceOperationApplied(connection, operationId, claimedAt);
-                return new EscrowClaimResult(OperationOutcome.APPLIED, quantity);
+                Optional<ResourcePickupFeedback> feedback = loadResourcePickupFeedback(
+                        connection,
+                        eventId,
+                        drop.drop().itemId(),
+                        recipientId,
+                        quantity);
+                return new EscrowClaimResult(OperationOutcome.APPLIED, quantity, feedback);
             });
         } catch (SQLException exception) {
             if (isConstraintViolation(exception)) {
@@ -354,6 +368,20 @@ public final class EscrowRepository {
             }
             throw failure("apply an escrow claim", exception);
         }
+    }
+
+    private static Optional<ResourcePickupFeedback> loadResourcePickupFeedback(
+            Connection connection,
+            UUID eventId,
+            String itemId,
+            UUID recipientId,
+            int quantity) throws SQLException {
+        Optional<ResourceType> resourceType = ResourceType.fromItemId(itemId);
+        if (resourceType.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(ResourceRepository.loadPickupFeedback(
+                connection, eventId, recipientId, resourceType.orElseThrow(), quantity));
     }
 
     /** Convenience method for callers which do not need to interleave a Paper entity action. */

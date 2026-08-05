@@ -238,6 +238,18 @@ public final class TowerRepository {
                     throw new PersistenceConflictException(
                             "The tower level changed before the upgrade was applied");
                 }
+                if (paymentMode == PaymentMode.LEGACY_ITEMS) {
+                    List<TowerUpgradeReceipt> receipts = loadTowerUpgradeReceipts(
+                            connection, operationId);
+                    requireSecuredReceipt(
+                            receipts,
+                            "DEFENSE_SHARD",
+                            upgrade.defenseShardCost());
+                    requireSecuredReceipt(
+                            receipts,
+                            "ENHANCEMENT_CORE",
+                            upgrade.enhancementCoreCost());
+                }
                 if (paymentMode == PaymentMode.POINT_WALLET) {
                     ResourceRepository.debitInTransaction(
                             connection,
@@ -344,6 +356,191 @@ public final class TowerRepository {
         } catch (SQLException exception) {
             throw failure("roll back a tower upgrade", exception);
         }
+    }
+
+    /** Creates the two durable physical-material receipts for a legacy upgrade. */
+    public List<TowerUpgradeReceipt> reserveTowerUpgradeReceipts(
+            UUID operationId,
+            UUID playerId,
+            Instant reservedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(reservedAt, "reservedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                TowerUpgrade upgrade = loadTowerUpgrade(connection, operationId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The prepared tower upgrade does not exist"));
+                if (upgrade.state() != TowerUpgradeState.PREPARED
+                        || upgrade.paymentMode() != PaymentMode.LEGACY_ITEMS
+                        || !upgrade.actorId().equals(playerId)) {
+                    throw new PersistenceConflictException(
+                            "The tower upgrade is not reservable for legacy materials");
+                }
+                List<TowerUpgradeReceipt> existing = loadTowerUpgradeReceipts(
+                        connection, operationId);
+                if (!existing.isEmpty()) {
+                    requireMatchingTowerUpgradeReceipts(existing, upgrade, playerId);
+                    return existing;
+                }
+                TowerUpgradeReceipt shards = new TowerUpgradeReceipt(
+                        operationId,
+                        playerId,
+                        "DEFENSE_SHARD",
+                        upgrade.defenseShardCost(),
+                        TowerUpgradeReceiptState.RESERVED,
+                        reservedAt,
+                        null);
+                TowerUpgradeReceipt cores = new TowerUpgradeReceipt(
+                        operationId,
+                        playerId,
+                        "ENHANCEMENT_CORE",
+                        upgrade.enhancementCoreCost(),
+                        TowerUpgradeReceiptState.RESERVED,
+                        reservedAt,
+                        null);
+                insertTowerUpgradeReceipt(connection, shards);
+                insertTowerUpgradeReceipt(connection, cores);
+                return List.of(shards, cores);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower upgrade receipt conflicts with persisted data", exception);
+            }
+            throw failure("reserve tower upgrade receipts", exception);
+        }
+    }
+
+    /** Records the exact physical material handoff as a durable SECURED state. */
+    public OperationOutcome secureTowerUpgradeReceipts(UUID operationId, Instant securedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(securedAt, "securedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                List<TowerUpgradeReceipt> receipts = loadTowerUpgradeReceipts(
+                        connection, operationId);
+                if (receipts.size() != 2) {
+                    throw new PersistenceConflictException(
+                            "The tower upgrade does not have both material receipts");
+                }
+                boolean alreadySecured = receipts.stream().allMatch(
+                        receipt -> receipt.state() == TowerUpgradeReceiptState.SECURED);
+                if (alreadySecured) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipts.stream().anyMatch(
+                        receipt -> receipt.state() != TowerUpgradeReceiptState.RESERVED)) {
+                    throw new PersistenceConflictException(
+                            "The tower upgrade receipts are not in the reservable state");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_upgrade_receipts
+                        SET state = 'SECURED'
+                        WHERE operation_id = ? AND state = 'RESERVED'
+                        """)) {
+                    statement.setString(1, operationId.toString());
+                    if (statement.executeUpdate() != 2) {
+                        throw new PersistenceConflictException(
+                                "The tower upgrade receipt handoff changed concurrently");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("secure tower upgrade receipts", exception);
+        }
+    }
+
+    /** Marks receipts clear-pending before the applied level mutation removes physical stacks. */
+    public OperationOutcome markTowerUpgradeReceiptsClearPending(
+            UUID operationId,
+            Instant pendingAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(pendingAt, "pendingAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                TowerUpgrade upgrade = loadTowerUpgrade(connection, operationId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "The prepared tower upgrade does not exist"));
+                if (upgrade.state() != TowerUpgradeState.APPLIED) {
+                    throw new PersistenceConflictException(
+                            "Only an applied tower upgrade can clear receipts");
+                }
+                List<TowerUpgradeReceipt> receipts = loadTowerUpgradeReceipts(
+                        connection, operationId);
+                if (receipts.isEmpty()
+                        || receipts.stream().allMatch(receipt ->
+                                receipt.state() == TowerUpgradeReceiptState.CLEARED
+                                        || receipt.state() == TowerUpgradeReceiptState.CLEAR_PENDING)) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipts.stream().anyMatch(receipt ->
+                        receipt.state() != TowerUpgradeReceiptState.SECURED)) {
+                    throw new PersistenceConflictException(
+                            "Only secured tower upgrade receipts can enter physical clear");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_upgrade_receipts
+                        SET state = 'CLEAR_PENDING', resolved_at = ?
+                        WHERE operation_id = ? AND state = 'SECURED'
+                        """)) {
+                    statement.setString(1, pendingAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != receipts.size()) {
+                        throw new PersistenceConflictException(
+                                "The tower upgrade receipts changed concurrently");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("mark tower upgrade receipts clear-pending", exception);
+        }
+    }
+
+    /** Resolves receipts after the applied level mutation has removed their physical stacks. */
+    public OperationOutcome clearTowerUpgradeReceipts(UUID operationId, Instant clearedAt) {
+        return resolveTowerUpgradeReceipts(operationId, TowerUpgradeReceiptState.CLEARED, clearedAt);
+    }
+
+    /** Marks receipts restored after a prepared legacy upgrade is rolled back. */
+    public OperationOutcome restoreTowerUpgradeReceipts(UUID operationId, Instant restoredAt) {
+        return resolveTowerUpgradeReceipts(operationId, TowerUpgradeReceiptState.RESTORED, restoredAt);
+    }
+
+    public List<TowerUpgradeReceipt> findTowerUpgradeReceipts(UUID operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return read("load tower upgrade receipts", connection -> loadTowerUpgradeReceipts(
+                connection, operationId));
+    }
+
+    /** Loads legacy upgrades whose physical receipt handoff may need join/startup recovery. */
+    public List<TowerUpgrade> loadPreparedTowerUpgrades() {
+        return read("load prepared tower upgrades", connection -> {
+            List<TowerUpgrade> upgrades = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, tower_id, actor_id, team_id, from_level, to_level,
+                           defense_shard_cost, enhancement_core_cost, payload_fingerprint,
+                           payment_mode, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_upgrade_operations
+                    WHERE payment_mode = 'LEGACY_ITEMS'
+                      AND (state = 'PREPARED'
+                           OR (state = 'APPLIED' AND EXISTS (
+                               SELECT 1
+                               FROM tower_upgrade_receipts r
+                               WHERE r.operation_id = tower_upgrade_operations.operation_id
+                                 AND r.state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING')
+                           )))
+                    ORDER BY prepared_at, operation_id
+                    """);
+                    ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    upgrades.add(towerUpgradeFromRow(resultSet));
+                }
+            }
+            return List.copyOf(upgrades);
+        });
     }
 
     /** Updates one tower's target-selection mode after validating team membership. */
@@ -934,6 +1131,119 @@ public final class TowerRepository {
                 nullableInstant(resultSet.getString("applied_at")),
                 nullableInstant(resultSet.getString("rolled_back_at")),
                 PaymentMode.valueOf(resultSet.getString("payment_mode")));
+    }
+
+    private static List<TowerUpgradeReceipt> loadTowerUpgradeReceipts(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        List<TowerUpgradeReceipt> receipts = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, player_id, material, quantity, state, reserved_at, resolved_at
+                FROM tower_upgrade_receipts
+                WHERE operation_id = ?
+                ORDER BY material
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    receipts.add(new TowerUpgradeReceipt(
+                            uuid(resultSet.getString("operation_id")),
+                            uuid(resultSet.getString("player_id")),
+                            resultSet.getString("material"),
+                            resultSet.getLong("quantity"),
+                            TowerUpgradeReceiptState.valueOf(resultSet.getString("state")),
+                            instant(resultSet.getString("reserved_at")),
+                            nullableInstant(resultSet.getString("resolved_at"))));
+                }
+            }
+        }
+        return List.copyOf(receipts);
+    }
+
+    private static void insertTowerUpgradeReceipt(
+            Connection connection,
+            TowerUpgradeReceipt receipt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO tower_upgrade_receipts(
+                    operation_id, player_id, material, quantity, state, reserved_at)
+                VALUES (?, ?, ?, ?, 'RESERVED', ?)
+                """)) {
+            statement.setString(1, receipt.operationId().toString());
+            statement.setString(2, receipt.playerId().toString());
+            statement.setString(3, receipt.material());
+            statement.setLong(4, receipt.quantity());
+            statement.setString(5, receipt.reservedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void requireMatchingTowerUpgradeReceipts(
+            List<TowerUpgradeReceipt> receipts,
+            TowerUpgrade upgrade,
+            UUID playerId) {
+        if (receipts.size() != 2
+                || receipts.stream().anyMatch(receipt -> !receipt.playerId().equals(playerId))
+                || receipts.stream().noneMatch(receipt ->
+                        receipt.material().equals("DEFENSE_SHARD")
+                                && receipt.quantity() == upgrade.defenseShardCost())
+                || receipts.stream().noneMatch(receipt ->
+                        receipt.material().equals("ENHANCEMENT_CORE")
+                                && receipt.quantity() == upgrade.enhancementCoreCost())) {
+            throw new PersistenceConflictException(
+                    "The tower upgrade receipt UUID is already assigned to another payload");
+        }
+    }
+
+    private static void requireSecuredReceipt(
+            List<TowerUpgradeReceipt> receipts,
+            String material,
+            long quantity) {
+        if (receipts.stream().noneMatch(receipt ->
+                receipt.material().equals(material)
+                        && receipt.quantity() == quantity
+                        && receipt.state() == TowerUpgradeReceiptState.SECURED)) {
+            throw new PersistenceConflictException(
+                    "The tower upgrade material receipt is not secured: " + material);
+        }
+    }
+
+    private OperationOutcome resolveTowerUpgradeReceipts(
+            UUID operationId,
+            TowerUpgradeReceiptState state,
+            Instant resolvedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(state, "state");
+        Objects.requireNonNull(resolvedAt, "resolvedAt");
+        if (state != TowerUpgradeReceiptState.CLEARED
+                && state != TowerUpgradeReceiptState.RESTORED) {
+            throw new IllegalArgumentException("receipt state is not terminal");
+        }
+        try {
+            return database.inImmediateTransaction(connection -> {
+                List<TowerUpgradeReceipt> receipts = loadTowerUpgradeReceipts(
+                        connection, operationId);
+                if (receipts.isEmpty()) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipts.stream().allMatch(receipt -> receipt.state() == state)) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE tower_upgrade_receipts
+                        SET state = ?, resolved_at = ?
+                        WHERE operation_id = ? AND state IN (
+                            'RESERVED', 'SECURED', 'CLEAR_PENDING')
+                        """)) {
+                    statement.setString(1, state.name());
+                    statement.setString(2, resolvedAt.toString());
+                    statement.setString(3, operationId.toString());
+                    statement.executeUpdate();
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("resolve tower upgrade receipts", exception);
+        }
     }
 
     private static void insertTowerUpgrade(

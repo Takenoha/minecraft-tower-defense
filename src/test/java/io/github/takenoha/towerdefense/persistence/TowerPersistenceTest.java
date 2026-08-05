@@ -262,13 +262,30 @@ final class TowerPersistenceTest {
         TowerUpgrade prepared = towers.prepareTowerUpgrade(request);
         assertEquals(TowerUpgradeState.PREPARED, prepared.state());
         assertEquals(prepared, towers.prepareTowerUpgrade(request));
+        assertThrows(
+                PersistenceConflictException.class,
+                () -> towers.applyTowerUpgrade(prepared.operationId(), NOW.plusSeconds(3L)));
+
+        towers.reserveTowerUpgradeReceipts(prepared.operationId(), ownerId, NOW.plusSeconds(2L));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                towers.secureTowerUpgradeReceipts(prepared.operationId(), NOW.plusSeconds(2L)));
 
         TowerUpgradeResult applied = towers.applyTowerUpgrade(
                 prepared.operationId(), NOW.plusSeconds(3L));
         assertEquals(OperationOutcome.APPLIED, applied.outcome());
         assertEquals(2, applied.tower().orElseThrow().individualLevel());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                towers.markTowerUpgradeReceiptsClearPending(
+                        prepared.operationId(), NOW.plusSeconds(3L)));
+        assertTrue(towers.findTowerUpgradeReceipts(prepared.operationId()).stream()
+                .allMatch(receipt -> receipt.state() == TowerUpgradeReceiptState.CLEAR_PENDING));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                towers.clearTowerUpgradeReceipts(prepared.operationId(), NOW.plusSeconds(4L)));
         TowerUpgradeResult replay = towers.applyTowerUpgrade(
-                prepared.operationId(), NOW.plusSeconds(4L));
+                prepared.operationId(), NOW.plusSeconds(5L));
         assertEquals(OperationOutcome.ALREADY_APPLIED, replay.outcome());
         assertEquals(2, replay.tower().orElseThrow().individualLevel());
         assertThrows(

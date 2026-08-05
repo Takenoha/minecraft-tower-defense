@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 29;
+    public static final int CURRENT_VERSION = 34;
 
     private SchemaMigrator() {
     }
@@ -139,6 +139,26 @@ public final class SchemaMigrator {
                 if (installedVersion < 29) {
                     applyVersionTwentyNine(connection);
                     recordMigration(connection, 29);
+                }
+                if (installedVersion < 30) {
+                    applyVersionThirty(connection);
+                    recordMigration(connection, 30);
+                }
+                if (installedVersion < 31) {
+                    applyVersionThirtyOne(connection);
+                    recordMigration(connection, 31);
+                }
+                if (installedVersion < 32) {
+                    applyVersionThirtyTwo(connection);
+                    recordMigration(connection, 32);
+                }
+                if (installedVersion < 33) {
+                    applyVersionThirtyThree(connection);
+                    recordMigration(connection, 33);
+                }
+                if (installedVersion < 34) {
+                    applyVersionThirtyFour(connection);
+                    recordMigration(connection, 34);
                 }
                 return null;
             });
@@ -1774,6 +1794,155 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX core_repair_receipts_player_state_idx
                     ON core_repair_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Adds a durable handoff state for receipts secured in the player's inventory. */
+    private static void applyVersionThirty(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "ALTER TABLE core_repair_receipts RENAME TO core_repair_receipts_v29");
+            statement.executeUpdate("DROP INDEX IF EXISTS core_repair_receipts_player_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE core_repair_receipts (
+                        operation_id TEXT PRIMARY KEY
+                            REFERENCES core_repair_operations(operation_id) ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        material TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO core_repair_receipts(
+                        operation_id, player_id, material, quantity, state,
+                        reserved_at, resolved_at)
+                    SELECT operation_id, player_id, material, quantity, state,
+                           reserved_at, resolved_at
+                    FROM core_repair_receipts_v29
+                    """);
+            statement.executeUpdate("DROP TABLE core_repair_receipts_v29");
+            statement.executeUpdate("""
+                    CREATE INDEX core_repair_receipts_player_state_idx
+                    ON core_repair_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Persists the physical defense-shard portion of legacy core-repair payments. */
+    private static void applyVersionThirtyOne(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE core_repair_operations
+                    ADD COLUMN legacy_defense_shard_amount INTEGER NOT NULL DEFAULT 0
+                    CHECK (legacy_defense_shard_amount >= 0)
+                    """);
+        }
+    }
+
+    /** Adds a two-phase receipt table for legacy physical tower-upgrade materials. */
+    private static void applyVersionThirtyTwo(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE tower_upgrade_receipts (
+                        operation_id TEXT NOT NULL
+                            REFERENCES tower_upgrade_operations(operation_id) ON DELETE CASCADE,
+                        material TEXT NOT NULL CHECK (
+                            material IN ('DEFENSE_SHARD', 'ENHANCEMENT_CORE')
+                        ),
+                        player_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT,
+                        PRIMARY KEY (operation_id, material)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tower_upgrade_receipts_player_state_idx
+                    ON tower_upgrade_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Adds a durable marker for the physical-clear step of core repair receipts. */
+    private static void applyVersionThirtyThree(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "ALTER TABLE core_repair_receipts RENAME TO core_repair_receipts_v32");
+            statement.executeUpdate("DROP INDEX IF EXISTS core_repair_receipts_player_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE core_repair_receipts (
+                        operation_id TEXT PRIMARY KEY
+                            REFERENCES core_repair_operations(operation_id) ON DELETE CASCADE,
+                        player_id TEXT NOT NULL,
+                        material TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING', 'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO core_repair_receipts(
+                        operation_id, player_id, material, quantity, state,
+                        reserved_at, resolved_at)
+                    SELECT operation_id, player_id, material, quantity, state,
+                           reserved_at, resolved_at
+                    FROM core_repair_receipts_v32
+                    """);
+            statement.executeUpdate("DROP TABLE core_repair_receipts_v32");
+            statement.executeUpdate("""
+                    CREATE INDEX core_repair_receipts_player_state_idx
+                    ON core_repair_receipts(player_id, state, reserved_at)
+                    """);
+        }
+    }
+
+    /** Adds a durable marker for the physical-clear step of tower-upgrade receipts. */
+    private static void applyVersionThirtyFour(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "ALTER TABLE tower_upgrade_receipts RENAME TO tower_upgrade_receipts_v32");
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_upgrade_receipts_player_state_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_upgrade_receipts (
+                        operation_id TEXT NOT NULL
+                            REFERENCES tower_upgrade_operations(operation_id) ON DELETE CASCADE,
+                        material TEXT NOT NULL CHECK (
+                            material IN ('DEFENSE_SHARD', 'ENHANCEMENT_CORE')
+                        ),
+                        player_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING', 'CLEARED', 'RESTORED')
+                        ),
+                        reserved_at TEXT NOT NULL,
+                        resolved_at TEXT,
+                        PRIMARY KEY (operation_id, material)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_upgrade_receipts(
+                        operation_id, material, player_id, quantity, state,
+                        reserved_at, resolved_at)
+                    SELECT operation_id, material, player_id, quantity, state,
+                           reserved_at, resolved_at
+                    FROM tower_upgrade_receipts_v32
+                    """);
+            statement.executeUpdate("DROP TABLE tower_upgrade_receipts_v32");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_upgrade_receipts_player_state_idx
+                    ON tower_upgrade_receipts(player_id, state, reserved_at)
                     """);
         }
     }

@@ -99,6 +99,7 @@ public final class DefenseSessionManager
     private final DefenseShardTagger defenseShards;
     private final EnhancementCoreTagger enhancementCores;
     private final ResourceRepository resources;
+    private final ActionBarBroker actionBars;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -200,6 +201,32 @@ public final class DefenseSessionManager
             CoreRegistry coreRegistry,
             ThirdPartyRegionProtectionAdapter regionProtection,
             ResourceRepository resources) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                resources,
+                new ActionBarBroker());
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources,
+            ActionBarBroker actionBars) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -210,6 +237,7 @@ public final class DefenseSessionManager
         this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         this.resources = resources;
+        this.actionBars = Objects.requireNonNull(actionBars, "actionBars");
         pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -561,6 +589,7 @@ public final class DefenseSessionManager
     private void tick() {
         requireMainThread();
         currentTick++;
+        actionBars.advance(currentTick);
         ActiveDefense defense = active;
         if (defense == null) {
             return;
@@ -586,6 +615,7 @@ public final class DefenseSessionManager
                     defense,
                     "終端状態を検出したため防衛戦を清掃します。");
         }
+        renderActionBars(defense);
     }
 
     private void tickCountdown(ActiveDefense defense) {
@@ -1346,12 +1376,23 @@ public final class DefenseSessionManager
     private void showCountdownActionBar(ActiveDefense defense) {
         long remainingTicks = Math.max(0L, defense.phaseDeadlineTick - currentTick);
         long remainingSeconds = (remainingTicks + TICKS_PER_SECOND - 1L) / TICKS_PER_SECOND;
-        Component message = Component.text("準備: " + remainingSeconds + "秒", NamedTextColor.YELLOW);
+        String message = "準備: " + remainingSeconds + "秒";
         for (UUID memberId : defense.teamMembers) {
             Player player = Bukkit.getPlayer(memberId);
             if (player != null && isInside(defense, player)) {
-                player.sendActionBar(message);
+                actionBars.publishCountdown(memberId, message, currentTick);
             }
+        }
+    }
+
+    private void renderActionBars(ActiveDefense defense) {
+        for (UUID memberId : defense.teamMembers) {
+            Player player = Bukkit.getPlayer(memberId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+            actionBars.current(memberId).ifPresent(notice ->
+                    player.sendActionBar(Component.text(notice.text())));
         }
     }
 

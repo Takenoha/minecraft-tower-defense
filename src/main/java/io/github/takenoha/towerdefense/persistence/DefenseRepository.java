@@ -1541,13 +1541,43 @@ public final class DefenseRepository {
             long vanillaMaterialAmount,
             UUID operationId,
             Instant preparedAt) {
+        return prepareCoreRepair(
+                coreId,
+                actorId,
+                amount,
+                defensePointCost,
+                paymentMode,
+                vanillaMaterial,
+                vanillaMaterialAmount,
+                0L,
+                operationId,
+                preparedAt);
+    }
+
+    /**
+     * Prepares a repair with an explicit legacy defense-shard quantity. Wallet repairs keep this
+     * quantity at zero; legacy repairs persist it so a restart can distinguish a physical shard
+     * payment from a wallet debit without reconstructing the quote from current settings.
+     */
+    public CoreRepairOperation prepareCoreRepair(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            PaymentMode paymentMode,
+            String vanillaMaterial,
+            long vanillaMaterialAmount,
+            long legacyDefenseShardAmount,
+            UUID operationId,
+            Instant preparedAt) {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(paymentMode, "paymentMode");
         Objects.requireNonNull(vanillaMaterial, "vanillaMaterial");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(preparedAt, "preparedAt");
-        if (amount <= 0L || defensePointCost < 0L || vanillaMaterialAmount < 0L) {
+        if (amount <= 0L || defensePointCost < 0L || vanillaMaterialAmount < 0L
+                || legacyDefenseShardAmount < 0L) {
             throw new IllegalArgumentException("core repair quantities are invalid");
         }
         if (paymentMode == PaymentMode.LEGACY_ITEMS && defensePointCost != 0L) {
@@ -1562,7 +1592,8 @@ public final class DefenseRepository {
                 defensePointCost,
                 paymentMode,
                 vanillaMaterial,
-                vanillaMaterialAmount);
+                vanillaMaterialAmount,
+                legacyDefenseShardAmount);
         try {
             return database.inImmediateTransaction(connection -> {
                 Optional<CoreRepairOperation> existing = loadCoreRepairOperation(
@@ -1577,6 +1608,7 @@ public final class DefenseRepository {
                             paymentMode,
                             vanillaMaterial,
                             vanillaMaterialAmount,
+                            legacyDefenseShardAmount,
                             fingerprint);
                     return existing.orElseThrow();
                 }
@@ -1601,6 +1633,7 @@ public final class DefenseRepository {
                         paymentMode,
                         vanillaMaterial,
                         vanillaMaterialAmount,
+                        legacyDefenseShardAmount,
                         fingerprint,
                         CoreRepairOperationState.PREPARED,
                         preparedAt,
@@ -1642,8 +1675,8 @@ public final class DefenseRepository {
                             "The core repair is no longer reservable");
                 }
                 if (!operation.actorId().equals(playerId)
-                        || !operation.vanillaMaterial().equals(material)
-                        || operation.vanillaMaterialAmount() != quantity) {
+                        || !expectedReceiptMaterial(operation).equals(material)
+                        || expectedReceiptQuantity(operation) != quantity) {
                     throw new PersistenceConflictException(
                             "The core repair receipt does not match its prepared payload");
                 }
@@ -1699,13 +1732,13 @@ public final class DefenseRepository {
                     throw new PersistenceConflictException(
                             "The prepared core repair was already rolled back");
                 }
-                if (operation.vanillaMaterialAmount() > 0L) {
+                if (expectedReceiptQuantity(operation) > 0L) {
                     CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
                             .orElseThrow(() -> new PersistenceConflictException(
                                     "The core repair receipt was not secured"));
-                    if (receipt.state() != CoreRepairReceiptState.RESERVED) {
+                    if (receipt.state() != CoreRepairReceiptState.SECURED) {
                         throw new PersistenceConflictException(
-                                "The core repair receipt is no longer reserved");
+                                "The core repair receipt has not reached the secured handoff");
                     }
                 }
                 requireNoActiveEvent(connection, "apply a core repair");
@@ -1775,6 +1808,78 @@ public final class DefenseRepository {
         }
     }
 
+    /** Durably records that the exact material stacks were replaced with tagged receipt stacks. */
+    public OperationOutcome secureCoreRepairReceipt(UUID operationId, Instant securedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(securedAt, "securedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair receipt does not exist"));
+                if (receipt.state() == CoreRepairReceiptState.SECURED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.RESERVED) {
+                    throw new PersistenceConflictException(
+                            "The core repair receipt is no longer reservable");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE core_repair_receipts
+                        SET state = 'SECURED'
+                        WHERE operation_id = ? AND state = 'RESERVED'
+                        """)) {
+                    statement.setString(1, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The core repair receipt changed concurrently");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("secure a core repair receipt", exception);
+        }
+    }
+
+    /** Marks the physical receipt clear as the next durable step after the applied mutation. */
+    public OperationOutcome markCoreRepairReceiptClearPending(
+            UUID operationId,
+            Instant pendingAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(pendingAt, "pendingAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair operation does not exist"));
+                if (operation.state() != CoreRepairOperationState.APPLIED) {
+                    throw new PersistenceConflictException(
+                            "Only an applied core repair can clear its receipt");
+                }
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElse(null);
+                if (receipt == null
+                        || receipt.state() == CoreRepairReceiptState.CLEARED
+                        || receipt.state() == CoreRepairReceiptState.CLEAR_PENDING) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.SECURED) {
+                    throw new PersistenceConflictException(
+                            "Only a secured core repair receipt can enter physical clear");
+                }
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.CLEAR_PENDING,
+                        pendingAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("mark a core repair receipt clear-pending", exception);
+        }
+    }
+
     /** Marks the physical receipt clear after the applied core mutation is confirmed. */
     public OperationOutcome clearCoreRepairReceipt(UUID operationId, Instant clearedAt) {
         Objects.requireNonNull(operationId, "operationId");
@@ -1792,6 +1897,11 @@ public final class DefenseRepository {
                         .orElse(null);
                 if (receipt == null || receipt.state() == CoreRepairReceiptState.CLEARED) {
                     return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.SECURED
+                        && receipt.state() != CoreRepairReceiptState.CLEAR_PENDING) {
+                    throw new PersistenceConflictException(
+                            "Only a secured core repair receipt can be cleared");
                 }
                 updateCoreRepairReceiptState(
                         connection,
@@ -1861,10 +1971,18 @@ public final class DefenseRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
                            repair_amount, defense_point_cost, payment_mode, vanilla_material,
-                           vanilla_material_amount, payload_fingerprint, state, prepared_at,
+                           vanilla_material_amount, legacy_defense_shard_amount,
+                           payload_fingerprint, state, prepared_at,
                            applied_at, rolled_back_at
                     FROM core_repair_operations
-                    WHERE actor_id = ? AND state IN ('PREPARED', 'APPLIED')
+                    WHERE actor_id = ?
+                      AND (state = 'PREPARED'
+                           OR (state = 'APPLIED' AND EXISTS (
+                               SELECT 1
+                               FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING')
+                           )))
                     ORDER BY prepared_at, operation_id
                     """)) {
                 statement.setString(1, playerId.toString());
@@ -4430,6 +4548,19 @@ public final class DefenseRepository {
                 }
             }
         }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_resource_balances
+                WHERE team_id = ? AND balance > 0
+                LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "A team with a non-zero resource wallet cannot be deleted");
+                }
+            }
+        }
     }
 
     private static void deleteTeam(Connection connection, UUID teamId) throws SQLException {
@@ -4507,8 +4638,9 @@ public final class DefenseRepository {
                 INSERT INTO core_repair_operations(
                     operation_id, core_id, team_id, actor_id, expected_current_hp,
                     repair_amount, defense_point_cost, payment_mode, vanilla_material,
-                    vanilla_material_amount, payload_fingerprint, state, prepared_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    vanilla_material_amount, legacy_defense_shard_amount,
+                    payload_fingerprint, state, prepared_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, operation.operationId().toString());
             statement.setString(2, operation.coreId().toString());
@@ -4520,8 +4652,9 @@ public final class DefenseRepository {
             statement.setString(8, operation.paymentMode().name());
             statement.setString(9, operation.vanillaMaterial());
             statement.setLong(10, operation.vanillaMaterialAmount());
-            statement.setString(11, operation.payloadFingerprint());
-            statement.setString(12, operation.preparedAt().toString());
+            statement.setLong(11, operation.legacyDefenseShardAmount());
+            statement.setString(12, operation.payloadFingerprint());
+            statement.setString(13, operation.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -4532,7 +4665,8 @@ public final class DefenseRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
                        repair_amount, defense_point_cost, payment_mode, vanilla_material,
-                       vanilla_material_amount, payload_fingerprint, state, prepared_at,
+                       vanilla_material_amount, legacy_defense_shard_amount,
+                       payload_fingerprint, state, prepared_at,
                        applied_at, rolled_back_at
                 FROM core_repair_operations WHERE operation_id = ?
                 """)) {
@@ -4558,6 +4692,7 @@ public final class DefenseRepository {
                 PaymentMode.valueOf(resultSet.getString("payment_mode")),
                 resultSet.getString("vanilla_material"),
                 resultSet.getLong("vanilla_material_amount"),
+                resultSet.getLong("legacy_defense_shard_amount"),
                 resultSet.getString("payload_fingerprint"),
                 CoreRepairOperationState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
@@ -4574,6 +4709,7 @@ public final class DefenseRepository {
             PaymentMode paymentMode,
             String vanillaMaterial,
             long vanillaMaterialAmount,
+            long legacyDefenseShardAmount,
             String payloadFingerprint) {
         if (!existing.coreId().equals(coreId)
                 || !existing.actorId().equals(actorId)
@@ -4582,10 +4718,22 @@ public final class DefenseRepository {
                 || existing.paymentMode() != paymentMode
                 || !existing.vanillaMaterial().equals(vanillaMaterial)
                 || existing.vanillaMaterialAmount() != vanillaMaterialAmount
+                || existing.legacyDefenseShardAmount() != legacyDefenseShardAmount
                 || !existing.payloadFingerprint().equals(payloadFingerprint)) {
             throw new PersistenceConflictException(
                     "The core repair operation UUID is already assigned to another payload");
         }
+    }
+
+    private static String expectedReceiptMaterial(CoreRepairOperation operation) {
+        return operation.paymentMode() == PaymentMode.LEGACY_ITEMS
+                && operation.legacyDefenseShardAmount() > 0L
+                ? "CORE_REPAIR_BUNDLE"
+                : operation.vanillaMaterial();
+    }
+
+    private static long expectedReceiptQuantity(CoreRepairOperation operation) {
+        return Math.addExact(operation.vanillaMaterialAmount(), operation.legacyDefenseShardAmount());
     }
 
     private static void updateCoreRepairOperationState(
@@ -4667,11 +4815,17 @@ public final class DefenseRepository {
         try (PreparedStatement statement = connection.prepareStatement("""
                 UPDATE core_repair_receipts
                 SET state = ?, resolved_at = ?
-                WHERE operation_id = ? AND state = 'RESERVED'
+                WHERE operation_id = ?
+                  AND ((? = 'CLEARED' AND state IN ('SECURED', 'CLEAR_PENDING'))
+                       OR (? = 'RESTORED' AND state IN ('RESERVED', 'SECURED'))
+                       OR (? = 'CLEAR_PENDING' AND state = 'SECURED'))
                 """)) {
             statement.setString(1, state.name());
             statement.setString(2, at.toString());
             statement.setString(3, operationId.toString());
+            statement.setString(4, state.name());
+            statement.setString(5, state.name());
+            statement.setString(6, state.name());
             statement.executeUpdate();
         }
     }

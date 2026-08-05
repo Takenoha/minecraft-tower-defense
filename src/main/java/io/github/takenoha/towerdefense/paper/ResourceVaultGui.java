@@ -60,7 +60,9 @@ public final class ResourceVaultGui {
                 "今回のチーム仮確保: " + resources.teamProvisional(type) + "P",
                 "今回のあなたの仮確保: " + resources.provisional(type) + "P",
                 "防衛戦の正常終了時に残高へ確定します。",
-                "防衛戦中は消費できません。証票の発行は後続機能です。");
+                "仮確保分は終端処理まで消費できません。",
+                "確定残高は準備時間・ウェーブ間の強化や修理に使用できます。",
+                "ポイント証票の発行は後続機能です。");
     }
 
     private static ItemStack item(

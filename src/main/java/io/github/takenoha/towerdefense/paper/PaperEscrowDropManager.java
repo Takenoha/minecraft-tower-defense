@@ -7,8 +7,8 @@ import io.github.takenoha.towerdefense.persistence.EscrowRepository;
 import io.github.takenoha.towerdefense.persistence.PersistenceConflictException;
 import io.github.takenoha.towerdefense.persistence.ResourcePickupFeedback;
 import io.github.takenoha.towerdefense.persistence.ResourceRepository;
-import io.github.takenoha.towerdefense.persistence.ResourceType;
 import io.github.takenoha.towerdefense.persistence.StoredEscrowDrop;
+import io.github.takenoha.towerdefense.runtime.ActionBarBroker;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -36,7 +36,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 
 /** Main-thread bridge between Paper item displays and the database-owned escrow. */
 public final class PaperEscrowDropManager {
@@ -45,9 +44,9 @@ public final class PaperEscrowDropManager {
     private final DatabaseExecutor databaseExecutor;
     private final EscrowDropTagger tagger;
     private final ResourceRepository resources;
+    private final ActionBarBroker actionBars = new ActionBarBroker();
     private final Map<UUID, Set<UUID>> pendingClaims = new HashMap<>();
     private final Set<UUID> terminalEvents = new HashSet<>();
-    private final Map<UUID, FeedbackTask> feedbackTasks = new HashMap<>();
 
     public PaperEscrowDropManager(
             Plugin plugin,
@@ -278,7 +277,6 @@ public final class PaperEscrowDropManager {
         if (quantity <= 0) {
             return;
         }
-        Material pickedMaterial = item.getItemStack().getType();
         Set<UUID> claims = pendingClaims.computeIfAbsent(drop.eventId(), ignored -> new HashSet<>());
         if (!claims.add(item.getUniqueId())) {
             return;
@@ -314,8 +312,8 @@ public final class PaperEscrowDropManager {
                                 drop.eventId(), drop.dropId(), Instant.now()));
                         if (result.outcome() == io.github.takenoha.towerdefense.persistence
                                 .OperationOutcome.APPLIED) {
-                            showResourcePickupFeedback(
-                                    player, pickedMaterial, drop, quantity);
+                            result.pickupFeedback().ifPresent(feedback ->
+                                    showResourcePickupFeedback(player, drop.eventId(), feedback));
                         }
                     }
                 }));
@@ -323,84 +321,29 @@ public final class PaperEscrowDropManager {
 
     private void showResourcePickupFeedback(
             Player player,
-            Material pickedMaterial,
-            TaggedEscrowDrop drop,
-            int quantity) {
-        if (resources == null || !player.isOnline()) {
-            return;
-        }
-        ResourceType resourceType = resourceTypeFor(pickedMaterial);
-        if (resourceType == null) {
-            return;
-        }
-        databaseExecutor.submit(() -> resources.loadPickupFeedback(
-                        drop.eventId(), player.getUniqueId(), resourceType, quantity))
-                .whenComplete((feedback, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (failure != null || feedback == null || !player.isOnline()) {
-                        return;
-                    }
-                    Component message = Component.text(
-                            feedback.resourceType().displayName() + " +"
-                                    + feedback.claimedQuantity()
-                                    + "｜この防衛戦の仮確保: "
-                                    + feedback.eventPlayerTotal() + "P");
-                    player.playSound(
-                            player.getLocation(),
-                            Sound.ENTITY_EXPERIENCE_ORB_PICKUP,
-                            SoundCategory.PLAYERS,
-                            0.7f,
-                            1.2f);
-                    showResourcePickupActionBar(player, drop.eventId(), message);
-                }));
-    }
-
-    /** Reasserts the pickup message for eight five-tick slices so normal status bars do not erase it. */
-    private void showResourcePickupActionBar(
-            Player player,
             UUID eventId,
-            Component message) {
-        FeedbackTask previous = feedbackTasks.remove(player.getUniqueId());
-        if (previous != null) {
-            previous.task().cancel();
+            ResourcePickupFeedback feedback) {
+        if (!player.isOnline()) {
+            return;
         }
-        final int[] remaining = {8};
-        BukkitTask[] taskHolder = new BukkitTask[1];
-        BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            if (!player.isOnline() || remaining[0]-- <= 0) {
-                FeedbackTask current = feedbackTasks.get(player.getUniqueId());
-                if (current != null && current.task() == taskHolder[0]) {
-                    feedbackTasks.remove(player.getUniqueId());
-                }
-                taskHolder[0].cancel();
-                return;
-            }
-            player.sendActionBar(message);
-        }, 0L, 5L);
-        taskHolder[0] = task;
-        feedbackTasks.put(player.getUniqueId(), new FeedbackTask(eventId, task));
-    }
-
-    private static ResourceType resourceTypeFor(Material material) {
-        if (material == Material.PRISMARINE_SHARD) {
-            return ResourceType.DEFENSE_POINTS;
-        }
-        if (material == Material.NETHER_STAR) {
-            return ResourceType.ENHANCEMENT_POINTS;
-        }
-        return null;
+        String message = feedback.resourceType().displayName() + " +"
+                + feedback.claimedQuantity()
+                + "｜この防衛戦の仮確保: "
+                + feedback.eventPlayerTotal() + "P";
+        player.playSound(
+                player.getLocation(),
+                Sound.ENTITY_EXPERIENCE_ORB_PICKUP,
+                SoundCategory.PLAYERS,
+                0.7f,
+                1.2f);
+        actionBars.publishPickup(player.getUniqueId(), eventId, message);
     }
 
     /** Removes all loaded displays for one event after normal or technical termination. */
     public void removeEventDisplays(UUID eventId) {
         requireMainThread();
         Objects.requireNonNull(eventId, "eventId");
-        feedbackTasks.entrySet().removeIf(entry -> {
-            if (!entry.getValue().eventId().equals(eventId)) {
-                return false;
-            }
-            entry.getValue().task().cancel();
-            return true;
-        });
+        actionBars.clearEvent(eventId);
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntities()) {
                 if (!(entity instanceof Item item)) {
@@ -457,6 +400,10 @@ public final class PaperEscrowDropManager {
         return tagger;
     }
 
+    public ActionBarBroker actionBarBroker() {
+        return actionBars;
+    }
+
     private Optional<Item> findDisplay(UUID dropId) {
         for (World world : Bukkit.getWorlds()) {
             for (Entity entity : world.getEntities()) {
@@ -487,6 +434,4 @@ public final class PaperEscrowDropManager {
         }
     }
 
-    private record FeedbackTask(UUID eventId, BukkitTask task) {
-    }
 }

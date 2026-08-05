@@ -463,24 +463,25 @@ final class RollbackEscrowPersistenceTest {
                         2,
                         claimOperation,
                         START.plusSeconds(1L)));
-        assertEquals(
-                new EscrowClaimResult(OperationOutcome.APPLIED, 2),
-                escrow.applyClaim(
-                        fixture.eventId(),
-                        dropId,
-                        fixture.ownerId(),
-                        2,
-                        claimOperation,
-                        START.plusSeconds(2L)));
-        assertEquals(
-                new EscrowClaimResult(OperationOutcome.ALREADY_APPLIED, 2),
-                escrow.applyClaim(
-                        fixture.eventId(),
-                        dropId,
-                        fixture.ownerId(),
-                        2,
-                        claimOperation,
-                        START.plusSeconds(3L)));
+        EscrowClaimResult appliedClaim = escrow.applyClaim(
+                fixture.eventId(),
+                dropId,
+                fixture.ownerId(),
+                2,
+                claimOperation,
+                START.plusSeconds(2L));
+        assertEquals(OperationOutcome.APPLIED, appliedClaim.outcome());
+        assertEquals(2, appliedClaim.claimedQuantity());
+        assertEquals(2L, appliedClaim.pickupFeedback().orElseThrow().eventPlayerTotal());
+        EscrowClaimResult retriedClaim = escrow.applyClaim(
+                fixture.eventId(),
+                dropId,
+                fixture.ownerId(),
+                2,
+                claimOperation,
+                START.plusSeconds(3L));
+        assertEquals(OperationOutcome.ALREADY_APPLIED, retriedClaim.outcome());
+        assertEquals(2, retriedClaim.claimedQuantity());
         assertThrows(
                 PersistenceConflictException.class,
                 () -> escrow.claim(
@@ -591,6 +592,82 @@ final class RollbackEscrowPersistenceTest {
     }
 
     @Test
+    void defeatSettlesOnlyClaimedResourcesButTechnicalRecoverySettlesNone() {
+        Fixture defeat = activeFixture("escrow-defeat-resource.sqlite");
+        EscrowRepository defeatEscrow = new EscrowRepository(defeat.database());
+        EscrowDrop defeatDrop = new EscrowDrop(
+                defeat.eventId(),
+                UUID.randomUUID(),
+                DropSourceKind.ENEMY,
+                UUID.randomUUID(),
+                "defense_shard",
+                "{}",
+                3,
+                Optional.empty());
+        defeatEscrow.prepare(defeatDrop, UUID.randomUUID(), START);
+        defeatEscrow.claim(
+                defeat.eventId(),
+                defeatDrop.dropId(),
+                defeat.ownerId(),
+                2,
+                UUID.randomUUID(),
+                START.plusSeconds(1L));
+        defeat.session().startWave(1L);
+        assertEquals(
+                OperationOutcome.APPLIED,
+                defeat.repository().saveTransition(
+                        defeat.session().snapshot(), 1L, UUID.randomUUID(), START.plusSeconds(2L)));
+        assertTrue(defeat.session().damageCore(100L));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                defeat.repository().finishEvent(
+                        defeat.session().snapshot(), 2L, UUID.randomUUID(), START.plusSeconds(4L)));
+        assertEquals(
+                2L,
+                new ResourceRepository(defeat.database())
+                        .load(defeat.teamId(), defeat.ownerId())
+                        .defensePoints());
+        assertEquals(
+                OperationOutcome.ALREADY_TERMINAL,
+                defeat.repository().finishEvent(
+                        defeat.session().snapshot(), 2L, UUID.randomUUID(), START.plusSeconds(5L)));
+
+        Fixture recovery = activeFixture("escrow-recovery-resource.sqlite");
+        EscrowRepository recoveryEscrow = new EscrowRepository(recovery.database());
+        EscrowDrop recoveryDrop = new EscrowDrop(
+                recovery.eventId(),
+                UUID.randomUUID(),
+                DropSourceKind.ENEMY,
+                UUID.randomUUID(),
+                "defense_shard",
+                "{}",
+                3,
+                Optional.empty());
+        recoveryEscrow.prepare(recoveryDrop, UUID.randomUUID(), START);
+        recoveryEscrow.claim(
+                recovery.eventId(),
+                recoveryDrop.dropId(),
+                recovery.ownerId(),
+                2,
+                UUID.randomUUID(),
+                START.plusSeconds(1L));
+        UUID recoveryOperation = UUID.randomUUID();
+        assertEquals(
+                OperationOutcome.APPLIED,
+                recovery.repository().recoverUnfinishedEvent(
+                        recovery.eventId(), 1L, recoveryOperation, START.plusSeconds(2L)));
+        assertEquals(
+                0L,
+                new ResourceRepository(recovery.database())
+                        .load(recovery.teamId(), recovery.ownerId())
+                        .defensePoints());
+        assertEquals(
+                OperationOutcome.ALREADY_APPLIED,
+                recovery.repository().recoverUnfinishedEvent(
+                        recovery.eventId(), 1L, recoveryOperation, START.plusSeconds(3L)));
+    }
+
+    @Test
     void victoryMovesUnclaimedResourceEscrowToTheTeamWallet() {
         Fixture fixture = activeFixture("escrow-victory.sqlite");
         EscrowRepository escrow = new EscrowRepository(fixture.database());
@@ -616,7 +693,46 @@ final class RollbackEscrowPersistenceTest {
                 3L,
                 new ResourceRepository(fixture.database())
                         .load(fixture.teamId(), fixture.ownerId())
+                .defensePoints());
+    }
+
+    @Test
+    void voidedResourceDropNeverCreditsTheWalletOnVictory() {
+        Fixture fixture = activeFixture("escrow-voided-resource.sqlite");
+        EscrowRepository escrow = new EscrowRepository(fixture.database());
+        UUID dropId = UUID.randomUUID();
+        escrow.prepare(
+                new EscrowDrop(
+                        fixture.eventId(),
+                        dropId,
+                        DropSourceKind.BLOCK,
+                        UUID.randomUUID(),
+                        "defense_shard",
+                        "{\"schema\":1}",
+                        3,
+                        Optional.empty()),
+                UUID.randomUUID(),
+                START);
+
+        assertEquals(
+                OperationOutcome.APPLIED,
+                escrow.voidPreparedDrop(
+                        fixture.eventId(), dropId, UUID.randomUUID(), START.plusSeconds(1L)));
+
+        finishVictory(fixture);
+
+        assertEquals(
+                0L,
+                new ResourceRepository(fixture.database())
+                        .load(fixture.teamId(), fixture.ownerId())
                         .defensePoints());
+        assertEquals(
+                EscrowDropStatus.VOIDED,
+                escrow.loadDrops(fixture.eventId()).stream()
+                        .filter(drop -> drop.drop().dropId().equals(dropId))
+                        .findFirst()
+                        .orElseThrow()
+                        .status());
     }
 
     @Test

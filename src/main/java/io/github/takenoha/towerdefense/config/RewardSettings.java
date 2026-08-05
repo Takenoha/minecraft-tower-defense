@@ -15,7 +15,8 @@ public record RewardSettings(
         int battleFundsPerWave,
         int defenseShardsNormalEnemy,
         int defenseShardsSpecialEnemy,
-        int enhancementCoreDropPercent) {
+        int enhancementCoreDropPercent,
+        boolean legacyResourcePaymentsEnabled) {
     public static final int DEFAULT_RESEARCH_CRYSTAL_BASE_PER_STAGE = 100;
     public static final int DEFAULT_RESEARCH_CRYSTAL_REPLAY_PERCENT = 25;
     public static final int DEFAULT_RESEARCH_CRYSTAL_MINIMUM_QUANTITY = 0;
@@ -40,7 +41,8 @@ public record RewardSettings(
                 DEFAULT_BATTLE_FUNDS_PER_WAVE,
                 DEFAULT_DEFENSE_SHARDS_NORMAL_ENEMY,
                 DEFAULT_DEFENSE_SHARDS_SPECIAL_ENEMY,
-                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT);
+                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT,
+                true);
     }
 
     /** Keeps direct construction source-compatible with the research-crystal slice. */
@@ -60,7 +62,8 @@ public record RewardSettings(
                 DEFAULT_BATTLE_FUNDS_PER_WAVE,
                 DEFAULT_DEFENSE_SHARDS_NORMAL_ENEMY,
                 DEFAULT_DEFENSE_SHARDS_SPECIAL_ENEMY,
-                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT);
+                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT,
+                true);
     }
 
     /** Default retention used by older direct settings construction and migrated databases. */
@@ -76,7 +79,8 @@ public record RewardSettings(
                 DEFAULT_BATTLE_FUNDS_PER_WAVE,
                 DEFAULT_DEFENSE_SHARDS_NORMAL_ENEMY,
                 DEFAULT_DEFENSE_SHARDS_SPECIAL_ENEMY,
-                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT);
+                DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT,
+                true);
     }
 
     public Duration teamQueueRetention() {

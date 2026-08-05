@@ -117,7 +117,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 rewardQueues,
                 coreRegistry,
                 regionProtection,
-                resources);
+                resources,
+                escrowDrops.actionBarBroker());
 
         TowerRegistry towerRegistry = new TowerRegistry();
         TowerRepository towerRepository = new TowerRepository(database);
@@ -137,6 +138,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 resources);
         towerManager.registerRecipe();
         towerManager.recoverPreparedPlacements();
+        towerManager.recoverPreparedUpgrades();
         towerManager.recoverPreparedRemovals();
         towerManager.recoverAppliedRemovals();
         getServer().getPluginManager().registerEvents(towerManager, this);

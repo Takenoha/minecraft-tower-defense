@@ -111,6 +111,39 @@ following evidence exists:
    the target server profile. Never commit live-server attestation values to the repository's
    default configuration.
 
+## 6. Resource vault, legacy payment, and receipt stop boundaries
+
+1. Complete a victory with at least one picked-up defense drop and one unpicked drop. Confirm the
+   pickup plays one experience-orb sound and shows the added quantity plus the player's cumulative
+   provisional amount in the Action Bar. Start a countdown while the pickup message is visible;
+   the pickup must remain visible for at least 40 ticks, and repeated pickups for the same event
+   must coalesce instead of cancelling the first notice.
+2. Open the resource-vault GUI during preparation and intermission. Confirm settled wallet points
+   are spendable in those phases, while provisional points remain unavailable until terminal
+   settlement. Confirm the displayed wording says that provisional points are locked until the
+   event ends. Repeat a claim retry and verify no second sound or duplicate wallet credit.
+3. On a copy of a v26 database, remove one or both `team_resource_balances` rows and restart the
+   plugin. Confirm the rows are backfilled at zero without changing team progress. Run the legacy
+   reward-queue migration and verify operationless `PENDING` rows become wallet credit exactly
+   once, while delivery `PREPARED` and `DELIVERED` rows remain physical-delivery rows.
+4. Set `rewards.legacy-resource-payments-enabled: true`, spend a legacy defense-shard and
+   vanilla-material quote for a core repair, and spend both legacy materials for a tower upgrade.
+   Confirm the warning identifies the path as deprecated and each receipt is consumed once. Set
+   the flag false and confirm the same insufficient-wallet operation is rejected without touching
+   inventory. Verify a team with either non-zero wallet balance cannot disband or let its sole
+   owner leave.
+5. During core repair and legacy tower upgrade, stop the server or disconnect the player at each
+   prepare, receipt-reserve, receipt-secure, apply, and physical-clear step. On restart/login,
+   confirm `RESERVED`/`SECURED` operations reconcile from tagged stacks, `CLEAR_PENDING` removes
+   any remaining tagged stacks and clears once, and no ordinary surplus material is guessed,
+   minted, or removed. A logout before physical receipt handoff must roll back durably; a logout
+   after handoff must defer reconciliation to the saved inventory on join.
+6. Attempt to move or use a tagged receipt through normal click, number-key hotbar swap,
+   off-hand swap, drag, pickup, drop, place, dispense, craft, Crafter, item-frame, and every
+   entity-interaction route. Every route must be cancelled. Repeat with ordinary untagged items
+   and confirm they remain usable. After a receipt-bearing team is restored, verify wallet credit,
+   receipt state, and physical stacks are unchanged by a restart.
+
 ## Evidence record
 
 ```text
@@ -128,6 +161,8 @@ Team invitation / name / limit / chat evidence:
 Terrain-disabled evidence:
 Terrain-enabled permitted-action evidence:
 Prepared/applied/terminal recovery evidence:
+Resource vault / legacy payment / receipt recovery evidence:
+Action Bar pickup priority and 40-tick evidence:
 Later-player-edit conflict evidence:
 Event IDs and operation UUIDs:
 Reviewed by:

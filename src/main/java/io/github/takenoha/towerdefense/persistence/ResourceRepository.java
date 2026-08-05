@@ -26,7 +26,39 @@ public final class ResourceRepository {
 
     public ResourceRepository(Database database) {
         this.database = Objects.requireNonNull(database, "database");
+        ensureWalletRows();
         migrateLegacyResourceQueues();
+    }
+
+    /** Repairs wallet rows for teams created before the wallet migration or partial restores. */
+    private void ensureWalletRows() {
+        try {
+            database.inImmediateTransaction(connection -> {
+                Instant repairedAt = Instant.now();
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT OR IGNORE INTO team_resource_balances(
+                            team_id, resource_type, balance, updated_at)
+                        SELECT t.team_id, r.resource_type, 0, ?
+                        FROM teams t
+                        CROSS JOIN (
+                            SELECT 'DEFENSE_POINTS' AS resource_type
+                            UNION ALL SELECT 'ENHANCEMENT_POINTS'
+                        ) r
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM team_resource_balances b
+                            WHERE b.team_id = t.team_id
+                              AND b.resource_type = r.resource_type
+                        )
+                        """)) {
+                    statement.setString(1, repairedAt.toString());
+                    statement.executeUpdate();
+                }
+                return null;
+            });
+        } catch (SQLException exception) {
+            throw resourceFailure("ensure team resource wallet rows", exception);
+        }
     }
 
     public TeamResourceSnapshot load(UUID teamId, UUID viewerId) {
@@ -83,42 +115,42 @@ public final class ResourceRepository {
             throw new IllegalArgumentException("claimedQuantity must be positive");
         }
         try (Connection connection = database.openConnection()) {
-            UUID teamId;
-            try (PreparedStatement statement = connection.prepareStatement(
-                    "SELECT team_id FROM defense_events WHERE event_id = ?")) {
-                statement.setString(1, eventId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    if (!resultSet.next()) {
-                        throw new PersistenceConflictException("The defense event does not exist");
-                    }
-                    teamId = UUID.fromString(resultSet.getString("team_id"));
-                }
-            }
-            long eventPlayerTotal;
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    SELECT COALESCE(SUM(c.quantity), 0)
-                    FROM event_drop_claims c
-                    JOIN event_drop_escrow d ON d.drop_id = c.drop_id
-                    WHERE c.event_id = ? AND c.recipient_id = ? AND d.item_id = ?
-                    """)) {
-                statement.setString(1, eventId.toString());
-                statement.setString(2, playerId.toString());
-                statement.setString(3, resourceType.itemId());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    eventPlayerTotal = resultSet.next() ? resultSet.getLong(1) : 0L;
-                }
-            }
-            long teamBalance = balance(connection, teamId, resourceType);
-            return new ResourcePickupFeedback(
-                    eventId,
-                    playerId,
-                    resourceType,
-                    claimedQuantity,
-                    eventPlayerTotal,
-                    teamBalance);
+            return loadPickupFeedback(
+                    connection, eventId, playerId, resourceType, claimedQuantity);
         } catch (SQLException exception) {
             throw new PersistenceException("Could not load resource pickup feedback", exception);
         }
+    }
+
+    /** Reads post-claim feedback on the same SQLite connection as the claim transaction. */
+    static ResourcePickupFeedback loadPickupFeedback(
+            Connection connection,
+            UUID eventId,
+            UUID playerId,
+            ResourceType resourceType,
+            int claimedQuantity) throws SQLException {
+        UUID teamId = loadEventTeam(connection, eventId);
+        long eventPlayerTotal;
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT COALESCE(SUM(c.quantity), 0)
+                FROM event_drop_claims c
+                JOIN event_drop_escrow d ON d.drop_id = c.drop_id
+                WHERE c.event_id = ? AND c.recipient_id = ? AND d.item_id = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.setString(2, playerId.toString());
+            statement.setString(3, resourceType.itemId());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                eventPlayerTotal = resultSet.next() ? resultSet.getLong(1) : 0L;
+            }
+        }
+        return new ResourcePickupFeedback(
+                eventId,
+                playerId,
+                resourceType,
+                claimedQuantity,
+                eventPlayerTotal,
+                balance(connection, teamId, resourceType));
     }
 
     /** Credits a wallet through a standalone idempotent operation. */
@@ -232,6 +264,9 @@ public final class ResourceRepository {
             UUID eventId,
             ResourceType resourceType,
             DefensePhase terminalPhase) throws SQLException {
+        if (terminalPhase == DefensePhase.RECOVERY) {
+            return 0L;
+        }
         String expression = terminalPhase == DefensePhase.VICTORY
                 ? "d.quantity"
                 : "COALESCE(c.claimed_quantity, 0)";
@@ -244,7 +279,9 @@ public final class ResourceRepository {
                     WHERE event_id = ?
                     GROUP BY drop_id
                 ) c ON c.drop_id = d.drop_id
-                WHERE d.event_id = ? AND d.item_id = ?
+                WHERE d.event_id = ?
+                  AND d.item_id = ?
+                  AND d.status IN ('HELD', 'SETTLED')
                 """.formatted(expression);
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, eventId.toString());

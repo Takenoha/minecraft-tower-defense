@@ -1,7 +1,7 @@
 package io.github.takenoha.towerdefense.persistence;
 
-/** Durable resolution state of the vanilla material receipt. */
-public enum CoreRepairReceiptState {
+/** Durable handoff state for legacy tower-upgrade materials. */
+public enum TowerUpgradeReceiptState {
     RESERVED,
     SECURED,
     CLEAR_PENDING,

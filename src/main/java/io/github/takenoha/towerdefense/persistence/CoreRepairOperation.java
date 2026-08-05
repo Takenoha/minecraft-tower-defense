@@ -16,6 +16,7 @@ public record CoreRepairOperation(
         PaymentMode paymentMode,
         String vanillaMaterial,
         long vanillaMaterialAmount,
+        long legacyDefenseShardAmount,
         String payloadFingerprint,
         CoreRepairOperationState state,
         Instant preparedAt,
@@ -32,8 +33,18 @@ public record CoreRepairOperation(
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(preparedAt, "preparedAt");
         if (expectedCurrentHitPoints <= 0L || repairAmount <= 0L
-                || defensePointCost < 0L || vanillaMaterialAmount < 0L) {
+                || defensePointCost < 0L || vanillaMaterialAmount < 0L
+                || legacyDefenseShardAmount < 0L) {
             throw new IllegalArgumentException("core repair quantities are invalid");
+        }
+        if (paymentMode == PaymentMode.POINT_WALLET && legacyDefenseShardAmount != 0L) {
+            throw new IllegalArgumentException(
+                    "wallet repairs cannot include legacy shard materials");
+        }
+        try {
+            Math.addExact(vanillaMaterialAmount, legacyDefenseShardAmount);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException("core repair receipt quantity exceeds Long.MAX_VALUE", overflow);
         }
         if (state == CoreRepairOperationState.PREPARED
                 && (appliedAt != null || rolledBackAt != null)) {
