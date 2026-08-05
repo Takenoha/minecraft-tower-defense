@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 25;
+    public static final int CURRENT_VERSION = 26;
 
     private SchemaMigrator() {
     }
@@ -123,6 +123,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 25) {
                     applyVersionTwentyFive(connection);
                     recordMigration(connection, 25);
+                }
+                if (installedVersion < 26) {
+                    applyVersionTwentySix(connection);
+                    recordMigration(connection, 26);
                 }
                 return null;
             });
@@ -1579,6 +1583,65 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX event_tower_damage_operations_tower_idx
                     ON event_tower_damage_operations(tower_id, applied_at)
+                    """);
+        }
+    }
+
+    /** Adds named teams and reconnect-safe offline invitation records. */
+    private static void applyVersionTwentySix(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE teams
+                    ADD COLUMN display_name TEXT NOT NULL DEFAULT 'チーム'
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE team_profile_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        actor_id TEXT NOT NULL,
+                        operation_kind TEXT NOT NULL CHECK (operation_kind IN ('TEAM_RENAME')),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE team_invites (
+                        invite_id TEXT PRIMARY KEY,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                        inviter_id TEXT NOT NULL,
+                        invitee_id TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PENDING', 'ACCEPTED', 'DECLINED', 'EXPIRED')
+                        ),
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        resolved_at TEXT,
+                        create_payload_fingerprint TEXT NOT NULL,
+                        CHECK ((state = 'PENDING' AND resolved_at IS NULL)
+                               OR (state <> 'PENDING' AND resolved_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX team_invites_recipient_state_idx
+                    ON team_invites(invitee_id, state, expires_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX team_invites_team_state_idx
+                    ON team_invites(team_id, state, invitee_id)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE team_invite_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        invite_id TEXT NOT NULL REFERENCES team_invites(invite_id) ON DELETE CASCADE,
+                        actor_id TEXT NOT NULL,
+                        operation_kind TEXT NOT NULL CHECK (
+                            operation_kind IN ('TEAM_INVITE_CREATE', 'TEAM_INVITE_ACCEPT',
+                                               'TEAM_INVITE_DECLINE')
+                        ),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        UNIQUE (invite_id, operation_kind)
+                    )
                     """);
         }
     }

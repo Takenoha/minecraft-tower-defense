@@ -67,6 +67,8 @@ public final class DefenseSessionManager
         implements EnemyLifecycleSink, EnemyAccessPolicy, AutoCloseable {
     private static final long TICKS_PER_SECOND = 20L;
     private static final long PATH_REFRESH_TICKS = 20L;
+    /** A pathfinder acceptance without distance progress is not a usable direct path forever. */
+    private static final long PATH_STALL_ACTION_TICKS = 2L * PATH_REFRESH_TICKS;
     private static final long PATH_STALL_TIMEOUT_TICKS = 45L * TICKS_PER_SECOND;
     private static final double MIN_PATH_PROGRESS = 0.5d;
     private static final int SPAWN_ATTEMPTS_PER_ENEMY = 16;
@@ -770,9 +772,11 @@ public final class DefenseSessionManager
                         defense.coreTarget,
                         role,
                         defense.pathMetrics);
+                boolean pathStalled = currentTick - progress.lastProgressTick
+                        >= PATH_STALL_ACTION_TICKS;
                 EnemyPathAction pathAction = EnemyPathController.decide(
                         role,
-                        accepted,
+                        accepted && !pathStalled,
                         obstacleFacts,
                         progress.consecutivePathFailures);
                 defense.pathMetrics.recordDecision(accepted, pathAction);

@@ -8,8 +8,7 @@ softdepend: [WorldGuard]
 commands:
   td:
     description: Minecraft Tower Defense command
-    usage: /td admin <core|simulate|status|abort>
-    permission: towerdefense.admin
+    usage: /td admin <core|simulate|status|abort> | /td team <invite|invites|accept|decline|rename|chat>
 permissions:
   towerdefense.admin:
     description: Manage and simulate tower-defense encounters
