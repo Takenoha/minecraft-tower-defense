@@ -80,9 +80,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
         }
 
         Database database = new Database(databasePath);
-        DefenseRepository repository = new DefenseRepository(
-                database,
-                settings.rewards().teamQueueRetention());
+        DefenseRepository repository = new DefenseRepository(database, settings.rewards());
         ThirdPartyRegionProtectionAdapter regionProtection =
                 WorldGuardRegionProtectionAdapter.discover(this);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));

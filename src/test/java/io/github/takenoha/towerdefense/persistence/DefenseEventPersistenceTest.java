@@ -192,6 +192,90 @@ final class DefenseEventPersistenceTest {
     }
 
     @Test
+    void victoryIssuesOneTeamBoundCrystalBatchAndRedemptionIsIdempotent() {
+        DefenseRepository repository = new DefenseRepository(
+                new Database(temporaryDirectory.resolve("research-crystal.sqlite")));
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        UUID eventId = UUID.randomUUID();
+        assertEquals(StartOutcome.STARTED, repository.tryStart(startRequest(fixture, eventId)));
+
+        DefenseSession session = DefenseSession.restore(startRequest(fixture, eventId).session());
+        session.completeCountdown(Set.of(fixture.ownerId()));
+        long revision = 0L;
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.saveTransition(
+                        session.snapshot(), revision, UUID.randomUUID(), STARTED_AT.plusSeconds(1L)));
+        revision++;
+        for (int wave = 1; wave <= session.totalWaves(); wave++) {
+            session.startWave(1L);
+            assertEquals(
+                    OperationOutcome.APPLIED,
+                    repository.saveTransition(
+                            session.snapshot(), revision, UUID.randomUUID(),
+                            STARTED_AT.plusSeconds(wave * 2L)));
+            revision++;
+            session.spawnPendingEnemies(1L);
+            assertTrue(session.recordEnemyDefeated(1L));
+            if (wave < session.totalWaves()) {
+                assertEquals(
+                        OperationOutcome.APPLIED,
+                        repository.saveTransition(
+                                session.snapshot(), revision, UUID.randomUUID(),
+                                STARTED_AT.plusSeconds(wave * 2L + 1L)));
+                revision++;
+            }
+        }
+        UUID terminalOperation = UUID.randomUUID();
+        assertEquals(
+                OperationOutcome.APPLIED,
+                repository.finishEvent(
+                        session.snapshot(), revision, terminalOperation, STARTED_AT.plusSeconds(20L)));
+
+        EscrowRepository escrow = new EscrowRepository(
+                new Database(temporaryDirectory.resolve("research-crystal.sqlite")));
+        RewardQueueEntry crystalQueue = escrow.loadRewardQueue(eventId).stream()
+                .filter(entry -> entry.itemId().equals("research_crystal"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(100, crystalQueue.quantity());
+        ResearchCrystalBatch batch = repository.findResearchCrystalBatch(
+                        crystalQueue.sourceDropId())
+                .orElseThrow();
+        assertEquals(fixture.teamId(), batch.teamId());
+        assertEquals(100, batch.remainingQuantity());
+
+        UUID redemptionOperation = UUID.randomUUID();
+        ResearchCrystalRedemption prepared = repository.prepareResearchCrystalRedemption(
+                batch.batchId(),
+                fixture.core().id(),
+                fixture.ownerId(),
+                100,
+                redemptionOperation,
+                STARTED_AT.plusSeconds(21L));
+        assertEquals(ResearchCrystalRedemptionState.PREPARED, prepared.state());
+        assertEquals(
+                prepared,
+                repository.prepareResearchCrystalRedemption(
+                        batch.batchId(),
+                        fixture.core().id(),
+                        fixture.ownerId(),
+                        100,
+                        redemptionOperation,
+                        STARTED_AT.plusSeconds(22L)));
+
+        ResearchCrystalRedemptionResult applied = repository.applyResearchCrystalRedemption(
+                redemptionOperation, STARTED_AT.plusSeconds(23L));
+        assertEquals(OperationOutcome.APPLIED, applied.outcome());
+        assertEquals(100L, applied.progress().researchPoints());
+        assertEquals(ResearchCrystalBatchStatus.EXHAUSTED, applied.batch().status());
+        ResearchCrystalRedemptionResult replay = repository.applyResearchCrystalRedemption(
+                redemptionOperation, STARTED_AT.plusSeconds(24L));
+        assertEquals(OperationOutcome.ALREADY_APPLIED, replay.outcome());
+        assertEquals(100L, repository.loadTeamProgress(fixture.teamId()).researchPoints());
+    }
+
+    @Test
     void staleSamePhaseSnapshotCannotRollBackNewerCoreHp() {
         DefenseRepository repository = new DefenseRepository(
                 new Database(temporaryDirectory.resolve("stale-cas.sqlite")));

@@ -408,6 +408,24 @@ public final class PluginSettingsValidator {
                 rewards.teamQueueRetentionSeconds(),
                 unreadablePaths,
                 violations);
+        requirePositive(
+                "rewards.research-crystal-base-per-stage",
+                rewards.researchCrystalBasePerStage(),
+                unreadablePaths,
+                violations);
+        if (isReadable("rewards.research-crystal-replay-percent", unreadablePaths)
+                && (rewards.researchCrystalReplayPercent() < 0
+                        || rewards.researchCrystalReplayPercent() > 100)) {
+            violations.add(
+                    "rewards.research-crystal-replay-percent: must be between 0 and 100"
+                            + " (was " + rewards.researchCrystalReplayPercent() + ")");
+        }
+        if (isReadable("rewards.research-crystal-minimum-quantity", unreadablePaths)
+                && rewards.researchCrystalMinimumQuantity() < 0) {
+            violations.add(
+                    "rewards.research-crystal-minimum-quantity: must be >= 0"
+                            + " (was " + rewards.researchCrystalMinimumQuantity() + ")");
+        }
     }
 
     private static void requirePositive(

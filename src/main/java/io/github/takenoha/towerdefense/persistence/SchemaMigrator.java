@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 17;
+    public static final int CURRENT_VERSION = 18;
 
     private SchemaMigrator() {
     }
@@ -91,6 +91,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 17) {
                     applyVersionSeventeen(connection);
                     recordMigration(connection, 17);
+                }
+                if (installedVersion < 18) {
+                    applyVersionEighteen(connection);
+                    recordMigration(connection, 18);
                 }
                 return null;
             });
@@ -1047,6 +1051,64 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tower_research_operations_team_idx
                     ON tower_research_operations(team_id, applied_at)
+                    """);
+        }
+    }
+
+    /** Adds team-bound research-crystal issuance and two-phase redemption ledgers. */
+    private static void applyVersionEighteen(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE research_crystal_batches (
+                        batch_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL UNIQUE
+                            REFERENCES defense_events(event_id) ON DELETE CASCADE,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        stage_level INTEGER NOT NULL CHECK (stage_level > 0),
+                        issued_quantity INTEGER NOT NULL CHECK (issued_quantity > 0),
+                        redeemed_quantity INTEGER NOT NULL DEFAULT 0 CHECK (
+                            redeemed_quantity >= 0 AND redeemed_quantity <= issued_quantity
+                        ),
+                        state TEXT NOT NULL CHECK (
+                            state IN ('ISSUED', 'EXHAUSTED', 'VOIDED')
+                        ),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        CHECK ((state = 'EXHAUSTED' AND redeemed_quantity = issued_quantity)
+                               OR (state IN ('ISSUED', 'VOIDED')))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX research_crystal_batches_team_idx
+                    ON research_crystal_batches(team_id, state, created_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE research_crystal_redemptions (
+                        operation_id TEXT PRIMARY KEY,
+                        batch_id TEXT NOT NULL
+                            REFERENCES research_crystal_batches(batch_id) ON DELETE RESTRICT,
+                        core_id TEXT NOT NULL REFERENCES cores(core_id) ON DELETE RESTRICT,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        actor_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK (quantity > 0),
+                        payload_fingerprint TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX research_crystal_redemptions_batch_idx
+                    ON research_crystal_redemptions(batch_id, state, prepared_at)
                     """);
         }
     }

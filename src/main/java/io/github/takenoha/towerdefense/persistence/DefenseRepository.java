@@ -5,6 +5,7 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.config.RewardSettings;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -37,14 +38,31 @@ public final class DefenseRepository {
 
     private final Database database;
     private final Duration teamQueueRetention;
+    private final RewardSettings rewardSettings;
 
     public DefenseRepository(Database database) {
-        this(database, DEFAULT_TEAM_QUEUE_RETENTION);
+        this(database, DEFAULT_TEAM_QUEUE_RETENTION, RewardSettings.defaults());
     }
 
     public DefenseRepository(Database database, Duration teamQueueRetention) {
+        this(database, teamQueueRetention, RewardSettings.defaults());
+    }
+
+    /** Uses the configured queue and stage-reward policy. */
+    public DefenseRepository(Database database, RewardSettings rewardSettings) {
+        this(
+                database,
+                Objects.requireNonNull(rewardSettings, "rewardSettings").teamQueueRetention(),
+                rewardSettings);
+    }
+
+    public DefenseRepository(
+            Database database,
+            Duration teamQueueRetention,
+            RewardSettings rewardSettings) {
         this.database = Objects.requireNonNull(database, "database");
         this.teamQueueRetention = Objects.requireNonNull(teamQueueRetention, "teamQueueRetention");
+        this.rewardSettings = Objects.requireNonNull(rewardSettings, "rewardSettings");
         if (teamQueueRetention.isZero() || teamQueueRetention.isNegative()) {
             throw new IllegalArgumentException("teamQueueRetention must be positive");
         }
@@ -156,6 +174,245 @@ public final class DefenseRepository {
                 connection -> loadTeamProgress(connection, teamId).orElseThrow(
                         () -> new PersistenceConflictException(
                                 "Team " + teamId + " has no progression row")));
+    }
+
+    /** Loads one immutable research-crystal issuance batch. */
+    public Optional<ResearchCrystalBatch> findResearchCrystalBatch(UUID batchId) {
+        Objects.requireNonNull(batchId, "batchId");
+        return read(
+                "load a research crystal batch",
+                connection -> loadResearchCrystalBatch(connection, batchId));
+    }
+
+    /**
+     * Reserves a team-bound crystal redemption before the Paper inventory item is removed.
+     *
+     * <p>The returned operation is the durable receipt for the physical handoff. Calling this
+     * method again with the same UUID and payload returns the original reservation.</p>
+     */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
+        Objects.requireNonNull(batchId, "batchId");
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(preparedAt, "preparedAt");
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("quantity must be positive");
+        }
+        String fingerprint = crystalRedemptionFingerprint(
+                batchId, coreId, actorId, quantity);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ResearchCrystalRedemption> existing =
+                        loadResearchCrystalRedemption(connection, operationId);
+                if (existing.isPresent()) {
+                    ResearchCrystalRedemption redemption = existing.orElseThrow();
+                    requireMatchingCrystalRedemption(
+                            redemption,
+                            operationId,
+                            batchId,
+                            coreId,
+                            actorId,
+                            quantity,
+                            fingerprint);
+                    return redemption;
+                }
+                requireNoActiveEvent(connection, "redeem research crystals");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "Unknown research crystal batch " + batchId));
+                if (!batch.teamId().equals(core.teamId())) {
+                    throw new PersistenceConflictException(
+                            "Research crystals can only be redeemed at their source team's core");
+                }
+                if (batch.status() == ResearchCrystalBatchStatus.VOIDED
+                        || quantity > batch.remainingQuantity()) {
+                    throw new PersistenceConflictException(
+                            "The research crystal batch has no remaining redeemable quantity");
+                }
+                ResearchCrystalRedemption redemption = new ResearchCrystalRedemption(
+                        operationId,
+                        batchId,
+                        coreId,
+                        core.teamId(),
+                        actorId,
+                        quantity,
+                        fingerprint,
+                        ResearchCrystalRedemptionState.PREPARED,
+                        preparedAt,
+                        null,
+                        null);
+                insertResearchCrystalRedemption(connection, redemption);
+                return redemption;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The research crystal redemption conflicts with persisted data", exception);
+            }
+            throw failure("prepare a research crystal redemption", exception);
+        }
+    }
+
+    /** Applies a prepared crystal redemption and credits the team's research points atomically. */
+    public ResearchCrystalRedemptionResult applyResearchCrystalRedemption(
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                ResearchCrystalRedemption redemption = loadResearchCrystalRedemption(
+                                connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "Unknown research crystal redemption " + operationId));
+                if (redemption.state() == ResearchCrystalRedemptionState.APPLIED) {
+                    return crystalRedemptionResult(
+                            connection, OperationOutcome.ALREADY_APPLIED, redemption.batchId());
+                }
+                if (redemption.state() == ResearchCrystalRedemptionState.ROLLED_BACK) {
+                    throw new PersistenceConflictException(
+                            "The research crystal redemption was already rolled back");
+                }
+                requireNoActiveEvent(connection, "apply a research crystal redemption");
+                CoreRecord core = requireCore(connection, redemption.coreId());
+                requireTeamMember(connection, core.teamId(), redemption.actorId());
+                if (!core.teamId().equals(redemption.teamId())) {
+                    throw new PersistenceConflictException(
+                            "The redemption team no longer matches the core");
+                }
+                ResearchCrystalBatch batch = loadResearchCrystalBatch(
+                                connection, redemption.batchId())
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The research crystal batch disappeared"));
+                if (batch.status() == ResearchCrystalBatchStatus.VOIDED
+                        || redemption.quantity() > batch.remainingQuantity()) {
+                    throw new PersistenceConflictException(
+                            "The research crystal batch was already exhausted or voided");
+                }
+                TeamProgress progress = loadTeamProgress(connection, redemption.teamId())
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The redemption team has no progression row"));
+                long creditedPoints;
+                try {
+                    creditedPoints = Math.addExact(
+                            progress.researchPoints(), redemption.quantity());
+                } catch (ArithmeticException overflow) {
+                    throw new PersistenceConflictException(
+                            "The team's research point balance cannot increase further", overflow);
+                }
+                TeamProgress updatedProgress = new TeamProgress(
+                        progress.teamId(),
+                        progress.highestClearedLevel(),
+                        progress.unlockedLevel(),
+                        creditedPoints);
+                int redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
+                ResearchCrystalBatchStatus nextStatus = redeemedQuantity == batch.issuedQuantity()
+                        ? ResearchCrystalBatchStatus.EXHAUSTED
+                        : ResearchCrystalBatchStatus.ISSUED;
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_batches
+                        SET redeemed_quantity = ?, state = ?, updated_at = ?
+                        WHERE batch_id = ? AND state = 'ISSUED'
+                        """)) {
+                    statement.setInt(1, redeemedQuantity);
+                    statement.setString(2, nextStatus.name());
+                    statement.setString(3, appliedAt.toString());
+                    statement.setString(4, batch.batchId().toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The research crystal batch was concurrently resolved");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE team_progress
+                        SET research_points = ?, updated_at = ?
+                        WHERE team_id = ?
+                        """)) {
+                    statement.setLong(1, updatedProgress.researchPoints());
+                    statement.setString(2, appliedAt.toString());
+                    statement.setString(3, updatedProgress.teamId().toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The research point update affected no rows");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_redemptions
+                        SET state = 'APPLIED', applied_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, appliedAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The crystal redemption apply affected no rows");
+                    }
+                }
+                ResearchCrystalBatch updatedBatch = loadResearchCrystalBatch(
+                                connection, batch.batchId())
+                        .orElseThrow(() -> new SQLException(
+                                "The crystal batch disappeared after apply"));
+                return new ResearchCrystalRedemptionResult(
+                        OperationOutcome.APPLIED, updatedProgress, updatedBatch);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The research crystal redemption conflicts with persisted data", exception);
+            }
+            throw failure("apply a research crystal redemption", exception);
+        }
+    }
+
+    /** Rolls back a reservation when the Paper-side physical handoff did not complete. */
+    public Optional<ResearchCrystalRedemption> rollbackResearchCrystalRedemption(
+            UUID operationId,
+            Instant rolledBackAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rolledBackAt, "rolledBackAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ResearchCrystalRedemption> loaded =
+                        loadResearchCrystalRedemption(connection, operationId);
+                if (loaded.isEmpty()
+                        || loaded.orElseThrow().state() != ResearchCrystalRedemptionState.PREPARED) {
+                    return loaded;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_redemptions
+                        SET state = 'ROLLED_BACK', rolled_back_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, rolledBackAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The crystal redemption rollback affected no rows");
+                    }
+                }
+                ResearchCrystalRedemption redemption = loaded.orElseThrow();
+                return Optional.of(new ResearchCrystalRedemption(
+                        redemption.operationId(),
+                        redemption.batchId(),
+                        redemption.coreId(),
+                        redemption.teamId(),
+                        redemption.actorId(),
+                        redemption.quantity(),
+                        redemption.payloadFingerprint(),
+                        ResearchCrystalRedemptionState.ROLLED_BACK,
+                        redemption.preparedAt(),
+                        null,
+                        rolledBackAt));
+            });
+        } catch (SQLException exception) {
+            throw failure("roll back a research crystal redemption", exception);
+        }
     }
 
     /** Adds a member when the actor is the owner and no event is active. */
@@ -1750,6 +2007,11 @@ public final class DefenseRepository {
                 }
 
                 if (terminalSnapshot.phase() == DefensePhase.VICTORY) {
+                    issueVictoryResearchCrystals(
+                            connection,
+                            terminalSnapshot,
+                            operationId,
+                            occurredAt);
                     advanceTeamProgressAfterVictory(
                             connection, terminalSnapshot.teamId(), terminalSnapshot.stageLevel(), occurredAt);
                 }
@@ -1798,6 +2060,85 @@ public final class DefenseRepository {
                         "The terminal operation UUID conflicts with persisted data", exception);
             }
             throw failure("finish a defense event", exception);
+        }
+    }
+
+    /**
+     * Creates the one team-scoped crystal drop for a successful terminal before queue settlement.
+     *
+     * <p>The existing escrow queue is deliberately reused as the physical delivery boundary:
+     * defeats and recovery settle the synthetic drop without issuing a queue row, while victory
+     * turns it into exactly one TEAM row. The separate batch ledger supplies the source-team and
+     * redeemed-quantity authority used by the core deposit path.</p>
+     */
+    private void issueVictoryResearchCrystals(
+            Connection connection,
+            DefenseSessionSnapshot terminalSnapshot,
+            UUID terminalOperationId,
+            Instant issuedAt) throws SQLException {
+        TeamProgress beforeVictory = loadTeamProgress(connection, terminalSnapshot.teamId())
+                .orElseThrow(() -> new PersistenceConflictException(
+                        "Team " + terminalSnapshot.teamId() + " has no progression row"));
+        int quantity = rewardSettings.researchCrystalQuantity(
+                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel());
+        if (quantity <= 0) {
+            return;
+        }
+        UUID batchId = deterministicUuid(
+                terminalOperationId,
+                "RESEARCH_CRYSTAL_BATCH",
+                terminalSnapshot.eventId().toString());
+        UUID createOperationId = deterministicUuid(
+                terminalOperationId,
+                "RESEARCH_CRYSTAL_DROP",
+                batchId.toString());
+        String payload = researchCrystalPayload(
+                batchId,
+                terminalSnapshot.teamId(),
+                quantity);
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_batches(
+                    batch_id, event_id, team_id, stage_level, issued_quantity,
+                    redeemed_quantity, state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, 'ISSUED', ?, ?)
+                ON CONFLICT(batch_id) DO NOTHING
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setString(2, terminalSnapshot.eventId().toString());
+            statement.setString(3, terminalSnapshot.teamId().toString());
+            statement.setLong(4, terminalSnapshot.stageLevel());
+            statement.setInt(5, quantity);
+            statement.setString(6, issuedAt.toString());
+            statement.setString(7, issuedAt.toString());
+            statement.executeUpdate();
+        }
+        ResearchCrystalBatch existing = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow(() -> new SQLException(
+                        "The research crystal batch was not persisted"));
+        if (!existing.eventId().equals(terminalSnapshot.eventId())
+                || !existing.teamId().equals(terminalSnapshot.teamId())
+                || existing.stageLevel() != terminalSnapshot.stageLevel()
+                || existing.issuedQuantity() != quantity) {
+            throw new PersistenceConflictException(
+                    "The research crystal batch UUID is already assigned to another payload");
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_drop_escrow(
+                    drop_id, event_id, source_kind, source_id, item_id, item_payload,
+                    quantity, claimed_quantity, status, display_entity_id,
+                    create_operation_id, created_at, updated_at
+                ) VALUES (?, ?, 'ENEMY', ?, 'research_crystal', ?, ?, 0, 'HELD', NULL, ?, ?, ?)
+                ON CONFLICT(drop_id) DO NOTHING
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setString(2, terminalSnapshot.eventId().toString());
+            statement.setString(3, terminalSnapshot.eventId().toString());
+            statement.setString(4, payload);
+            statement.setInt(5, quantity);
+            statement.setString(6, createOperationId.toString());
+            statement.setString(7, issuedAt.toString());
+            statement.setString(8, issuedAt.toString());
+            statement.executeUpdate();
         }
     }
 
@@ -1878,6 +2219,119 @@ public final class DefenseRepository {
                                 resultSet.getLong("research_points")))
                         : Optional.empty();
             }
+        }
+    }
+
+    private static Optional<ResearchCrystalBatch> loadResearchCrystalBatch(
+            Connection connection, UUID batchId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT batch_id, event_id, team_id, stage_level, issued_quantity,
+                       redeemed_quantity, state, created_at, updated_at
+                FROM research_crystal_batches WHERE batch_id = ?
+                """)) {
+            statement.setString(1, batchId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(researchCrystalBatchFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static ResearchCrystalBatch researchCrystalBatchFromRow(ResultSet resultSet)
+            throws SQLException {
+        return new ResearchCrystalBatch(
+                uuid(resultSet.getString("batch_id")),
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                resultSet.getLong("stage_level"),
+                resultSet.getInt("issued_quantity"),
+                resultSet.getInt("redeemed_quantity"),
+                ResearchCrystalBatchStatus.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("created_at")),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static Optional<ResearchCrystalRedemption> loadResearchCrystalRedemption(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, batch_id, core_id, team_id, actor_id, quantity,
+                       payload_fingerprint, state, prepared_at, applied_at, rolled_back_at
+                FROM research_crystal_redemptions WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(researchCrystalRedemptionFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static ResearchCrystalRedemption researchCrystalRedemptionFromRow(
+            ResultSet resultSet) throws SQLException {
+        return new ResearchCrystalRedemption(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("batch_id")),
+                uuid(resultSet.getString("core_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("actor_id")),
+                resultSet.getInt("quantity"),
+                resultSet.getString("payload_fingerprint"),
+                ResearchCrystalRedemptionState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                nullableInstant(resultSet.getString("applied_at")),
+                nullableInstant(resultSet.getString("rolled_back_at")));
+    }
+
+    private static void insertResearchCrystalRedemption(
+            Connection connection,
+            ResearchCrystalRedemption redemption) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_redemptions(
+                    operation_id, batch_id, core_id, team_id, actor_id, quantity,
+                    payload_fingerprint, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                """)) {
+            statement.setString(1, redemption.operationId().toString());
+            statement.setString(2, redemption.batchId().toString());
+            statement.setString(3, redemption.coreId().toString());
+            statement.setString(4, redemption.teamId().toString());
+            statement.setString(5, redemption.actorId().toString());
+            statement.setInt(6, redemption.quantity());
+            statement.setString(7, redemption.payloadFingerprint());
+            statement.setString(8, redemption.preparedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static ResearchCrystalRedemptionResult crystalRedemptionResult(
+            Connection connection,
+            OperationOutcome outcome,
+            UUID batchId) throws SQLException {
+        ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow(() -> new SQLException("The crystal batch disappeared"));
+        TeamProgress progress = loadTeamProgress(connection, batch.teamId())
+                .orElseThrow(() -> new SQLException("The crystal team progression disappeared"));
+        return new ResearchCrystalRedemptionResult(outcome, progress, batch);
+    }
+
+    private static void requireMatchingCrystalRedemption(
+            ResearchCrystalRedemption redemption,
+            UUID operationId,
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity,
+            String fingerprint) {
+        if (!redemption.operationId().equals(operationId)
+                || !redemption.batchId().equals(batchId)
+                || !redemption.coreId().equals(coreId)
+                || !redemption.actorId().equals(actorId)
+                || redemption.quantity() != quantity
+                || !redemption.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The research crystal redemption UUID is already assigned to another payload");
         }
     }
 
@@ -2864,6 +3318,26 @@ public final class DefenseRepository {
         } catch (NoSuchAlgorithmException exception) {
             throw new AssertionError("Every Java runtime must provide SHA-256", exception);
         }
+    }
+
+    private static String researchCrystalPayload(
+            UUID batchId,
+            UUID teamId,
+            int issuedQuantity) {
+        return "research_crystal:v1:" + batchId + ":" + teamId + ":" + issuedQuantity;
+    }
+
+    private static String crystalRedemptionFingerprint(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity) {
+        return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|" + quantity;
+    }
+
+    private static UUID deterministicUuid(UUID base, String namespace, String value) {
+        return UUID.nameUUIDFromBytes(
+                (base + "|" + namespace + "|" + value).getBytes(StandardCharsets.UTF_8));
     }
 
     private static void appendSortedUuids(StringBuilder target, Set<UUID> values) {

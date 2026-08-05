@@ -150,7 +150,22 @@ final class PluginSettingsMapReader {
                 return RewardSettings.defaults();
             }
             return new RewardSettings(
-                    integer(values, "rewards", "team-queue-retention-seconds"));
+                    integer(values, "rewards", "team-queue-retention-seconds"),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-base-per-stage",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_BASE_PER_STAGE),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-replay-percent",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_REPLAY_PERCENT),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-minimum-quantity",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_MINIMUM_QUANTITY));
         }
 
         private TerrainMutationSettings terrainMutation() {

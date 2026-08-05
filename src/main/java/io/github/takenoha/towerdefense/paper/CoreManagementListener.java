@@ -48,8 +48,10 @@ public final class CoreManagementListener implements Listener {
     private final CoreRegistry cores;
     private final CoreItemListener coreItems;
     private final DefenseShardTagger shardTagger;
+    private final ResearchCrystalTagger researchCrystals;
     private final Set<UUID> repairInFlight = new java.util.HashSet<>();
     private final Set<UUID> teamActionInFlight = new java.util.HashSet<>();
+    private final Set<UUID> crystalInFlight = new java.util.HashSet<>();
 
     public CoreManagementListener(
             JavaPlugin plugin,
@@ -60,6 +62,28 @@ public final class CoreManagementListener implements Listener {
             CoreRegistry cores,
             CoreItemListener coreItems,
             DefenseShardTagger shardTagger) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                coreItems,
+                shardTagger,
+                new ResearchCrystalTagger(plugin));
+    }
+
+    public CoreManagementListener(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            CoreItemListener coreItems,
+            DefenseShardTagger shardTagger,
+            ResearchCrystalTagger researchCrystals) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -68,6 +92,7 @@ public final class CoreManagementListener implements Listener {
         this.cores = Objects.requireNonNull(cores, "cores");
         this.coreItems = Objects.requireNonNull(coreItems, "coreItems");
         this.shardTagger = Objects.requireNonNull(shardTagger, "shardTagger");
+        this.researchCrystals = Objects.requireNonNull(researchCrystals, "researchCrystals");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -109,6 +134,8 @@ public final class CoreManagementListener implements Listener {
                 player.closeInventory();
             } else if (event.getRawSlot() == CoreManagementGui.TEAM_SLOT) {
                 openTeamGui(player, holder.coreId());
+            } else if (event.getRawSlot() == CoreManagementGui.RESEARCH_DEPOSIT_SLOT) {
+                beginResearchCrystalDeposit(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.REPAIR_SLOT) {
                 beginRepair(player, holder.coreId());
             } else if (event.getRawSlot() == CoreManagementGui.RELOCATE_SLOT) {
@@ -160,6 +187,124 @@ public final class CoreManagementListener implements Listener {
                     data.repairCost(),
                     settings.core().repairMaterial()));
         }));
+    }
+
+    private void beginResearchCrystalDeposit(Player player, UUID coreId) {
+        if (sessions.hasActiveSession()) {
+            player.sendMessage(Component.text("防衛戦中は研究結晶を納品できません。", NamedTextColor.RED));
+            return;
+        }
+        ItemStack held = player.getInventory().getItemInMainHand();
+        ResearchCrystalItemIdentity identity = researchCrystals.read(held).orElse(null);
+        if (identity == null) {
+            player.sendMessage(Component.text(
+                    "発行元チームの研究結晶を手に持ってください。", NamedTextColor.YELLOW));
+            return;
+        }
+        int quantity = held.getAmount();
+        UUID actorId = player.getUniqueId();
+        if (!crystalInFlight.add(actorId)) {
+            player.sendMessage(Component.text("研究結晶の納品を処理中です。", NamedTextColor.YELLOW));
+            return;
+        }
+        UUID operationId = UUID.randomUUID();
+        player.sendMessage(Component.text("研究結晶の納品を準備しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            CoreRecord core = repository.findCore(coreId).orElseThrow(
+                    () -> new IllegalStateException("コアが見つかりません"));
+            return repository.prepareResearchCrystalRedemption(
+                    identity.batchId(),
+                    core.id(),
+                    actorId,
+                    quantity,
+                    operationId,
+                    Instant.now());
+        }).whenComplete((prepared, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                finishCrystalDeposit(player, "研究結晶を納品できません: " + rootMessage(failure));
+                return;
+            }
+            ItemStack current = player.getInventory().getItemInMainHand();
+            boolean sameItem = researchCrystals.read(current)
+                    .map(identity::equals)
+                    .orElse(false)
+                    && current.getAmount() >= prepared.quantity();
+            if (!sameItem || sessions.hasActiveSession()) {
+                rollbackCrystalDeposit(
+                        player,
+                        prepared.operationId(),
+                        null,
+                        "手持ちの研究結晶または防衛フェーズが変わったため納品を取り消しました。");
+                return;
+            }
+            ItemStack refund = current.clone();
+            refund.setAmount(prepared.quantity());
+            removeHeldQuantity(player, prepared.quantity());
+            databaseExecutor.submit(() -> repository.applyResearchCrystalRedemption(
+                            prepared.operationId(), Instant.now()))
+                    .whenComplete((result, applyFailure) -> runOnMainThread(() -> {
+                        if (applyFailure != null) {
+                            rollbackCrystalDeposit(
+                                    player,
+                                    prepared.operationId(),
+                                    refund,
+                                    "研究結晶を納品できなかったため返却を試みます: "
+                                            + rootMessage(applyFailure));
+                            return;
+                        }
+                        crystalInFlight.remove(actorId);
+                        player.sendMessage(Component.text(
+                                "研究結晶を" + prepared.quantity()
+                                        + "個納品し、研究ポイントへ変換しました。現在: "
+                                        + result.progress().researchPoints(),
+                                NamedTextColor.GREEN));
+                        openCoreGui(player, coreId);
+                    }));
+        }));
+    }
+
+    private void rollbackCrystalDeposit(
+            Player player,
+            UUID operationId,
+            ItemStack refund,
+            String message) {
+        databaseExecutor.submit(() -> repository.rollbackResearchCrystalRedemption(
+                        operationId, Instant.now()))
+                .whenComplete((rolledBack, rollbackFailure) -> runOnMainThread(() -> {
+                    crystalInFlight.remove(player.getUniqueId());
+                    if (rollbackFailure != null) {
+                        plugin.getLogger().log(
+                                java.util.logging.Level.SEVERE,
+                                "Could not roll back research crystal redemption " + operationId,
+                                rollbackFailure);
+                        player.sendMessage(Component.text(
+                                "研究結晶の納品復旧を保留しています。管理者へ連絡してください。",
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (refund != null
+                            && rolledBack.isPresent()
+                            && rolledBack.orElseThrow().state()
+                                    == io.github.takenoha.towerdefense.persistence
+                                            .ResearchCrystalRedemptionState.ROLLED_BACK) {
+                        addOrDrop(player, refund);
+                    }
+                    player.sendMessage(Component.text(message, NamedTextColor.RED));
+                }));
+    }
+
+    private static void removeHeldQuantity(Player player, int quantity) {
+        ItemStack held = player.getInventory().getItemInMainHand();
+        int remaining = held.getAmount() - quantity;
+        player.getInventory().setItemInMainHand(remaining <= 0 ? null : held);
+        if (remaining > 0) {
+            player.getInventory().getItemInMainHand().setAmount(remaining);
+        }
+    }
+
+    private void finishCrystalDeposit(Player player, String message) {
+        crystalInFlight.remove(player.getUniqueId());
+        player.sendMessage(Component.text(message, NamedTextColor.RED));
     }
 
     private void openTeamGui(Player player, UUID coreId) {
