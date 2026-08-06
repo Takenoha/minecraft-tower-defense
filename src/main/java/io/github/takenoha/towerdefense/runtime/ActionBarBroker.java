@@ -16,8 +16,10 @@ import java.util.UUID;
  */
 public final class ActionBarBroker {
     public static final int PICKUP_PRIORITY = 100;
+    public static final int TACTICAL_PRIORITY = 50;
     public static final int COUNTDOWN_PRIORITY = 10;
     public static final long PICKUP_TTL_TICKS = 40L;
+    public static final long TACTICAL_TTL_TICKS = 40L;
 
     private final Map<UUID, Map<String, Notice>> notices = new HashMap<>();
     private long sequence;
@@ -37,6 +39,17 @@ public final class ActionBarBroker {
                 nowTick,
                 2L,
                 COUNTDOWN_PRIORITY);
+    }
+
+    public synchronized void publishTactical(UUID playerId, String text, long nowTick) {
+        purgeExpired(nowTick);
+        publish(
+                playerId,
+                "tactical",
+                text,
+                nowTick,
+                TACTICAL_TTL_TICKS,
+                TACTICAL_PRIORITY);
     }
 
     public synchronized void publishPickup(

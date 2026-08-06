@@ -271,6 +271,36 @@ following evidence exists:
    reconciliation sees the restored storage/off-hand contents, and ordinary untagged items retain
    normal behavior.
 
+## 9. Tactical build runtime and recovery
+
+1. Start a defense with a selected tactical build. When `PREPARATION` begins, confirm Tier 1 is
+   unlocked automatically with one chat message, one action-bar notice, and one vanilla note sound.
+   No tactical GUI, vote, reroll, or intermission pause may appear. Repeat the same lifecycle
+   operation and confirm no second node unlock or notification is produced.
+2. On a five-wave disposable stage, confirm Tier 2, 3, 4, and 5 unlock at completed-wave counts
+   1, 2, 3, and 4 respectively. On a one-wave disposable stage, confirm all reached progress
+   tiers are applied in tier order and the wave does not wait for player input.
+3. Confirm Tier 6 unlocks immediately before the final wave starts. Exercise each initial build:
+   rapid-fire (ARROW/SNIPER interval and damage), long-range precision (range and boss/high-HP
+   damage), siege (CANNON/FLAME area and SUPPORT buff), flame suppression (burning-target damage
+   and duration), frost/lightning chain (slow and chain count), and final defense (support range,
+   repair cost, core-HP thresholds, and tower damage taken). A tower outside the selected build's
+   target set must retain its ordinary value.
+4. Lower the core below 50% and below 30% during `WAVE_ACTIVE`. Confirm the final-defense damage
+   and attack-interval conditions use the live core fraction without changing the core maximum or
+   saved HP. Repair a damaged tower during preparation/intermission and confirm the tactical repair
+   cost is applied once; retrying the same repair operation must not charge twice.
+5. Restart during an active tactical defense. Confirm the selected definition snapshot and highest
+   unlocked tier rebuild into an in-memory effect cache before the next attack. Disconnect or make
+   the tactical state unavailable in a disposable copy and confirm the runtime returns neutral
+   effects rather than guessing or strengthening an attack.
+6. Complete victory, defeat, operator abort, and technical recovery. Confirm the tactical cache is
+   invalidated for every terminal result, the next defense starts with a neutral cache until its
+   own selection is loaded, and no tactical reward or permanent tower/core value is minted.
+7. With many towers and enemies, observe that attack processing uses the active in-memory snapshot:
+   no tactical repository query occurs per attack or per tick, node IDs are not scanned in the
+   combat loop, and particle/effect output remains bounded by the existing attack budget.
+
 ## Evidence record
 
 ```text
@@ -291,6 +321,9 @@ Prepared/applied/terminal recovery evidence:
 Resource vault / legacy payment / receipt recovery evidence:
 Portable voucher withdrawal / delivery / redeem / duplicate evidence:
 Research-crystal inventory scan / PDC validation / receipt recovery evidence:
+Tactical candidate selection / automatic tier unlock evidence:
+Tactical modifier / core HP / repair / tower damage evidence:
+Tactical restart cache rebuild / terminal invalidation evidence:
 Action Bar pickup priority and 40-tick evidence:
 Later-player-edit conflict evidence:
 Event IDs and operation UUIDs:

@@ -33,6 +33,10 @@ import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
 import io.github.takenoha.towerdefense.runtime.DefenseRuntimeStatus;
 import io.github.takenoha.towerdefense.runtime.TaggedEnemy;
 import io.github.takenoha.towerdefense.runtime.TowerRegistry;
+import io.github.takenoha.towerdefense.tactical.EmptyTacticalEffectSnapshot;
+import io.github.takenoha.towerdefense.tactical.TacticalEffectSnapshot;
+import io.github.takenoha.towerdefense.tactical.TacticalEffectSnapshotProvider;
+import io.github.takenoha.towerdefense.tactical.TacticalTargetContext;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -51,6 +55,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.TileState;
@@ -138,6 +144,7 @@ public final class TowerManager implements Listener, AutoCloseable {
     private final Map<UUID, PendingTowerDamage> towerDamageInFlight = new HashMap<>();
     private final BattleBoostRegistry battleBoosts = new BattleBoostRegistry();
     private final Set<UUID> boostInFlight = new HashSet<>();
+    private final TacticalEffectSnapshotProvider tacticalEffects;
 
     private BukkitTask tickTask;
     private long currentTick;
@@ -164,7 +171,8 @@ public final class TowerManager implements Listener, AutoCloseable {
                 towers,
                 itemTagger,
                 entityTagger,
-                null);
+                null,
+                ignored -> EmptyTacticalEffectSnapshot.INSTANCE);
     }
 
     public TowerManager(
@@ -179,6 +187,35 @@ public final class TowerManager implements Listener, AutoCloseable {
             TowerItemTagger itemTagger,
             TowerEntityTagger entityTagger,
             ResourceRepository resources) {
+        this(
+                plugin,
+                settings,
+                defenseRepository,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                towers,
+                itemTagger,
+                entityTagger,
+                resources,
+                ignored -> EmptyTacticalEffectSnapshot.INSTANCE);
+    }
+
+    /** Full constructor used by the tactical build integration. */
+    public TowerManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository defenseRepository,
+            TowerRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            TowerRegistry towers,
+            TowerItemTagger itemTagger,
+            TowerEntityTagger entityTagger,
+            ResourceRepository resources,
+            TacticalEffectSnapshotProvider tacticalEffects) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.defenseRepository = Objects.requireNonNull(defenseRepository, "defenseRepository");
@@ -191,6 +228,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         this.entityTagger = Objects.requireNonNull(entityTagger, "entityTagger");
         eventEnemyTagger = new EventEnemyTagger(plugin);
         this.resources = resources;
+        this.tacticalEffects = Objects.requireNonNull(tacticalEffects, "tacticalEffects");
         shardTagger = new DefenseShardTagger(plugin);
         enhancementCoreTagger = new EnhancementCoreTagger(plugin);
         upgradeReceipts = new TowerUpgradeReceiptTagger(plugin);
@@ -827,6 +865,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                     data.tower().maximumHitPoints() - data.tower().currentHitPoints(),
                     settings.towers().battleRepairHealthPerPurchase());
             long repairCostLong = repairAmount * settings.towers().battleRepairFundsPerHealth();
+            repairCostLong = tacticalRepairCost(
+                    repairCostLong,
+                    tacticalEffectsForEvent(data.eventId()));
             int repairCost = repairCostLong > Integer.MAX_VALUE
                     ? Integer.MAX_VALUE
                     : (int) repairCostLong;
@@ -956,7 +997,7 @@ public final class TowerManager implements Listener, AutoCloseable {
             return;
         }
         long repaired = Math.min(missing, settings.towers().battleRepairHealthPerPurchase());
-        long cost = Math.multiplyExact(repaired, settings.towers().battleRepairFundsPerHealth());
+        long baseCost = Math.multiplyExact(repaired, settings.towers().battleRepairFundsPerHealth());
         if (!boostInFlight.add(towerId)) {
             player.sendMessage(Component.text("タワー修理を処理中です。", NamedTextColor.YELLOW));
             return;
@@ -965,6 +1006,9 @@ public final class TowerManager implements Listener, AutoCloseable {
         databaseExecutor.submit(() -> {
             UUID eventId = defenseRepository.activeEventId().orElseThrow(
                     () -> new IllegalStateException("防衛戦が見つかりません"));
+            long cost = tacticalRepairCost(
+                    baseCost,
+                    tacticalEffectsForEvent(Optional.of(eventId)));
             return defenseRepository.repairTowerWithBattleFunds(
                     eventId,
                     tower.teamId(),
@@ -1960,6 +2004,8 @@ public final class TowerManager implements Listener, AutoCloseable {
         if (!sessions.hasActiveSession() && !battleBoosts.isEmpty()) {
             battleBoosts.clear();
         }
+        Optional<DefenseRuntimeStatus> runtimeStatus = sessions.status();
+        TacticalEffectSnapshot tacticalSnapshot = tacticalEffectsForStatus(runtimeStatus);
         processEnemyTowerAttacks();
         for (TowerRecord tower : towers.all()) {
             Entity entity = Bukkit.getEntity(tower.entityId());
@@ -1980,15 +2026,27 @@ public final class TowerManager implements Listener, AutoCloseable {
             if (tower.type() == TowerType.SUPPORT) {
                 continue;
             }
-            Optional<LivingEntity> target = findTarget(tower, stand);
+            Optional<LivingEntity> target = findTarget(tower, stand, tacticalSnapshot);
             if (target.isEmpty()) {
                 continue;
             }
-            int supportStacks = supportStacksFor(tower, stand);
+            int supportStacks = supportStacksFor(tower, stand, tacticalSnapshot);
+            TacticalTargetContext targetContext = tacticalTargetContext(
+                    target.orElseThrow(),
+                    runtimeStatus.orElse(null));
             CoreAttackSchedule schedule = attackSchedules.computeIfAbsent(
                     tower.id(), ignored -> new CoreAttackSchedule(
-                            effectiveAttackInterval(tower, supportStacks)));
-            schedule.updateInterval(effectiveAttackInterval(tower, supportStacks), currentTick);
+                            effectiveAttackInterval(
+                                    tower,
+                                    supportStacks,
+                                    tacticalSnapshot,
+                                    targetContext)));
+            int attackInterval = effectiveAttackInterval(
+                    tower,
+                    supportStacks,
+                    tacticalSnapshot,
+                    targetContext);
+            schedule.updateInterval(attackInterval, currentTick);
             if (schedule.tryClaim(currentTick)) {
                 LivingEntity center = target.orElseThrow();
                 TowerAttackEffects.Budget effectBudget = TowerAttackEffects.newBudget();
@@ -1998,20 +2056,46 @@ public final class TowerManager implements Listener, AutoCloseable {
                             stand,
                             stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
                             center,
-                            effectiveDamage(tower, supportStacks),
+                            supportStacks,
+                            tacticalSnapshot,
+                            runtimeStatus.orElse(null),
                             effectBudget);
                     case CANNON -> damageCannonTargets(
-                            tower, stand, center, supportStacks, effectBudget);
+                            tower,
+                            stand,
+                            center,
+                            supportStacks,
+                            tacticalSnapshot,
+                            runtimeStatus.orElse(null),
+                            effectBudget);
                     case FROST -> damageFrostTarget(
-                            tower, stand, center, supportStacks, effectBudget);
+                            tower,
+                            stand,
+                            center,
+                            supportStacks,
+                            tacticalSnapshot,
+                            runtimeStatus.orElse(null),
+                            effectBudget);
                     case LIGHTNING -> damageLightningTargets(
-                            tower, stand, center, supportStacks, effectBudget);
+                            tower,
+                            stand,
+                            center,
+                            supportStacks,
+                            tacticalSnapshot,
+                            runtimeStatus.orElse(null),
+                            effectBudget);
                     case FLAME -> damageFlameTargets(
-                            tower, stand, center, supportStacks, effectBudget);
+                            tower,
+                            stand,
+                            center,
+                            supportStacks,
+                            tacticalSnapshot,
+                            runtimeStatus.orElse(null),
+                            effectBudget);
                     case SUPPORT -> throw new IllegalStateException("support tower reached attack path");
                     };
                 if (supportStacks > 0 && attackSucceeded) {
-                    renderSupportPulses(tower, stand, effectBudget);
+                    renderSupportPulses(tower, stand, tacticalSnapshot, effectBudget);
                 }
             }
         }
@@ -2026,6 +2110,7 @@ public final class TowerManager implements Listener, AutoCloseable {
             return;
         }
         DefenseRuntimeStatus active = status.orElseThrow();
+        TacticalEffectSnapshot tacticalSnapshot = tacticalEffectsForStatus(status);
         Optional<io.github.takenoha.towerdefense.persistence.CoreRecord> core =
                 cores.forTeam(active.teamId());
         if (core.isEmpty()) {
@@ -2044,7 +2129,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         if (candidates.isEmpty()) {
             return;
         }
-        long damage = effectiveEnemyTowerDamage(active.stageLevel());
+        long damage = effectiveEnemyTowerDamage(active.stageLevel(), tacticalSnapshot);
         int interval = settings.enemies().towerAttackIntervalTicks();
         double range = settings.enemies().towerAttackRange();
         double rangeSquared = range * range;
@@ -2123,10 +2208,14 @@ public final class TowerManager implements Listener, AutoCloseable {
                         .orElse(false);
     }
 
-    private long effectiveEnemyTowerDamage(long stageLevel) {
+    private long effectiveEnemyTowerDamage(
+            long stageLevel,
+            TacticalEffectSnapshot tacticalSnapshot) {
         long boundedStage = Math.min(stageLevel, 11L);
         double multiplier = 1.0d + (boundedStage - 1.0d) / 10.0d;
-        double scaled = settings.enemies().towerAttackDamage() * multiplier;
+        double scaled = settings.enemies().towerAttackDamage()
+                * multiplier
+                * positiveMultiplier(tacticalSnapshot.towerDamageTakenMultiplier());
         if (!Double.isFinite(scaled) || scaled >= Long.MAX_VALUE) {
             return Long.MAX_VALUE;
         }
@@ -2182,8 +2271,11 @@ public final class TowerManager implements Listener, AutoCloseable {
         }
     }
 
-    private Optional<LivingEntity> findTarget(TowerRecord tower, ArmorStand stand) {
-        double range = effectiveRange(tower, stand);
+    private Optional<LivingEntity> findTarget(
+            TowerRecord tower,
+            ArmorStand stand,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        double range = effectiveRange(tower, stand, tacticalSnapshot);
         List<LivingEntity> candidates = new ArrayList<>();
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         Map<UUID, TaggedEnemy> eventTags = new HashMap<>();
@@ -2244,8 +2336,10 @@ public final class TowerManager implements Listener, AutoCloseable {
             ArmorStand stand,
             LivingEntity center,
             int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            DefenseRuntimeStatus runtimeStatus,
             TowerAttackEffects.Budget effectBudget) {
-        double radius = settings.towers().cannonSplashRadius();
+        double radius = effectiveAreaRadius(tower, tacticalSnapshot);
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         boolean damagedAny = false;
         for (Entity entity : center.getWorld().getNearbyEntities(
@@ -2268,7 +2362,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                     stand,
                     stand.getLocation().clone().add(0.0d, 1.0d, 0.0d),
                     monster,
-                    effectiveDamage(tower, supportStacks),
+                    supportStacks,
+                    tacticalSnapshot,
+                    runtimeStatus,
                     effectBudget);
         }
         return damagedAny;
@@ -2279,17 +2375,27 @@ public final class TowerManager implements Listener, AutoCloseable {
             ArmorStand stand,
             LivingEntity target,
             int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            DefenseRuntimeStatus runtimeStatus,
             TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
         double beforeHealth = target.getHealth();
-        target.damage(effectiveDamage(tower, supportStacks), stand);
+        target.damage(
+                effectiveDamage(
+                        tower,
+                        supportStacks,
+                        tacticalSnapshot,
+                        tacticalTargetContext(target, runtimeStatus)),
+                stand);
         boolean damaged = target.isDead() || target.getHealth() < beforeHealth;
         int duration = towerSettings.slowDurationTicksFor(tower.type());
         boolean slowed = false;
         if (duration > 0) {
+            double slowPercent = towerSettings.slowPercentFor(tower.type())
+                    * positiveMultiplier(tacticalSnapshot.slowStrengthMultiplier(tower.type()));
             int amplifier = Math.max(
                     0,
-                    (int) Math.ceil(towerSettings.slowPercentFor(tower.type()) * 4.0d) - 1);
+                    (int) Math.ceil(slowPercent * 4.0d) - 1);
             slowed = target.addPotionEffect(new PotionEffect(
                     PotionEffectType.SLOWNESS,
                     duration,
@@ -2313,6 +2419,8 @@ public final class TowerManager implements Listener, AutoCloseable {
             ArmorStand stand,
             LivingEntity center,
             int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            DefenseRuntimeStatus runtimeStatus,
             TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
         double radius = towerSettings.chainRadiusFor(tower.type());
@@ -2341,7 +2449,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                 .skip(1)
                 .sorted(Comparator.comparingDouble(
                         candidate -> candidate.getLocation().distanceSquared(center.getLocation())))
-                .limit(Math.max(0, towerSettings.chainCountFor(tower.type()) - 1L))
+                .limit(Math.max(
+                        0,
+                        effectiveChainCount(tower, tacticalSnapshot) - 1L))
                 .toList();
         org.bukkit.Location source = stand.getLocation().clone().add(0.0d, 1.0d, 0.0d);
         boolean damagedAny = false;
@@ -2351,7 +2461,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                     stand,
                     source,
                     candidate,
-                    effectiveDamage(tower, supportStacks),
+                    supportStacks,
+                    tacticalSnapshot,
+                    runtimeStatus,
                     effectBudget)) {
                 damagedAny = true;
                 source = candidate.getLocation().clone().add(0.0d, 0.8d, 0.0d);
@@ -2362,7 +2474,9 @@ public final class TowerManager implements Listener, AutoCloseable {
                 stand,
                 source,
                 center,
-                effectiveDamage(tower, supportStacks),
+                supportStacks,
+                tacticalSnapshot,
+                runtimeStatus,
                 effectBudget);
         return damagedAny;
     }
@@ -2372,9 +2486,11 @@ public final class TowerManager implements Listener, AutoCloseable {
             ArmorStand stand,
             LivingEntity center,
             int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            DefenseRuntimeStatus runtimeStatus,
             TowerAttackEffects.Budget effectBudget) {
         TowerSettings towerSettings = settings.towers();
-        double radius = towerSettings.areaRadiusFor(tower.type());
+        double radius = effectiveAreaRadius(tower, tacticalSnapshot);
         EventEnemyTagger eventTagger = new EventEnemyTagger(plugin);
         boolean damagedAny = false;
         for (Entity entity : center.getWorld().getNearbyEntities(
@@ -2393,11 +2509,18 @@ public final class TowerManager implements Listener, AutoCloseable {
                 continue;
             }
             double beforeHealth = monster.getHealth();
-            monster.damage(effectiveDamage(tower, supportStacks), stand);
+            monster.damage(
+                    effectiveDamage(
+                            tower,
+                            supportStacks,
+                            tacticalSnapshot,
+                            tacticalTargetContext(monster, runtimeStatus)),
+                    stand);
             boolean damaged = monster.isDead() || monster.getHealth() < beforeHealth;
             int previousFireTicks = monster.getFireTicks();
+            int burnDuration = effectiveBurnDuration(tower, tacticalSnapshot);
             monster.setFireTicks(Math.max(
-                    monster.getFireTicks(), towerSettings.burnDurationTicksFor(tower.type())));
+                    monster.getFireTicks(), burnDuration));
             if (damaged || monster.getFireTicks() > previousFireTicks) {
                 damagedAny = true;
                 renderSuccessfulAttack(
@@ -2415,10 +2538,18 @@ public final class TowerManager implements Listener, AutoCloseable {
             ArmorStand stand,
             org.bukkit.Location source,
             LivingEntity target,
-            int damage,
+            int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            DefenseRuntimeStatus runtimeStatus,
             TowerAttackEffects.Budget effectBudget) {
         double beforeHealth = target.getHealth();
-        target.damage(damage, stand);
+        target.damage(
+                effectiveDamage(
+                        tower,
+                        supportStacks,
+                        tacticalSnapshot,
+                        tacticalTargetContext(target, runtimeStatus)),
+                stand);
         boolean damaged = target.isDead() || target.getHealth() < beforeHealth;
         if (damaged) {
             renderSuccessfulAttack(tower.type(), source, target, effectBudget);
@@ -2439,9 +2570,10 @@ public final class TowerManager implements Listener, AutoCloseable {
     private void renderSupportPulses(
             TowerRecord tower,
             ArmorStand target,
+            TacticalEffectSnapshot tacticalSnapshot,
             TowerAttackEffects.Budget effectBudget) {
-        double radiusSquared = settings.towers().supportRadius()
-                * settings.towers().supportRadius();
+        double radius = effectiveSupportRadius(tacticalSnapshot);
+        double radiusSquared = radius * radius;
         towers.all().stream()
                 .filter(candidate -> candidate.type() == TowerType.SUPPORT)
                 .filter(candidate -> candidate.teamId().equals(tower.teamId()))
@@ -2466,12 +2598,16 @@ public final class TowerManager implements Listener, AutoCloseable {
                         effectBudget));
     }
 
-    private int supportStacksFor(TowerRecord tower, ArmorStand stand) {
+    private int supportStacksFor(
+            TowerRecord tower,
+            ArmorStand stand,
+            TacticalEffectSnapshot tacticalSnapshot) {
         TowerSettings towerSettings = settings.towers();
         if (towerSettings.supportStackLimit() <= 0) {
             return 0;
         }
-        double radiusSquared = towerSettings.supportRadius() * towerSettings.supportRadius();
+        double radius = effectiveSupportRadius(tacticalSnapshot);
+        double radiusSquared = radius * radius;
         return (int) towers.all().stream()
                 .filter(candidate -> candidate.type() == TowerType.SUPPORT)
                 .filter(candidate -> candidate.teamId().equals(tower.teamId()))
@@ -2490,25 +2626,166 @@ public final class TowerManager implements Listener, AutoCloseable {
                 .count();
     }
 
-    private double effectiveRange(TowerRecord tower, ArmorStand stand) {
-        int supportStacks = supportStacksFor(tower, stand);
-        return settings.towers().rangeFor(tower.type())
-                * Math.pow(settings.towers().supportRangeMultiplier(), supportStacks)
+    private double effectiveRange(
+            TowerRecord tower,
+            ArmorStand stand,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        int supportStacks = supportStacksFor(tower, stand, tacticalSnapshot);
+        double supportMultiplier = positiveMultiplier(tacticalSnapshot.supportBuffMultiplier());
+        double range = settings.towers().rangeFor(tower.type())
+                * Math.pow(
+                        settings.towers().supportRangeMultiplier() * supportMultiplier,
+                        supportStacks)
                 * battleBoosts.multiplier(tower.id(), BattleBoostKind.RANGE);
+        return positiveFiniteRange(range + tacticalSnapshot.rangeAdd(tower.type()));
     }
 
-    private int effectiveAttackInterval(TowerRecord tower, int supportStacks) {
-        long interval = Math.round(settings.towers().attackIntervalTicksFor(tower.type())
-                * Math.pow(settings.towers().supportSpeedMultiplier(), supportStacks)
-                * battleBoosts.multiplier(tower.id(), BattleBoostKind.SPEED));
+    private int effectiveAttackInterval(
+            TowerRecord tower,
+            int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            TacticalTargetContext targetContext) {
+        double supportMultiplier = positiveMultiplier(tacticalSnapshot.supportBuffMultiplier());
+        double intervalValue = settings.towers().attackIntervalTicksFor(tower.type())
+                * Math.pow(
+                        settings.towers().supportSpeedMultiplier() * supportMultiplier,
+                        supportStacks)
+                * battleBoosts.multiplier(tower.id(), BattleBoostKind.SPEED)
+                * positiveMultiplier(tacticalSnapshot.attackIntervalMultiplier(
+                        tower.type(),
+                        targetContext));
+        long interval = roundedPositiveLong(intervalValue);
         return (int) Math.max(1L, Math.min(Integer.MAX_VALUE, interval));
     }
 
-    private int effectiveDamage(TowerRecord tower, int supportStacks) {
-        long damage = Math.round(settings.towers().damageFor(tower.type())
-                * Math.pow(settings.towers().supportDamageMultiplier(), supportStacks)
-                * battleBoosts.multiplier(tower.id(), BattleBoostKind.POWER));
+    private int effectiveDamage(
+            TowerRecord tower,
+            int supportStacks,
+            TacticalEffectSnapshot tacticalSnapshot,
+            TacticalTargetContext targetContext) {
+        double supportMultiplier = positiveMultiplier(tacticalSnapshot.supportBuffMultiplier());
+        double damageValue = settings.towers().damageFor(tower.type())
+                * Math.pow(
+                        settings.towers().supportDamageMultiplier() * supportMultiplier,
+                        supportStacks)
+                * battleBoosts.multiplier(tower.id(), BattleBoostKind.POWER)
+                * positiveMultiplier(tacticalSnapshot.damageMultiplier(
+                        tower.type(),
+                        targetContext));
+        long damage = roundedPositiveLong(damageValue);
         return (int) Math.max(1L, Math.min(Integer.MAX_VALUE, damage));
+    }
+
+    private TacticalEffectSnapshot tacticalEffectsForEvent(Optional<UUID> eventId) {
+        if (eventId.isEmpty()) {
+            return EmptyTacticalEffectSnapshot.INSTANCE;
+        }
+        TacticalEffectSnapshot snapshot = tacticalEffects.currentForDefense(eventId.orElseThrow());
+        return snapshot == null ? EmptyTacticalEffectSnapshot.INSTANCE : snapshot;
+    }
+
+    private TacticalEffectSnapshot tacticalEffectsForStatus(
+            Optional<DefenseRuntimeStatus> runtimeStatus) {
+        return runtimeStatus
+                .map(status -> tacticalEffectsForEvent(Optional.of(status.eventId())))
+                .orElse(EmptyTacticalEffectSnapshot.INSTANCE);
+    }
+
+    private double effectiveAreaRadius(
+            TowerRecord tower,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        double base = tower.type() == TowerType.CANNON
+                ? settings.towers().cannonSplashRadius()
+                : settings.towers().areaRadiusFor(tower.type());
+        return positiveFiniteRange(
+                base * positiveMultiplier(tacticalSnapshot.areaRadiusMultiplier(tower.type())));
+    }
+
+    private int effectiveChainCount(
+            TowerRecord tower,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        long count = (long) settings.towers().chainCountFor(tower.type())
+                + tacticalSnapshot.chainCountAdd(tower.type());
+        return (int) Math.max(0L, Math.min(Integer.MAX_VALUE, count));
+    }
+
+    private int effectiveBurnDuration(
+            TowerRecord tower,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        double scaled = settings.towers().burnDurationTicksFor(tower.type())
+                * positiveMultiplier(tacticalSnapshot.burnDurationMultiplier(tower.type()));
+        if (!Double.isFinite(scaled) || scaled >= Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) Math.max(0L, Math.round(scaled));
+    }
+
+    private double effectiveSupportRadius(TacticalEffectSnapshot tacticalSnapshot) {
+        return positiveFiniteRange(
+                settings.towers().supportRadius() + tacticalSnapshot.rangeAdd(TowerType.SUPPORT));
+    }
+
+    private TacticalTargetContext tacticalTargetContext(
+            LivingEntity target,
+            DefenseRuntimeStatus runtimeStatus) {
+        AttributeInstance maximumHealthAttribute = target.getAttribute(Attribute.MAX_HEALTH);
+        double maximumHealth = maximumHealthAttribute == null
+                ? 1.0d
+                : maximumHealthAttribute.getValue();
+        double targetFraction = maximumHealth > 0.0d && Double.isFinite(maximumHealth)
+                ? target.getHealth() / maximumHealth
+                : 1.0d;
+        double coreFraction = runtimeStatus == null || runtimeStatus.coreMaximumHitPoints() <= 0L
+                ? 1.0d
+                : (double) runtimeStatus.coreHitPoints()
+                        / runtimeStatus.coreMaximumHitPoints();
+        Optional<TaggedEnemy> taggedEnemy = eventEnemyTagger.read(target);
+        boolean boss = taggedEnemy.map(value -> value.role() == EnemyRole.BOSS).orElse(false);
+        return new TacticalTargetContext(
+                boundedFraction(targetFraction),
+                boundedFraction(coreFraction),
+                boss,
+                target.hasPotionEffect(PotionEffectType.SLOWNESS),
+                target.getFireTicks() > 0);
+    }
+
+    private static long tacticalRepairCost(
+            long baseCost,
+            TacticalEffectSnapshot tacticalSnapshot) {
+        if (baseCost <= 0L) {
+            return 0L;
+        }
+        double scaled = baseCost
+                * positiveMultiplier(tacticalSnapshot.repairCostMultiplier());
+        if (!Double.isFinite(scaled) || scaled >= Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(1L, Math.round(scaled));
+    }
+
+    private static long roundedPositiveLong(double value) {
+        if (!Double.isFinite(value) || value >= Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(1L, Math.round(value));
+    }
+
+    private static double positiveMultiplier(double value) {
+        return Double.isFinite(value) && value > 0.0d ? value : 1.0d;
+    }
+
+    private static double positiveFiniteRange(double value) {
+        if (!Double.isFinite(value) || value <= 0.0d) {
+            return 0.0d;
+        }
+        return Math.min(value, 1.0e6d);
+    }
+
+    private static double boundedFraction(double value) {
+        if (!Double.isFinite(value)) {
+            return 1.0d;
+        }
+        return Math.max(0.0d, Math.min(1.0d, value));
     }
 
     private boolean touchesTower(Block block) {

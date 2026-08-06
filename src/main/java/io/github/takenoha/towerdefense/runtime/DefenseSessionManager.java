@@ -19,6 +19,9 @@ import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyPathIntegrationBoundary;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
+import io.github.takenoha.towerdefense.tactical.TacticalBuildRuntime;
+import io.github.takenoha.towerdefense.tactical.TacticalTerminalResult;
+import io.github.takenoha.towerdefense.tactical.TacticalUnlockResult;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
@@ -50,6 +53,7 @@ import org.bukkit.Chunk;
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.Sound;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
@@ -101,6 +105,7 @@ public final class DefenseSessionManager
     private final EnhancementCoreTagger enhancementCores;
     private final ResourceRepository resources;
     private final ActionBarBroker actionBars;
+    private final TacticalBuildRuntime tacticalRuntime;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -228,6 +233,35 @@ public final class DefenseSessionManager
             ThirdPartyRegionProtectionAdapter regionProtection,
             ResourceRepository resources,
             ActionBarBroker actionBars) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                resources,
+                actionBars,
+                TacticalBuildRuntime.disabled());
+    }
+
+    /** Full constructor used by the tactical build integration. */
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources,
+            ActionBarBroker actionBars,
+            TacticalBuildRuntime tacticalRuntime) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -239,6 +273,7 @@ public final class DefenseSessionManager
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
         this.resources = resources;
         this.actionBars = Objects.requireNonNull(actionBars, "actionBars");
+        this.tacticalRuntime = Objects.requireNonNull(tacticalRuntime, "tacticalRuntime");
         pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -331,6 +366,17 @@ public final class DefenseSessionManager
                         BossBar.Overlay.PROGRESS),
                 new CoreWarningSoundGate(settings.core().warningMinIntervalTicks()));
         active = next;
+        try {
+            tacticalRuntime.rebuild(session.eventId());
+        } catch (RuntimeException recoveryFailure) {
+            // Unknown tactical state is fail-closed: the defense remains playable without
+            // tactical boosts until the next explicit lifecycle operation can rebuild it.
+            tacticalRuntime.invalidate(session.eventId());
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not rebuild tactical effects for defense " + session.eventId(),
+                    recoveryFailure);
+        }
         addChunkTicket(next, core.blockX() >> 4, core.blockZ() >> 4);
         next.phaseDeadlineTick = deadline(settings.combat().countdownSeconds());
         refreshCandidates(next);
@@ -644,6 +690,9 @@ public final class DefenseSessionManager
             return;
         }
         defense.session.completeCountdown(participants);
+        notifyTacticalUnlock(
+                defense,
+                activateTacticalAtPreparation(defense));
         defense.phaseDeadlineTick = deadline(settings.combat().preparationSeconds());
         persistTransition(defense);
         broadcast(defense, Component.text("参加者を確定しました。第1ウェーブを準備します。", NamedTextColor.GREEN));
@@ -660,6 +709,11 @@ public final class DefenseSessionManager
 
         long enemyCount = enemyCountForNextWave(defense.session);
         defense.session.startWave(enemyCount);
+        if (defense.session.currentWave() == defense.session.totalWaves()) {
+            notifyTacticalUnlock(
+                    defense,
+                    activateFinalTacticalTier(defense));
+        }
         populateLogicalQueue(defense, enemyCount);
         persistTransition(defense);
         broadcast(
@@ -1002,8 +1056,132 @@ public final class DefenseSessionManager
             finish(defense, "全ウェーブを突破しました。勝利です。");
             return;
         }
+        notifyTacticalUnlock(
+                defense,
+                advanceTacticalAfterWave(defense));
         defense.phaseDeadlineTick = deadline(settings.combat().intermissionSeconds());
         broadcast(defense, Component.text("ウェーブを突破しました。次を準備します。", NamedTextColor.AQUA));
+    }
+
+    private TacticalUnlockResult activateTacticalAtPreparation(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.activateAtPreparation(
+                    defense.session.eventId(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_PREPARATION",
+                            "1"));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "preparation unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private TacticalUnlockResult advanceTacticalAfterWave(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.advanceAfterWave(
+                    defense.session.eventId(),
+                    defense.session.currentWave(),
+                    defense.session.totalWaves(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_WAVE",
+                            Integer.toString(defense.session.currentWave())));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "wave unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private TacticalUnlockResult activateFinalTacticalTier(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.activateFinalTier(
+                    defense.session.eventId(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_FINAL",
+                            Integer.toString(defense.session.totalWaves())));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "final unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private void notifyTacticalUnlock(ActiveDefense defense, TacticalUnlockResult result) {
+        if (result == null || result.newlyUnlockedNodeIds().isEmpty()) {
+            return;
+        }
+        String message = "戦術ビルド Tier " + result.highestUnlockedTier() + " を解放しました。";
+        broadcast(defense, Component.text(message, NamedTextColor.LIGHT_PURPLE));
+        for (UUID memberId : defense.teamMembers) {
+            Player player = Bukkit.getPlayer(memberId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+            actionBars.publishTactical(memberId, message, currentTick);
+            try {
+                player.playSound(
+                        player.getLocation(),
+                        Sound.BLOCK_NOTE_BLOCK_PLING,
+                        0.7f,
+                        1.35f);
+            } catch (RuntimeException notificationFailure) {
+                // Notifications are advisory; a Paper-side sound failure must not roll back
+                // the already committed tactical unlock.
+                plugin.getLogger().log(
+                        java.util.logging.Level.FINE,
+                        "Could not play tactical unlock sound for " + memberId,
+                        notificationFailure);
+            }
+        }
+    }
+
+    private void recordTacticalFailure(
+            ActiveDefense defense,
+            String operation,
+            RuntimeException failure) {
+        if (defense.persistenceFailure == null) {
+            defense.persistenceFailure = rootMessage(failure);
+        }
+        plugin.getLogger().log(
+                java.util.logging.Level.SEVERE,
+                "Could not complete tactical " + operation + " for defense "
+                        + defense.session.eventId(),
+                failure);
+    }
+
+    private void markTacticalTerminal(ActiveDefense defense) {
+        if (defense.tacticalTerminalMarked) {
+            return;
+        }
+        defense.tacticalTerminalMarked = true;
+        try {
+            tacticalRuntime.markTerminal(
+                    defense.session.eventId(),
+                    terminalResult(defense.session.phase()),
+                    Objects.requireNonNull(
+                            defense.finishOperationId,
+                            "finishOperationId"));
+        } catch (RuntimeException failure) {
+            // Tactical cache invalidation is performed in TacticalBuildRuntime's finally block;
+            // terminal persistence failure is logged while the existing finish retry proceeds.
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not mark tactical terminal state for defense "
+                            + defense.session.eventId(),
+                    failure);
+        }
+    }
+
+    private static TacticalTerminalResult terminalResult(DefensePhase phase) {
+        return switch (phase) {
+            case VICTORY -> TacticalTerminalResult.VICTORY;
+            case DEFEAT -> TacticalTerminalResult.DEFEAT;
+            case ABORTED -> TacticalTerminalResult.ABORTED;
+            case RECOVERY -> TacticalTerminalResult.RECOVERY;
+            default -> throw new IllegalArgumentException(
+                    "non-terminal phase cannot be a tactical terminal result: " + phase);
+        };
     }
 
     private boolean defeatForAbsenceIfExpired(ActiveDefense defense) {
@@ -1114,6 +1292,7 @@ public final class DefenseSessionManager
         defense.finishSnapshot = defense.session.snapshot();
         defense.finishRetryTick = currentTick;
         submitFinish(defense);
+        markTacticalTerminal(defense);
     }
 
     private void logPathMetrics(ActiveDefense defense) {
@@ -1506,6 +1685,13 @@ public final class DefenseSessionManager
             if (!active.session.isTerminal()) {
                 active.session.enterRecovery();
             }
+            if (active.finishOperationId == null) {
+                active.finishOperationId = deterministicOperation(
+                        active.session.eventId(),
+                        "TACTICAL_CLOSE_RECOVERY",
+                        "1");
+            }
+            markTacticalTerminal(active);
             active.ending = true;
             cleanupWorldState(active);
         }
@@ -1537,6 +1723,7 @@ public final class DefenseSessionManager
         private boolean ending;
         private boolean finishInFlight;
         private boolean finishComplete;
+        private boolean tacticalTerminalMarked;
         private int finishAttempts;
         private long finishRetryTick;
         private long finishActionBarDeadlineTick;

@@ -53,4 +53,21 @@ class ActionBarBrokerTest {
                 "防衛ポイント +2",
                 broker.current(playerId, 50L).orElseThrow().text());
     }
+
+    @Test
+    void tacticalNoticeWinsOverCountdownUntilItsOwnExpiry() {
+        ActionBarBroker broker = new ActionBarBroker();
+        UUID playerId = UUID.randomUUID();
+
+        broker.publishCountdown(playerId, "準備: 10秒", 10L);
+        broker.publishTactical(playerId, "戦術ビルド Tier 2 を解放しました。", 10L);
+        broker.publishCountdown(playerId, "準備: 9秒", 49L);
+
+        assertEquals(
+                "戦術ビルド Tier 2 を解放しました。",
+                broker.current(playerId, 49L).orElseThrow().text());
+        assertEquals(ActionBarBroker.TACTICAL_PRIORITY,
+                broker.current(playerId, 49L).orElseThrow().priority());
+        assertEquals("準備: 9秒", broker.current(playerId, 50L).orElseThrow().text());
+    }
 }
