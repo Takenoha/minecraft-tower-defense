@@ -45,6 +45,7 @@ import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
 import io.github.takenoha.towerdefense.runtime.TowerRegistry;
 import io.github.takenoha.towerdefense.tactical.TacticalBuildCatalog;
+import io.github.takenoha.towerdefense.tactical.TacticalBuildRuntime;
 import io.github.takenoha.towerdefense.tactical.TacticalCandidateGenerator;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -92,6 +93,9 @@ public final class TowerDefensePlugin extends JavaPlugin {
         ResourceVoucherRepository vouchers = new ResourceVoucherRepository(database);
         DefenseRepository repository = new DefenseRepository(database, settings.rewards());
         TacticalBuildRepository tacticalBuilds = new TacticalBuildRepository(database);
+        TacticalBuildRuntime tacticalRuntime = new TacticalBuildRuntime(
+                tacticalBuilds,
+                tacticalBuilds);
         ThirdPartyRegionProtectionAdapter regionProtection =
                 WorldGuardRegionProtectionAdapter.discover(this);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
@@ -127,7 +131,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 coreRegistry,
                 regionProtection,
                 resources,
-                escrowDrops.actionBarBroker());
+                escrowDrops.actionBarBroker(),
+                tacticalRuntime);
 
         TowerRegistry towerRegistry = new TowerRegistry();
         TowerRepository towerRepository = new TowerRepository(database);
@@ -144,7 +149,8 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 towerRegistry,
                 new TowerItemTagger(this),
                 towerEntityTagger,
-                resources);
+                resources,
+                tacticalRuntime);
         towerManager.registerRecipe();
         towerManager.recoverPreparedPlacements();
         towerManager.recoverPreparedUpgrades();
