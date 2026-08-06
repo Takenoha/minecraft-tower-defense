@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 37;
+    public static final int CURRENT_VERSION = 38;
 
     private SchemaMigrator() {
     }
@@ -171,6 +171,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 37) {
                     applyVersionThirtySeven(connection);
                     recordMigration(connection, 37);
+                }
+                if (installedVersion < 38) {
+                    applyVersionThirtyEight(connection);
+                    recordMigration(connection, 38);
                 }
                 return null;
             });
@@ -2183,6 +2187,95 @@ public final class SchemaMigrator {
                 }
             }
             segments.executeBatch();
+        }
+    }
+
+    /** Adds candidate, selection, and automatic-unlock persistence for tactical builds. */
+    private static void applyVersionThirtyEight(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE tactical_build_sessions (
+                        tactical_session_id TEXT PRIMARY KEY,
+                        start_operation_id TEXT NOT NULL UNIQUE,
+                        defense_id TEXT UNIQUE REFERENCES defense_events(event_id) ON DELETE SET NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        stage INTEGER NOT NULL CHECK (stage > 0),
+                        seed INTEGER NOT NULL,
+                        generator_version INTEGER NOT NULL CHECK (generator_version > 0),
+                        state TEXT NOT NULL CHECK (state IN (
+                            'GENERATED', 'SELECTED', 'ACTIVE', 'TERMINAL',
+                            'CANCELLED', 'RECOVERY_HOLD'
+                        )),
+                        selected_build_id TEXT,
+                        selected_build_version INTEGER,
+                        selected_snapshot TEXT,
+                        highest_unlocked_tier INTEGER NOT NULL DEFAULT 0 CHECK (
+                            highest_unlocked_tier BETWEEN 0 AND 6
+                        ),
+                        terminal_result TEXT CHECK (terminal_result IS NULL OR terminal_result IN (
+                            'VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY'
+                        )),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        terminal_at TEXT,
+                        CHECK ((selected_build_id IS NULL AND selected_build_version IS NULL
+                                AND selected_snapshot IS NULL)
+                               OR (selected_build_id IS NOT NULL
+                                   AND selected_build_version IS NOT NULL
+                                   AND selected_snapshot IS NOT NULL)),
+                        CHECK ((state = 'TERMINAL') = (terminal_result IS NOT NULL)),
+                        CHECK ((terminal_at IS NULL) = (terminal_result IS NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tactical_build_sessions_team_idx
+                    ON tactical_build_sessions(team_id, created_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tactical_build_sessions_defense_idx
+                    ON tactical_build_sessions(defense_id)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tactical_build_candidates (
+                        tactical_session_id TEXT NOT NULL
+                            REFERENCES tactical_build_sessions(tactical_session_id) ON DELETE CASCADE,
+                        candidate_slot INTEGER NOT NULL CHECK (candidate_slot BETWEEN 0 AND 2),
+                        build_id TEXT NOT NULL,
+                        build_version INTEGER NOT NULL CHECK (build_version > 0),
+                        snapshot TEXT NOT NULL,
+                        PRIMARY KEY (tactical_session_id, candidate_slot),
+                        UNIQUE (tactical_session_id, build_id)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tactical_build_operations (
+                        operation_id TEXT PRIMARY KEY,
+                        tactical_session_id TEXT NOT NULL
+                            REFERENCES tactical_build_sessions(tactical_session_id) ON DELETE CASCADE,
+                        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+                            'GENERATE', 'SELECT', 'BIND', 'UNLOCK', 'TERMINAL', 'CANCEL'
+                        )),
+                        payload_fingerprint TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tactical_build_operations_session_idx
+                    ON tactical_build_operations(tactical_session_id, operation_kind)
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tactical_build_unlocked_nodes (
+                        tactical_session_id TEXT NOT NULL
+                            REFERENCES tactical_build_sessions(tactical_session_id) ON DELETE CASCADE,
+                        tier INTEGER NOT NULL CHECK (tier BETWEEN 1 AND 6),
+                        node_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL
+                            REFERENCES tactical_build_operations(operation_id) ON DELETE RESTRICT,
+                        unlocked_at TEXT NOT NULL,
+                        PRIMARY KEY (tactical_session_id, tier),
+                        UNIQUE (tactical_session_id, node_id)
+                    )
+                    """);
         }
     }
 }

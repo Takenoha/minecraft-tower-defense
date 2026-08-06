@@ -301,6 +301,29 @@ following evidence exists:
    no tactical repository query occurs per attack or per tick, node IDs are not scanned in the
    combat loop, and particle/effect output remains bounded by the existing attack budget.
 
+## 10. Tactical build candidate selection
+
+Run this section with a disposable database and a physical raid seal. The selection flow is
+non-consumptive until the existing defense-start transaction has succeeded.
+
+1. Register a core and ensure the player is the team owner. Open the core start GUI or right-click
+   a matching raid seal on the core. Confirm a three-candidate tactical-build GUI appears with
+   distinct build IDs and the displayed category/description for each candidate.
+2. Close the tactical-build GUI without confirming. Confirm the defense does not start, the seal
+   remains in the player's inventory, and reopening the same pending selection does not silently
+   choose a build. Verify the persisted candidate rows remain readable after a plugin restart.
+3. Select each candidate in turn and confirm the selection marker moves to exactly one slot.
+   Attempt confirmation as a non-owner account and confirm it is rejected without consuming the
+   seal. As the team owner, confirm one candidate and verify the existing start countdown begins.
+4. During a successful start, confirm the selected snapshot is bound to the defense event before
+   the physical seal is consumed. On a disposable copy, force a start/bind failure and confirm
+   the event and tactical session are recovered without leaving an active build or consuming an
+   uncommitted seal.
+5. Stop and restart the test server between candidate generation and selection. Confirm the
+   candidate IDs and persisted definition snapshots are unchanged, and that a selected build is
+   not replaced by a newly generated random set. Record the tactical session ID, start operation
+   ID, bind operation ID, and final state in the evidence record.
+
 ## Evidence record
 
 ```text
@@ -324,6 +347,7 @@ Research-crystal inventory scan / PDC validation / receipt recovery evidence:
 Tactical candidate selection / automatic tier unlock evidence:
 Tactical modifier / core HP / repair / tower damage evidence:
 Tactical restart cache rebuild / terminal invalidation evidence:
+Tactical candidate selection / cancellation / restart evidence:
 Action Bar pickup priority and 40-tick evidence:
 Later-player-edit conflict evidence:
 Event IDs and operation UUIDs:

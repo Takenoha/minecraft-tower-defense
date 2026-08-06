@@ -55,6 +55,10 @@ final class DatabaseTest {
         assertTrue(tableExists(reopened, "tower_upgrade_operations"));
         assertTrue(tableExists(reopened, "tower_upgrade_receipts"));
         assertTrue(tableExists(reopened, "core_repair_receipts"));
+        assertTrue(tableExists(reopened, "tactical_build_sessions"));
+        assertTrue(tableExists(reopened, "tactical_build_candidates"));
+        assertTrue(tableExists(reopened, "tactical_build_operations"));
+        assertTrue(tableExists(reopened, "tactical_build_unlocked_nodes"));
         assertTrue(checkConstraintContains(
                 reopened, "core_repair_receipts", "CLEAR_PENDING"));
         assertTrue(checkConstraintContains(

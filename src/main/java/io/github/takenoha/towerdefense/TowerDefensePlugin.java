@@ -26,6 +26,7 @@ import io.github.takenoha.towerdefense.paper.TowerDefenseCommand;
 import io.github.takenoha.towerdefense.paper.TowerEntityTagger;
 import io.github.takenoha.towerdefense.paper.TowerItemTagger;
 import io.github.takenoha.towerdefense.paper.TowerManager;
+import io.github.takenoha.towerdefense.paper.TacticalBuildSelectionListener;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.paper.WorldGuardRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.BlockChangeRepository;
@@ -37,11 +38,14 @@ import io.github.takenoha.towerdefense.persistence.ResourceRepository;
 import io.github.takenoha.towerdefense.persistence.ResourceVoucherRepository;
 import io.github.takenoha.towerdefense.persistence.StoredDefenseEvent;
 import io.github.takenoha.towerdefense.persistence.TowerRepository;
+import io.github.takenoha.towerdefense.persistence.TacticalBuildRepository;
 import io.github.takenoha.towerdefense.runtime.AsyncDefensePersistenceSink;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
 import io.github.takenoha.towerdefense.runtime.TowerRegistry;
+import io.github.takenoha.towerdefense.tactical.TacticalBuildCatalog;
+import io.github.takenoha.towerdefense.tactical.TacticalCandidateGenerator;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -87,6 +91,7 @@ public final class TowerDefensePlugin extends JavaPlugin {
         ResourceRepository resources = new ResourceRepository(database);
         ResourceVoucherRepository vouchers = new ResourceVoucherRepository(database);
         DefenseRepository repository = new DefenseRepository(database, settings.rewards());
+        TacticalBuildRepository tacticalBuilds = new TacticalBuildRepository(database);
         ThirdPartyRegionProtectionAdapter regionProtection =
                 WorldGuardRegionProtectionAdapter.discover(this);
         blockMutations = new PaperBlockMutationAdapter(new BlockChangeRepository(database));
@@ -170,7 +175,16 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 sessions,
                 coreRegistry,
                 regionProtection,
-                raidSealTagger);
+                raidSealTagger,
+                tacticalBuilds);
+        TacticalBuildSelectionListener tacticalSelections = new TacticalBuildSelectionListener(
+                this,
+                repository,
+                tacticalBuilds,
+                databaseExecutor,
+                TacticalBuildCatalog.defaults(),
+                new TacticalCandidateGenerator(),
+                commandHandler);
         CoreManagementListener coreManagementListener = new CoreManagementListener(
                         this,
                         settings,
@@ -202,9 +216,11 @@ public final class TowerDefensePlugin extends JavaPlugin {
                 databaseExecutor,
                 coreRegistry,
                 commandHandler,
-                raidSealTagger);
+                raidSealTagger,
+                tacticalSelections);
         raidSeals.registerRecipe();
         getServer().getPluginManager().registerEvents(raidSeals, this);
+        getServer().getPluginManager().registerEvents(tacticalSelections, this);
 
         getServer().getPluginManager().registerEvents(
                 new CoreProtectionListener(coreRegistry), this);

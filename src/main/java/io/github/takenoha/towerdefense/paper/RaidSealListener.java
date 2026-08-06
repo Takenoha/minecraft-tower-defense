@@ -47,6 +47,7 @@ public final class RaidSealListener implements Listener {
     private final CoreRegistry cores;
     private final TowerDefenseCommand command;
     private final RaidSealTagger tagger;
+    private final Optional<TacticalBuildSelectionListener> tacticalSelections;
 
     public RaidSealListener(
             JavaPlugin plugin,
@@ -55,12 +56,49 @@ public final class RaidSealListener implements Listener {
             CoreRegistry cores,
             TowerDefenseCommand command,
             RaidSealTagger tagger) {
+        this(
+                plugin,
+                repository,
+                databaseExecutor,
+                cores,
+                command,
+                tagger,
+                Optional.empty());
+    }
+
+    public RaidSealListener(
+            JavaPlugin plugin,
+            RaidSealRepository repository,
+            DatabaseExecutor databaseExecutor,
+            CoreRegistry cores,
+            TowerDefenseCommand command,
+            RaidSealTagger tagger,
+            TacticalBuildSelectionListener tacticalSelections) {
+        this(
+                plugin,
+                repository,
+                databaseExecutor,
+                cores,
+                command,
+                tagger,
+                Optional.of(tacticalSelections));
+    }
+
+    private RaidSealListener(
+            JavaPlugin plugin,
+            RaidSealRepository repository,
+            DatabaseExecutor databaseExecutor,
+            CoreRegistry cores,
+            TowerDefenseCommand command,
+            RaidSealTagger tagger,
+            Optional<TacticalBuildSelectionListener> tacticalSelections) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.cores = Objects.requireNonNull(cores, "cores");
         this.command = Objects.requireNonNull(command, "command");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
+        this.tacticalSelections = Objects.requireNonNull(tacticalSelections, "tacticalSelections");
     }
 
     /** Registers one vanilla-material recipe for each of the first ten stages. */
@@ -168,7 +206,7 @@ public final class RaidSealListener implements Listener {
             return;
         }
         RaidSealItemIdentity value = identity.orElseThrow();
-        command.startWithSeal(
+        startWithSelectedTacticalBuild(
                 event.getPlayer(),
                 core.orElseThrow().id(),
                 value.stageLevel(),
@@ -201,11 +239,23 @@ public final class RaidSealListener implements Listener {
         }
         player.closeInventory();
         RaidSealItemIdentity value = seal.orElseThrow();
-        command.startWithSeal(
+        startWithSelectedTacticalBuild(
                 player,
                 holder.coreId(),
                 value.stageLevel(),
                 value.sealId());
+    }
+
+    private void startWithSelectedTacticalBuild(
+            Player player,
+            UUID coreId,
+            long stage,
+            UUID sealId) {
+        if (tacticalSelections.isPresent()) {
+            tacticalSelections.orElseThrow().beginSelection(player, coreId, stage, sealId);
+        } else {
+            command.startWithSeal(player, coreId, stage, sealId);
+        }
     }
 
     private Optional<RaidSealItemIdentity> findSeal(Player player, long stageLevel) {

@@ -1,0 +1,72 @@
+package io.github.takenoha.towerdefense.tactical;
+
+import io.github.takenoha.towerdefense.domain.TowerType;
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+
+/** Immutable, versioned tactical build definition. */
+public record TacticalBuildDefinition(
+        String id,
+        int version,
+        String displayName,
+        String description,
+        TacticalBuildCategory category,
+        TacticalBuildRarity rarity,
+        boolean enabled,
+        int weight,
+        String iconMaterial,
+        Set<TowerType> targetTowerTypes,
+        Optional<String> requiredUnlockId,
+        List<TacticalSkillNodeDefinition> nodes) {
+    public TacticalBuildDefinition {
+        id = requireText(id, "id");
+        displayName = requireText(displayName, "displayName");
+        description = requireText(description, "description");
+        iconMaterial = requireText(iconMaterial, "iconMaterial");
+        category = Objects.requireNonNull(category, "category");
+        rarity = Objects.requireNonNull(rarity, "rarity");
+        requiredUnlockId = Objects.requireNonNull(requiredUnlockId, "requiredUnlockId")
+                .map(value -> requireText(value, "requiredUnlockId"));
+        if (version <= 0 || weight < 0) {
+            throw new IllegalArgumentException("version must be positive and weight non-negative");
+        }
+        Objects.requireNonNull(targetTowerTypes, "targetTowerTypes");
+        EnumSet<TowerType> targetCopy = targetTowerTypes.isEmpty()
+                ? EnumSet.noneOf(TowerType.class)
+                : EnumSet.copyOf(targetTowerTypes);
+        targetTowerTypes = Collections.unmodifiableSet(targetCopy);
+        Objects.requireNonNull(nodes, "nodes");
+        nodes = List.copyOf(nodes);
+    }
+
+    public List<TacticalSkillNodeSnapshot> nodeSnapshots() {
+        return nodes.stream().map(TacticalSkillNodeDefinition::snapshot).toList();
+    }
+
+    public TacticalBuildSelectionView selectionView(
+            java.util.UUID tacticalSessionId,
+            java.util.UUID teamId,
+            int stage,
+            int highestUnlockedTier) {
+        return new TacticalBuildSelectionView(
+                tacticalSessionId,
+                teamId,
+                stage,
+                id,
+                version,
+                highestUnlockedTier,
+                nodeSnapshots());
+    }
+
+    private static String requireText(String value, String name) {
+        Objects.requireNonNull(value, name);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
+    }
+}
