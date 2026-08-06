@@ -30,12 +30,22 @@ class EnemyRoleScheduleTest {
     void raisesSpecialRoleAllocationOnlyWithinTheFixedWaveCount() {
         EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.10d, 0.10d);
 
-        List<EnemyRole> roles = schedule.forWave(10L, 10, 10, false);
+        List<EnemyRole> roles = schedule.forWave(10L, 9, 10, false);
 
         assertEquals(10, roles.size());
         assertEquals(3L, roles.stream().filter(role -> role == EnemyRole.DESTROYER).count());
         assertEquals(3L, roles.stream().filter(role -> role == EnemyRole.BUILDER).count());
         assertEquals(4L, roles.stream().filter(role -> role == EnemyRole.NORMAL).count());
+    }
+
+    @Test
+    void reservesAnIntermediateBossSlotOnEveryTenthNonFinalWave() {
+        EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.10d, 0.10d);
+
+        List<EnemyRole> roles = schedule.forWave(4L, 10, 12, false);
+
+        assertEquals(1L, roles.stream().filter(role -> role == EnemyRole.BOSS).count());
+        assertEquals(12, roles.size());
     }
 
     @Test

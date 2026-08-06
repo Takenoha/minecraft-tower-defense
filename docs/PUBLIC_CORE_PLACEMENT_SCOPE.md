@@ -1,13 +1,15 @@
 # Public core physical-placement boundary
 
 This milestone connects the durable team/core foundation to one safe public Paper interaction:
-craft a unique core item and use it to replace one validated ordinary block with a tagged beacon.
+craft a unique core item and use it to replace one validated ordinary block with a registered
+`DRIED_KELP_BLOCK` core.
 The terrain-mutation activation flags remain unchanged and disabled; this is a protected core
 placement path, not enemy terrain mutation.
 
 ## Included
 
-- A shaped recipe using eight diamonds and one nether star.
+- A shaped recipe using one `DIAMOND_BLOCK` and four `IRON_INGOT` items; the recipe does not
+  require a nether star.
 - A unique item UUID and versioned plugin-owned PDC on every crafted core item.
 - A fail-closed right-click interaction that only accepts a solid, non-tile Overworld block.
 - Existing combat-area safety checks, forbidden-world/rectangle checks, WorldBorder checks, and
@@ -16,24 +18,26 @@ placement path, not enemy terrain mutation.
   existing team can be placed only by its owner.
 - Rejection while any defense event is active, both before and after the asynchronous persistence
   boundary.
-- A durable `PREPARED` → physical block replacement/tag → `APPLIED` ledger in schema v11.
-- Startup recovery that restores a tagged prepared block before marking the operation rolled back.
+- A durable `PREPARED` → physical block replacement → `APPLIED` ledger in schema v11.
+- Startup recovery that restores a prepared block at the exact database-owned coordinate before
+  marking the operation rolled back.
 - Idempotent database apply/rollback and inventory/entity reconciliation so the consumed item cannot
   be duplicated after a successful apply.
 - Rebuilding a persisted zero-health core at a new validated position while retaining its core UUID.
 
 ## Deliberate boundary
 
-This slice does not yet provide bound-core itemization, GUI-confirmed relocation, repair-cost
-economy, team invitations/member GUI, towers, research, start-item reservation, or enemy terrain
-mutation. Bound items are rejected with an explicit message until the relocation/itemization flow
-has its own physical handoff and recovery ledger. The administrator `/td admin core` command remains
-available for the existing test flow.
+The follow-on core-management slice in `docs/CORE_MANAGEMENT_SCOPE.md` adds the bound-core
+relocation, repair-cost, and first team GUI flows. This document remains the boundary for the
+original craft-and-place slice; towers, research, start-item reservation, and enemy terrain
+mutation remain separate work.
 
-The recipe values and item presentation are an initial implementation choice, not the final game
-economy balance. Core placement still requires the existing minimum core distance and combat-area
-clearance rules. The three terrain-mutation flags remain `false` by default and are not changed by
-this milestone.
+New core items use the plugin-owned `RESIN_BRICKS` stack, while a valid older PDC-tagged
+`NETHER_STAR` remains compatible and retains its UUID binding. A PDC-less material is never treated
+as a core item. Placed cores use `DRIED_KELP_BLOCK`; registered legacy `BEACON` coordinates are
+migrated idempotently at startup, while unregistered beacons are never scanned or changed. Core
+placement still requires the existing minimum core distance and combat-area clearance rules. The
+three terrain-mutation flags remain `false` by default and are not changed by this milestone.
 
 ## Verification
 

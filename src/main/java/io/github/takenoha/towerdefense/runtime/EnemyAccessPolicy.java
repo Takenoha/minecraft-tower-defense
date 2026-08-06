@@ -7,6 +7,11 @@ import org.bukkit.Location;
 public interface EnemyAccessPolicy {
     boolean mayAffect(TaggedEnemy taggedEnemy, UUID playerId);
 
+    /** Returns whether a tower owned by the team may damage this event enemy. */
+    default boolean mayAffectFromTower(TaggedEnemy taggedEnemy, UUID teamId) {
+        return false;
+    }
+
     boolean mayRemain(TaggedEnemy taggedEnemy, UUID entityId);
 
     boolean mayModifyCombatArea(UUID playerId, Location location);

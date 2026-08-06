@@ -9,6 +9,11 @@ A Paper server plugin that adds cooperative tower-defense encounters to a normal
 - Java 25
 - Vanilla clients; no required resource pack
 
+## Player guide
+
+See [遊び方 / How to Play](docs/HOW_TO_PLAY.md) for crafting, core setup, teams, stages, towers,
+research crystals, and troubleshooting.
+
 The version is intentionally fixed for the first release. See the official [Paper project setup](https://docs.papermc.io/paper/dev/project-setup/) and [Java requirements](https://docs.papermc.io/paper/getting-started/).
 
 ## Current milestone
@@ -70,11 +75,16 @@ Enemies that reach the core remain in the encounter and attack it every configur
 `core.attack-interval-ticks` ticks (20 ticks by default) until defeated or the event ends.
 
 The public core placement boundary is now available as a separate Paper interaction: craft the
-initial diamond/nether-star core item, then right-click a validated ordinary Overworld block to
-replace it with a tagged beacon. Placement is owner-only, blocked during an active defense, and
-protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, towers,
-research, start items, and team GUI remain later backlog; see
+initial diamond/resin-bricks core item, then right-click a validated ordinary Overworld block to
+replace it with a registered dried-kelp core. Placement is owner-only, blocked during an active defense, and
+protected by a durable physical-stop-window ledger. Bound-core relocation, repair economy, and the
+first nearby-player team-management GUI are available as follow-on slices. Stage-specific start
+items, towers, and research remain later backlog; see
 [`docs/PUBLIC_CORE_PLACEMENT_SCOPE.md`](docs/PUBLIC_CORE_PLACEMENT_SCOPE.md).
+
+The team GUI is intentionally bounded to one nearby online invitation target plus confirmed member
+removal, ownership transfer, and leave operations. See
+[`docs/TEAM_MANAGEMENT_GUI_SCOPE.md`](docs/TEAM_MANAGEMENT_GUI_SCOPE.md).
 
 ## Build
 

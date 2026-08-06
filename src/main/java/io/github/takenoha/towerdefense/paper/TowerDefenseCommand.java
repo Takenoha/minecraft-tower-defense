@@ -4,33 +4,41 @@ import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
+import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
+import io.github.takenoha.towerdefense.persistence.OperationOutcome;
 import io.github.takenoha.towerdefense.persistence.StartOutcome;
 import io.github.takenoha.towerdefense.persistence.StartRequest;
+import io.github.takenoha.towerdefense.persistence.TeamInvitation;
+import io.github.takenoha.towerdefense.persistence.TeamInvitationMutationResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
+import io.github.takenoha.towerdefense.persistence.TacticalBuildRepository;
 import io.github.takenoha.towerdefense.runtime.CoreRegistry;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.runtime.DefenseRuntimeStatus;
 import io.github.takenoha.towerdefense.runtime.DefenseSessionManager;
 import io.github.takenoha.towerdefense.runtime.TerrainMutationActivationGate;
+import io.github.takenoha.towerdefense.tactical.TacticalTerminalResult;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -38,6 +46,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class TowerDefenseCommand implements CommandExecutor, TabCompleter {
     private static final String ADMIN_PERMISSION = "towerdefense.admin";
     private static final long FOUNDATION_STAGE = 1L;
+    private static final Duration INVITATION_RETENTION =
+            DefenseRepository.DEFAULT_INVITATION_RETENTION;
+    private static final int MAX_TEAM_CHAT_LENGTH = 256;
 
     private final JavaPlugin plugin;
     private final PluginSettings settings;
@@ -47,10 +58,14 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
     private final DefenseSessionManager sessions;
     private final CoreRegistry cores;
     private final ThirdPartyRegionProtectionAdapter regionProtection;
+    private final RaidSealTagger sealTagger;
+    private final Optional<TacticalBuildRepository> tacticalBuilds;
     private boolean startInFlight;
     private boolean startCancellationRequested;
     private boolean startRecoveryInFlight;
     private DefenseSession pendingRecoverySession;
+    private Optional<UUID> pendingRecoverySealId = Optional.empty();
+    private Optional<UUID> pendingRecoveryTacticalSessionId = Optional.empty();
 
     public TowerDefenseCommand(
             JavaPlugin plugin,
@@ -66,7 +81,9 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 databaseExecutor,
                 sessions,
                 cores,
-                ThirdPartyRegionProtectionAdapter.none());
+                ThirdPartyRegionProtectionAdapter.none(),
+                new RaidSealTagger(plugin),
+                Optional.empty());
     }
 
     public TowerDefenseCommand(
@@ -77,6 +94,71 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             DefenseSessionManager sessions,
             CoreRegistry cores,
             ThirdPartyRegionProtectionAdapter regionProtection) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                regionProtection,
+                new RaidSealTagger(plugin),
+                Optional.empty());
+    }
+
+    public TowerDefenseCommand(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            RaidSealTagger sealTagger) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                regionProtection,
+                sealTagger,
+                Optional.empty());
+    }
+
+    public TowerDefenseCommand(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            RaidSealTagger sealTagger,
+            TacticalBuildRepository tacticalBuilds) {
+        this(
+                plugin,
+                settings,
+                repository,
+                databaseExecutor,
+                sessions,
+                cores,
+                regionProtection,
+                sealTagger,
+                Optional.of(tacticalBuilds));
+    }
+
+    private TowerDefenseCommand(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            DefenseRepository repository,
+            DatabaseExecutor databaseExecutor,
+            DefenseSessionManager sessions,
+            CoreRegistry cores,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            RaidSealTagger sealTagger,
+            Optional<TacticalBuildRepository> tacticalBuilds) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -84,6 +166,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.cores = Objects.requireNonNull(cores, "cores");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
+        this.sealTagger = Objects.requireNonNull(sealTagger, "sealTagger");
+        this.tacticalBuilds = Objects.requireNonNull(tacticalBuilds, "tacticalBuilds");
         combatArea = new CombatArea(
                 settings.combat().radius(),
                 settings.combat().spawnInner(),
@@ -98,6 +182,9 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Command command,
             String label,
             String[] arguments) {
+        if (arguments.length > 0 && arguments[0].equalsIgnoreCase("team")) {
+            return teamCommand(sender, arguments);
+        }
         if (!sender.hasPermission(ADMIN_PERMISSION)) {
             sender.sendMessage(Component.text("このコマンドを実行する権限がありません。", NamedTextColor.RED));
             return true;
@@ -116,6 +203,238 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 yield true;
             }
         };
+    }
+
+    private boolean teamCommand(CommandSender sender, String[] arguments) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text(
+                    "チームコマンドはプレイヤーから実行してください。", NamedTextColor.RED));
+            return true;
+        }
+        if (arguments.length < 2) {
+            sendTeamUsage(player);
+            return true;
+        }
+        return switch (arguments[1].toLowerCase(java.util.Locale.ROOT)) {
+            case "invite" -> inviteTeamMember(player, arguments);
+            case "invites" -> listTeamInvitations(player);
+            case "accept" -> resolveTeamInvitation(player, arguments, true);
+            case "decline" -> resolveTeamInvitation(player, arguments, false);
+            case "rename" -> renameTeam(player, arguments);
+            case "chat" -> teamChat(player, arguments);
+            default -> {
+                sendTeamUsage(player);
+                yield true;
+            }
+        };
+    }
+
+    private boolean inviteTeamMember(Player player, String[] arguments) {
+        if (arguments.length != 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        if (sessions.hasActiveSession()) {
+            player.sendMessage(Component.text(
+                    "防衛戦中はチームを変更できません。", NamedTextColor.RED));
+            return true;
+        }
+        OfflinePlayer target = Bukkit.getOfflinePlayer(arguments[2]);
+        if (!target.hasPlayedBefore() && !target.isOnline()) {
+            player.sendMessage(Component.text(
+                    "そのプレイヤーはこのサーバーに参加した記録がありません。",
+                    NamedTextColor.YELLOW));
+            return true;
+        }
+        UUID actorId = player.getUniqueId();
+        UUID inviteeId = target.getUniqueId();
+        if (actorId.equals(inviteeId)) {
+            player.sendMessage(Component.text(
+                    "自分自身には招待を送れません。", NamedTextColor.YELLOW));
+            return true;
+        }
+        Instant now = Instant.now();
+        databaseExecutor.submit(() -> {
+            TeamRecord team = repository.findTeamByMember(actorId).orElseThrow(
+                    () -> new IllegalStateException("先にコアを設置してチームを作成してください"));
+            UUID invitationId = UUID.randomUUID();
+            return repository.createTeamInvitation(
+                    team.id(),
+                    actorId,
+                    inviteeId,
+                    invitationId,
+                    UUID.randomUUID(),
+                    now,
+                    now.plus(INVITATION_RETENTION));
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "招待を作成できません: " + rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            TeamInvitation invitation = result.invitation();
+            player.sendMessage(Component.text(
+                    targetName(inviteeId) + "へチーム招待を送りました。招待コード: "
+                            + shortInvitationId(invitation.id()),
+                    NamedTextColor.GREEN));
+            Player onlineTarget = Bukkit.getPlayer(inviteeId);
+            if (onlineTarget != null) {
+                onlineTarget.sendMessage(Component.text(
+                        player.getName() + "からチーム「" + result.team().orElseThrow().displayName()
+                                + "」への招待が届きました。/td team invites で確認してください。",
+                        NamedTextColor.GREEN));
+            }
+        }));
+        return true;
+    }
+
+    private boolean listTeamInvitations(Player player) {
+        UUID playerId = player.getUniqueId();
+        databaseExecutor.submit(() -> repository.findPendingTeamInvitations(playerId, Instant.now()).stream()
+                .map(invitation -> new PendingInvitationView(
+                        invitation,
+                        repository.findTeam(invitation.teamId()).orElse(null)))
+                .toList())
+                .whenComplete((invitations, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        player.sendMessage(Component.text(
+                                "招待を読み込めません: " + rootMessage(failure),
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    if (invitations.isEmpty()) {
+                        player.sendMessage(Component.text(
+                                "保留中のチーム招待はありません。", NamedTextColor.GRAY));
+                        return;
+                    }
+                    player.sendMessage(Component.text("保留中のチーム招待:", NamedTextColor.AQUA));
+                    for (PendingInvitationView view : invitations) {
+                        TeamInvitation invitation = view.invitation();
+                        String teamName = view.team() == null
+                                ? invitation.teamId().toString()
+                                : view.team().displayName();
+                        player.sendMessage(Component.text(
+                                "- " + shortInvitationId(invitation.id()) + " : 「" + teamName
+                                        + "」 from " + targetName(invitation.inviterId())
+                                        + " /td team accept " + shortInvitationId(invitation.id())
+                                        + "",
+                                NamedTextColor.YELLOW));
+                    }
+                }));
+        return true;
+    }
+
+    private boolean resolveTeamInvitation(
+            Player player, String[] arguments, boolean accept) {
+        if (arguments.length != 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        UUID playerId = player.getUniqueId();
+        String token = arguments[2].toLowerCase(java.util.Locale.ROOT);
+        databaseExecutor.submit(() -> {
+            List<TeamInvitation> invitations = repository.findPendingTeamInvitations(
+                    playerId, Instant.now());
+            List<TeamInvitation> matches = invitations.stream()
+                    .filter(invitation -> invitation.id().toString().startsWith(token))
+                    .toList();
+            if (matches.size() != 1) {
+                throw new IllegalStateException(matches.isEmpty()
+                        ? "招待コードが見つかりません。/td team invites で確認してください"
+                        : "招待コードが複数一致します。より長いコードを指定してください");
+            }
+            TeamInvitation invitation = matches.get(0);
+            return accept
+                    ? repository.acceptTeamInvitation(
+                            invitation.id(), playerId, UUID.randomUUID(), Instant.now())
+                    : repository.declineTeamInvitation(
+                            invitation.id(), playerId, UUID.randomUUID(), Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        (accept ? "招待を承諾できません: " : "招待を辞退できません: ")
+                                + rootMessage(failure),
+                        NamedTextColor.RED));
+                return;
+            }
+            String teamName = result.team()
+                    .map(TeamRecord::displayName)
+                    .orElse("チーム");
+            player.sendMessage(Component.text(
+                    accept ? "チーム「" + teamName + "」へ参加しました。"
+                            : "チーム「" + teamName + "」への招待を辞退しました。",
+                    NamedTextColor.GREEN));
+            if (accept) {
+                for (UUID memberId : result.team().orElseThrow().members()) {
+                    Player member = Bukkit.getPlayer(memberId);
+                    if (member != null && !member.getUniqueId().equals(playerId)) {
+                        member.sendMessage(Component.text(
+                                player.getName() + "がチームへ参加しました。", NamedTextColor.AQUA));
+                    }
+                }
+            }
+        }));
+        return true;
+    }
+
+    private boolean renameTeam(Player player, String[] arguments) {
+        if (arguments.length < 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        String displayName = String.join(" ", java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+        UUID actorId = player.getUniqueId();
+        databaseExecutor.submit(() -> {
+            TeamRecord team = repository.findTeamByMember(actorId).orElseThrow(
+                    () -> new IllegalStateException("所属チームがありません"));
+            return repository.renameTeam(
+                    team.id(), actorId, displayName, UUID.randomUUID(), Instant.now());
+        }).whenComplete((result, failure) -> runOnMainThread(() -> {
+            if (failure != null) {
+                player.sendMessage(Component.text(
+                        "チーム名を変更できません: " + rootMessage(failure), NamedTextColor.RED));
+                return;
+            }
+            player.sendMessage(Component.text(
+                    "チーム名を「" + result.team().orElseThrow().displayName() + "」に変更しました。",
+                    NamedTextColor.GREEN));
+        }));
+        return true;
+    }
+
+    private boolean teamChat(Player player, String[] arguments) {
+        if (arguments.length < 3) {
+            sendTeamUsage(player);
+            return true;
+        }
+        String message = String.join(" ", java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+        if (message.isBlank() || message.codePoints().count() > MAX_TEAM_CHAT_LENGTH
+                || message.codePoints().anyMatch(Character::isISOControl)) {
+            player.sendMessage(Component.text(
+                    "チームチャットは空でない256文字以内の1行で指定してください。", NamedTextColor.YELLOW));
+            return true;
+        }
+        UUID actorId = player.getUniqueId();
+        databaseExecutor.submit(() -> repository.findTeamByMember(actorId).orElseThrow(
+                () -> new IllegalStateException("所属チームがありません")))
+                .whenComplete((team, failure) -> runOnMainThread(() -> {
+                    if (failure != null) {
+                        player.sendMessage(Component.text(
+                                "チームチャットを送信できません: " + rootMessage(failure),
+                                NamedTextColor.RED));
+                        return;
+                    }
+                    Component formatted = Component.text(
+                            "[" + team.displayName() + "] " + player.getName() + ": " + message,
+                            NamedTextColor.AQUA);
+                    for (UUID memberId : team.members()) {
+                        Player member = Bukkit.getPlayer(memberId);
+                        if (member != null) {
+                            member.sendMessage(formatted);
+                        }
+                    }
+                }));
+        return true;
     }
 
     private boolean registerCore(CommandSender sender) {
@@ -208,9 +527,11 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return true;
         }
         long stage = parseStage(arguments);
-        if (stage != FOUNDATION_STAGE) {
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+        } catch (IllegalArgumentException invalidStage) {
             sender.sendMessage(Component.text(
-                    "このwalking skeletonでプレイ可能なのはステージ1だけです。",
+                    "指定したステージは利用できません: " + invalidStage.getMessage(),
                     NamedTextColor.RED));
             return true;
         }
@@ -236,20 +557,117 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 player.sendMessage(Component.text("防衛戦の開始を取り消しました。", NamedTextColor.YELLOW));
                 return;
             }
-            beginStartTransaction(player, startData);
+            beginStartTransaction(player, startData, stage, Optional.empty(), Optional.empty());
         }));
         return true;
     }
 
-    private void beginStartTransaction(Player player, StartData startData) {
+    /** Starts a player-facing event using one database-backed physical raid seal. */
+    void startWithSeal(Player player, UUID coreId, long stage, UUID sealId) {
+        startWithSeal(player, coreId, stage, sealId, Optional.empty());
+    }
+
+    /** Starts a player-facing event after binding a selected tactical build. */
+    void startWithSeal(
+            Player player,
+            UUID coreId,
+            long stage,
+            UUID sealId,
+            UUID tacticalSessionId) {
+        Objects.requireNonNull(tacticalSessionId, "tacticalSessionId");
+        startWithSeal(player, coreId, stage, sealId, Optional.of(tacticalSessionId));
+    }
+
+    private void startWithSeal(
+            Player player,
+            UUID coreId,
+            long stage,
+            UUID sealId,
+            Optional<UUID> tacticalSessionId) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(sealId, "sealId");
+        if (sessions.hasActiveSession() || startInFlight) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
+            player.sendMessage(Component.text("すでに防衛戦が進行中です。", NamedTextColor.RED));
+            return;
+        }
+        try {
+            StageWaveSchedule.requireValidStageLevel(stage);
+        } catch (IllegalArgumentException invalidStage) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
+            player.sendMessage(Component.text(
+                    "指定したステージは利用できません: " + invalidStage.getMessage(),
+                    NamedTextColor.RED));
+            return;
+        }
+        if (!containsSealInInventory(player, sealId)) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
+            player.sendMessage(Component.text(
+                    "開始に使う襲撃の印がインベントリにありません。", NamedTextColor.RED));
+            return;
+        }
+        startInFlight = true;
+        startCancellationRequested = false;
+        player.sendMessage(Component.text("永続データと開始ロックを確認しています…", NamedTextColor.GRAY));
+        databaseExecutor.submit(() -> {
+            TeamRecord team = repository.findTeamByMember(player.getUniqueId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "先にコアを設置したチームへ参加してください"));
+            CoreRecord core = repository.findCore(coreId)
+                    .orElseThrow(() -> new IllegalStateException("コアが見つかりません"));
+            if (!core.teamId().equals(team.id())) {
+                throw new IllegalStateException("このチームのコアではありません");
+            }
+            if (repository.loadTeamProgress(team.id()).unlockedLevel() < stage) {
+                throw new IllegalStateException("このステージはまだ解放されていません");
+            }
+            return new StartData(team, core);
+        }).whenComplete((startData, lookupFailure) -> runOnMainThread(() -> {
+            if (lookupFailure != null) {
+                cancelUnboundTacticalSession(player, tacticalSessionId);
+                completeStartOperation();
+                player.sendMessage(Component.text(rootMessage(lookupFailure), NamedTextColor.RED));
+                return;
+            }
+            if (startCancellationRequested) {
+                cancelUnboundTacticalSession(player, tacticalSessionId);
+                completeStartOperation();
+                player.sendMessage(Component.text("防衛戦の開始を取り消しました。", NamedTextColor.YELLOW));
+                return;
+            }
+            beginStartTransaction(
+                    player,
+                    startData,
+                    stage,
+                    Optional.of(sealId),
+                    tacticalSessionId);
+        }));
+    }
+
+    private void beginStartTransaction(
+            Player player,
+            StartData startData,
+            long stage,
+            Optional<UUID> sealId,
+            Optional<UUID> tacticalSessionId) {
         if (sessions.hasActiveSession()) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text("すでに防衛戦が進行中です。", NamedTextColor.RED));
+            return;
+        }
+        if (sealId.isPresent() && !containsSealInInventory(player, sealId.orElseThrow())) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
+            completeStartOperation();
+            player.sendMessage(Component.text(
+                    "開始に使う襲撃の印がインベントリにありません。", NamedTextColor.RED));
             return;
         }
         CoreRecord core = startData.core();
         World world = Bukkit.getWorld(core.worldId());
         if (world == null) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text("コアのワールドが読み込まれていません。", NamedTextColor.RED));
             return;
@@ -262,6 +680,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 settings.protection(),
                 regionProtection);
         if (!safetyViolations.isEmpty()) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text(
                     "防衛戦を開始できません。戦闘領域が保護境界に接触します: "
@@ -270,6 +689,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return;
         }
         if (core.currentHitPoints() <= 0L) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text("コアは破壊済みです。", NamedTextColor.RED));
             return;
@@ -280,6 +700,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                         core.blockZ() + 0.5d,
                         player.getX(),
                         player.getZ())) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text("コアの戦闘範囲内に入ってください。", NamedTextColor.RED));
             return;
@@ -288,21 +709,26 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
         DefenseSession session = new DefenseSession(
                 UUID.randomUUID(),
                 startData.team().id(),
-                FOUNDATION_STAGE,
+                stage,
                 settings.combat().maxParticipants(),
                 new CoreState(
                         core.maximumHitPoints(),
                         core.currentHitPoints(),
                         true));
-        StartRequest request = new StartRequest(
+        Instant startedAt = Instant.now();
+        StartRequest startRequest = new StartRequest(
                 session.snapshot(),
                 core.id(),
                 settings.toString(),
                 1,
-                Instant.now());
-        databaseExecutor.submit(() -> repository.tryStart(request))
+                startedAt,
+                sealId);
+        databaseExecutor.submit(() -> sealId.isPresent()
+                        ? repository.tryStartReserved(startRequest)
+                        : repository.tryStart(startRequest))
                 .whenComplete((outcome, failure) -> runOnMainThread(() -> {
                     if (failure != null) {
+                        cancelUnboundTacticalSession(player, tacticalSessionId);
                         completeStartOperation();
                         player.sendMessage(Component.text(
                                 "防衛戦を開始できません: " + rootMessage(failure),
@@ -310,40 +736,193 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                         return;
                     }
                     if (outcome != StartOutcome.STARTED) {
+                        cancelUnboundTacticalSession(player, tacticalSessionId);
                         completeStartOperation();
                         player.sendMessage(Component.text(
                                 "別の防衛戦がデータベース上で進行中です。",
                                 NamedTextColor.RED));
                         return;
                     }
-                    if (startCancellationRequested) {
-                        recoverUnactivatedSession(player, session, "防衛戦の開始を取り消しました。");
+                    if (tacticalSessionId.isPresent() && tacticalBuilds.isEmpty()) {
+                        cancelUnboundTacticalSession(player, tacticalSessionId);
+                        recoverUnactivatedSession(
+                                player,
+                                session,
+                                sealId,
+                                Optional.empty(),
+                                "戦術ビルドの実行層を構成できないため防衛戦を復旧しました。");
                         return;
                     }
-                    try {
-                        sessions.activate(session, core, startData.team().members());
-                        completeStartOperation();
-                    } catch (RuntimeException activationFailure) {
-                        player.sendMessage(Component.text(
-                                "Paper実行層を開始できないため復旧します: "
-                                        + activationFailure.getMessage(),
-                                NamedTextColor.RED));
-                        recoverUnactivatedSession(player, session, "Paper実行層の開始失敗を復旧しました。");
+                    if (tacticalSessionId.isPresent()) {
+                        UUID tacticalId = tacticalSessionId.orElseThrow();
+                        databaseExecutor.submit(() -> tacticalBuilds.orElseThrow().bindToDefense(
+                                        tacticalId,
+                                        session.eventId(),
+                                        UUID.randomUUID(),
+                                        Instant.now()))
+                                .whenComplete((bound, bindFailure) -> runOnMainThread(() -> {
+                                    if (bindFailure != null
+                                            || (bound != OperationOutcome.APPLIED
+                                                    && bound != OperationOutcome.ALREADY_APPLIED)) {
+                                        cancelUnboundTacticalSession(player, tacticalSessionId);
+                                        player.sendMessage(Component.text(
+                                                "選択した戦術ビルドを防衛戦へ結び付けられないため復旧します: "
+                                                        + (bindFailure == null
+                                                                ? String.valueOf(bound)
+                                                                : rootMessage(bindFailure)),
+                                                NamedTextColor.RED));
+                                        recoverUnactivatedSession(
+                                                player,
+                                                session,
+                                                sealId,
+                                                Optional.empty(),
+                                                "戦術ビルド未接続の防衛戦を技術的復旧しました。");
+                                        return;
+                                    }
+                                    finishStartedSession(
+                                            player,
+                                            session,
+                                            core,
+                                            startData.team(),
+                                            sealId,
+                                            tacticalSessionId);
+                                }));
+                        return;
                     }
+                    finishStartedSession(
+                            player,
+                            session,
+                            core,
+                            startData.team(),
+                            sealId,
+                            Optional.empty());
                 }));
+    }
+
+    private void finishStartedSession(
+            Player player,
+            DefenseSession session,
+            CoreRecord core,
+            TeamRecord team,
+            Optional<UUID> sealId,
+            Optional<UUID> tacticalSessionId) {
+        if (startCancellationRequested) {
+            recoverUnactivatedSession(
+                    player,
+                    session,
+                    sealId,
+                    tacticalSessionId,
+                    "防衛戦の開始を取り消しました。");
+            return;
+        }
+        if (sealId.isPresent()) {
+            UUID physicalSealId = sealId.orElseThrow();
+            if (!removeMatchingSealItems(physicalSealId)) {
+                recoverUnactivatedSession(
+                        player,
+                        session,
+                        sealId,
+                        tacticalSessionId,
+                        "開始印を確認できないため防衛戦を取り消しました。");
+                return;
+            }
+            databaseExecutor.submit(() -> repository.consumeReservedStartSeal(
+                            session.eventId(), physicalSealId, Instant.now()))
+                    .whenComplete((consumed, consumeFailure) -> runOnMainThread(() -> {
+                        if (consumeFailure != null
+                                || (consumed != OperationOutcome.APPLIED
+                                        && consumed != OperationOutcome.ALREADY_APPLIED)) {
+                            player.sendMessage(Component.text(
+                                    "開始印の消費を確定できないため復旧します: "
+                                            + (consumeFailure == null
+                                                    ? String.valueOf(consumed)
+                                                    : rootMessage(consumeFailure)),
+                                    NamedTextColor.RED));
+                            recoverUnactivatedSession(
+                                    player,
+                                    session,
+                                    sealId,
+                                    tacticalSessionId,
+                                    "開始印の予約を技術的復旧しました。");
+                            return;
+                        }
+                        activateSession(
+                                player,
+                                session,
+                                core,
+                                team,
+                                sealId,
+                                tacticalSessionId);
+                    }));
+            return;
+        }
+        activateSession(
+                player,
+                session,
+                core,
+                team,
+                Optional.empty(),
+                tacticalSessionId);
+    }
+
+    private void activateSession(
+            Player player,
+            DefenseSession session,
+            CoreRecord core,
+            TeamRecord team,
+            Optional<UUID> sealId,
+            Optional<UUID> tacticalSessionId) {
+        if (startCancellationRequested) {
+            recoverUnactivatedSession(
+                    player,
+                    session,
+                    sealId,
+                    tacticalSessionId,
+                    "防衛戦の開始を取り消しました。");
+            return;
+        }
+        try {
+            sessions.activate(session, core, team.members());
+            completeStartOperation();
+        } catch (RuntimeException activationFailure) {
+            player.sendMessage(Component.text(
+                    "Paper実行層を開始できないため復旧します: "
+                            + activationFailure.getMessage(),
+                    NamedTextColor.RED));
+            recoverUnactivatedSession(
+                    player,
+                    session,
+                    sealId,
+                    tacticalSessionId,
+                    "Paper実行層の開始失敗を復旧しました。");
+        }
     }
 
     private void recoverUnactivatedSession(
             CommandSender requester,
             DefenseSession session,
+            Optional<UUID> sealId,
+            Optional<UUID> tacticalSessionId,
             String successMessage) {
         if (startRecoveryInFlight) {
             return;
         }
         pendingRecoverySession = session;
+        pendingRecoverySealId = sealId;
+        pendingRecoveryTacticalSessionId = tacticalSessionId;
         startRecoveryInFlight = true;
-        databaseExecutor.execute(() -> repository.recoverUnfinishedEvent(
-                        session.eventId(), UUID.randomUUID(), Instant.now()))
+        sealId.ifPresent(this::removeMatchingSealItems);
+        databaseExecutor.execute(() -> {
+                    tacticalSessionId.ifPresent(tacticalId -> tacticalBuilds.orElseThrow(
+                            () -> new IllegalStateException(
+                                    "tactical build repository is unavailable"))
+                            .markTerminal(
+                                    session.eventId(),
+                                    TacticalTerminalResult.RECOVERY,
+                                    UUID.randomUUID()));
+                    repository.recoverUnfinishedEvent(
+                            session.eventId(), UUID.randomUUID(), Instant.now());
+                })
                 .whenComplete((ignored, failure) -> runOnMainThread(() -> {
                     startRecoveryInFlight = false;
                     if (failure != null) {
@@ -358,11 +937,68 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 }));
     }
 
+    private void cancelUnboundTacticalSession(
+            Player player,
+            Optional<UUID> tacticalSessionId) {
+        if (tacticalSessionId.isEmpty()) {
+            return;
+        }
+        if (tacticalBuilds.isEmpty()) {
+            plugin.getLogger().warning(
+                    "Cannot cancel tactical session without its repository: "
+                            + tacticalSessionId.orElseThrow());
+            return;
+        }
+        databaseExecutor.execute(() -> tacticalBuilds.orElseThrow().cancelBeforeSelection(
+                        tacticalSessionId.orElseThrow(),
+                        player.getUniqueId(),
+                        UUID.randomUUID(),
+                        Instant.now()))
+                .exceptionally(failure -> {
+                    plugin.getLogger().warning(
+                            "Could not cancel unbound tactical session "
+                                    + tacticalSessionId.orElseThrow() + ": " + rootMessage(failure));
+                    return null;
+                });
+    }
+
     private void completeStartOperation() {
         startInFlight = false;
         startCancellationRequested = false;
         startRecoveryInFlight = false;
         pendingRecoverySession = null;
+        pendingRecoverySealId = Optional.empty();
+        pendingRecoveryTacticalSessionId = Optional.empty();
+    }
+
+    private boolean containsSealInInventory(Player player, UUID sealId) {
+        for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+            if (sealTagger.hasSealId(player.getInventory().getItem(slot), sealId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean removeMatchingSealItems(UUID sealId) {
+        boolean removed = false;
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            for (int slot = 0; slot < player.getInventory().getSize(); slot++) {
+                if (sealTagger.hasSealId(player.getInventory().getItem(slot), sealId)) {
+                    player.getInventory().setItem(slot, null);
+                    removed = true;
+                }
+            }
+        }
+        for (World world : Bukkit.getWorlds()) {
+            for (Item item : world.getEntitiesByClass(Item.class)) {
+                if (sealTagger.hasSealId(item.getItemStack(), sealId)) {
+                    item.remove();
+                    removed = true;
+                }
+            }
+        }
+        return removed;
     }
 
     private boolean showStatus(CommandSender sender) {
@@ -415,6 +1051,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 recoverUnactivatedSession(
                         sender,
                         pendingRecoverySession,
+                        pendingRecoverySealId,
+                        pendingRecoveryTacticalSessionId,
                         "開始済みイベントの技術的復旧を完了しました。");
             }
             sender.sendMessage(Component.text(
@@ -464,8 +1102,24 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
 
     private static void sendUsage(CommandSender sender) {
         sender.sendMessage(Component.text(
-                "/td admin <core|simulate [1]|status|abort>",
+                "/td admin <core|simulate [stage]|status|abort> または /td team <invite|invites|accept|decline|rename|chat>",
                 NamedTextColor.YELLOW));
+    }
+
+    private static void sendTeamUsage(CommandSender sender) {
+        sender.sendMessage(Component.text(
+                "/td team invite <player> | invites | accept <code> | decline <code>"
+                        + " | rename <name> | chat <message>",
+                NamedTextColor.YELLOW));
+    }
+
+    private static String shortInvitationId(UUID invitationId) {
+        return invitationId.toString().substring(0, 8);
+    }
+
+    private static String targetName(UUID playerId) {
+        OfflinePlayer player = Bukkit.getOfflinePlayer(playerId);
+        return player.getName() == null ? playerId.toString().substring(0, 8) : player.getName();
     }
 
     @Override
@@ -474,17 +1128,30 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Command command,
             String alias,
             String[] arguments) {
-        if (!sender.hasPermission(ADMIN_PERMISSION)) {
+        if (arguments.length == 1) {
+            List<String> roots = sender.hasPermission(ADMIN_PERMISSION)
+                    ? List.of("admin", "team")
+                    : List.of("team");
+            return matching(arguments[0], roots);
+        }
+        if (arguments.length >= 2 && arguments[0].equalsIgnoreCase("team")) {
+            if (arguments.length == 2) {
+                return matching(
+                        arguments[1],
+                        List.of("invite", "invites", "accept", "decline", "rename", "chat"));
+            }
             return List.of();
         }
-        if (arguments.length == 1) {
-            return matching(arguments[0], List.of("admin"));
+        if (!sender.hasPermission(ADMIN_PERMISSION)) {
+            return List.of();
         }
         if (arguments.length == 2 && arguments[0].equalsIgnoreCase("admin")) {
             return matching(arguments[1], List.of("core", "simulate", "status", "abort"));
         }
         if (arguments.length == 3 && arguments[1].equalsIgnoreCase("simulate")) {
-            return matching(arguments[2], List.of("1"));
+            return matching(
+                    arguments[2],
+                    RaidSealCatalog.recipeStages().stream().map(String::valueOf).toList());
         }
         return List.of();
     }
@@ -499,5 +1166,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Objects.requireNonNull(team, "team");
             Objects.requireNonNull(core, "core");
         }
+    }
+
+    private record PendingInvitationView(TeamInvitation invitation, TeamRecord team) {
     }
 }

@@ -29,6 +29,21 @@ final class CoreAttackScheduleTest {
     }
 
     @Test
+    void retimingKeepsAlreadyDueAttacksDueWithoutASecondClaim() {
+        CoreAttackSchedule schedule = new CoreAttackSchedule(20L);
+
+        assertTrue(schedule.tryClaim(5L));
+        schedule.updateInterval(5L, 10L);
+        assertFalse(schedule.tryClaim(14L));
+        assertTrue(schedule.tryClaim(15L));
+
+        schedule.updateInterval(50L, 16L);
+        assertTrue(schedule.tryClaim(20L));
+        assertFalse(schedule.tryClaim(69L));
+        assertTrue(schedule.tryClaim(70L));
+    }
+
+    @Test
     void rejectsInvalidIntervalsAndTicks() {
         assertThrows(IllegalArgumentException.class, () -> new CoreAttackSchedule(0L));
         assertThrows(IllegalArgumentException.class, () -> new CoreAttackSchedule(-1L));

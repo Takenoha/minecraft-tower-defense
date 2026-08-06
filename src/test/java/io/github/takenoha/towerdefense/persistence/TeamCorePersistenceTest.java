@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.takenoha.towerdefense.domain.TeamProgress;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -37,6 +38,7 @@ final class TeamCorePersistenceTest {
 
         DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
         assertEquals(team, reopened.findTeamByOwner(ownerId).orElseThrow());
+        assertEquals(TeamProgress.initial(teamId), reopened.loadTeamProgress(teamId));
         assertEquals(core, reopened.findCoreByTeam(teamId).orElseThrow());
         assertEquals(java.util.List.of(core), reopened.loadAllCores());
     }

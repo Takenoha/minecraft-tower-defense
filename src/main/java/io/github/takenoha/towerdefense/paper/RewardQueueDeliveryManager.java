@@ -35,6 +35,7 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
     private final EscrowRepository escrow;
     private final DatabaseExecutor databaseExecutor;
     private final RewardQueueReceiptTagger tagger;
+    private final ResearchCrystalTagger researchCrystals;
     private final Map<UUID, DeliveryRun> activeRuns = new HashMap<>();
     private boolean closed;
 
@@ -43,10 +44,20 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
             EscrowRepository escrow,
             DatabaseExecutor databaseExecutor,
             RewardQueueReceiptTagger tagger) {
+        this(plugin, escrow, databaseExecutor, tagger, new ResearchCrystalTagger(plugin));
+    }
+
+    public RewardQueueDeliveryManager(
+            Plugin plugin,
+            EscrowRepository escrow,
+            DatabaseExecutor databaseExecutor,
+            RewardQueueReceiptTagger tagger,
+            ResearchCrystalTagger researchCrystals) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.escrow = Objects.requireNonNull(escrow, "escrow");
         this.databaseExecutor = Objects.requireNonNull(databaseExecutor, "databaseExecutor");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
+        this.researchCrystals = Objects.requireNonNull(researchCrystals, "researchCrystals");
     }
 
     /** Retries personal and team queue rows when a player finishes joining. */
@@ -192,7 +203,7 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
 
         ItemStack payload;
         try {
-            payload = PaperItemStackCodec.decode(entry.itemPayload());
+            payload = decodePayload(entry);
         } catch (RuntimeException invalidPayload) {
             logFailure("Reward queue " + entry.queueId() + " has an invalid item payload", invalidPayload);
             stopDelivery.run();
@@ -201,10 +212,10 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
         UUID deliveryOperation = deterministicDeliveryOperation(entry.queueId(), player.getUniqueId());
         List<ItemStack> stacks;
         try {
-            stacks = splitAndTag(
-                    payload,
-                    remaining,
-                    new RewardQueueReceipt(entry.queueId(), deliveryOperation));
+            RewardQueueReceipt receipt = new RewardQueueReceipt(entry.queueId(), deliveryOperation);
+            stacks = "research_crystal".equals(entry.itemId())
+                    ? decodeResearchCrystalStacks(entry, remaining, alreadyAccepted, receipt)
+                    : splitAndTag(payload, remaining, receipt);
         } catch (RuntimeException invalidItem) {
             logFailure("Reward queue " + entry.queueId() + " cannot create an inventory item", invalidItem);
             stopDelivery.run();
@@ -227,6 +238,75 @@ public final class RewardQueueDeliveryManager implements AutoCloseable {
             return;
         }
         markDelivered(player, entry, continueDelivery, stopDelivery);
+    }
+
+    private ItemStack decodePayload(RewardQueueEntry entry) {
+        if (!"research_crystal".equals(entry.itemId())) {
+            return PaperItemStackCodec.decode(entry.itemPayload());
+        }
+        String[] fields = entry.itemPayload().split(":", -1);
+        if (fields.length != 5
+                || !"research_crystal".equals(fields[0])
+                || (!"v1".equals(fields[1]) && !"v2".equals(fields[1]))) {
+            throw new IllegalArgumentException("The research crystal payload is invalid");
+        }
+        try {
+            UUID batchId = UUID.fromString(fields[2]);
+            UUID teamId = UUID.fromString(fields[3]);
+            int issuedQuantity = Integer.parseInt(fields[4]);
+            if (issuedQuantity != entry.quantity()) {
+                throw new IllegalArgumentException(
+                        "The research crystal payload quantity does not match the queue");
+            }
+            return researchCrystals.create(batchId, teamId, issuedQuantity);
+        } catch (IllegalArgumentException invalidPayload) {
+            throw new IllegalArgumentException("The research crystal payload is invalid", invalidPayload);
+        }
+    }
+
+    private List<ItemStack> decodeResearchCrystalStacks(
+            RewardQueueEntry entry,
+            int quantity,
+            int offset,
+            RewardQueueReceipt receipt) {
+        String[] fields = entry.itemPayload().split(":", -1);
+        if (fields.length != 5
+                || !"research_crystal".equals(fields[0])
+                || !"v2".equals(fields[1])) {
+            return splitAndTag(decodePayload(entry), quantity, receipt);
+        }
+        UUID batchId;
+        UUID teamId;
+        int issuedQuantity;
+        try {
+            batchId = UUID.fromString(fields[2]);
+            teamId = UUID.fromString(fields[3]);
+            issuedQuantity = Integer.parseInt(fields[4]);
+        } catch (IllegalArgumentException invalidPayload) {
+            throw new IllegalArgumentException("The research crystal payload is invalid", invalidPayload);
+        }
+        if (issuedQuantity != entry.quantity()
+                || offset < 0
+                || quantity < 0
+                || (long) offset + quantity > issuedQuantity) {
+            throw new IllegalArgumentException("The research crystal payload quantity is invalid");
+        }
+        List<ItemStack> stacks = new ArrayList<>();
+        int remaining = quantity;
+        int segmentOffset = offset;
+        while (remaining > 0) {
+            int segmentQuantity = Math.min(ResearchCrystalTagger.STACK_LIMIT, remaining);
+            ItemStack stack = researchCrystals.create(
+                    batchId,
+                    teamId,
+                    issuedQuantity,
+                    segmentOffset,
+                    segmentQuantity);
+            stacks.add(tagger.tag(stack, receipt));
+            segmentOffset += segmentQuantity;
+            remaining -= segmentQuantity;
+        }
+        return List.copyOf(stacks);
     }
 
     private void markDelivered(

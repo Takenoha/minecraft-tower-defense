@@ -43,6 +43,33 @@ final class DatabaseTest {
         assertTrue(columnExists(reopened, "event_block_changes", "expected_after_tile_nbt"));
         assertTrue(columnExists(reopened, "event_reward_queue", "team_claim_deadline"));
         assertTrue(tableExists(reopened, "management_operations"));
+        assertTrue(tableExists(reopened, "tower_removal_operations"));
+        assertTrue(tableExists(reopened, "tower_research"));
+        assertTrue(tableExists(reopened, "tower_research_operations"));
+        assertTrue(tableExists(reopened, "event_battle_funds"));
+        assertTrue(tableExists(reopened, "event_battle_fund_operations"));
+        assertTrue(tableExists(reopened, "event_tower_boosts"));
+        assertTrue(tableExists(reopened, "event_tower_boost_operations"));
+        assertTrue(tableExists(reopened, "event_tower_repair_operations"));
+        assertTrue(tableExists(reopened, "event_tower_damage_operations"));
+        assertTrue(tableExists(reopened, "tower_upgrade_operations"));
+        assertTrue(tableExists(reopened, "tower_upgrade_receipts"));
+        assertTrue(tableExists(reopened, "core_repair_receipts"));
+        assertTrue(tableExists(reopened, "tactical_build_sessions"));
+        assertTrue(tableExists(reopened, "tactical_build_candidates"));
+        assertTrue(tableExists(reopened, "tactical_build_operations"));
+        assertTrue(tableExists(reopened, "tactical_build_unlocked_nodes"));
+        assertTrue(checkConstraintContains(
+                reopened, "core_repair_receipts", "CLEAR_PENDING"));
+        assertTrue(checkConstraintContains(
+                reopened, "tower_upgrade_receipts", "CLEAR_PENDING"));
+        assertTrue(columnExists(
+                reopened, "core_repair_operations", "legacy_defense_shard_amount"));
+        assertTrue(columnExists(reopened, "towers", "target_priority"));
+        assertTrue(columnExists(reopened, "towers", "current_hp"));
+        assertTrue(columnExists(reopened, "towers", "max_hp"));
+        assertTrue(columnExists(
+                reopened, "tower_placement_operations", "target_priority"));
     }
 
     private static void assertConnectionConfiguration(Database database) throws SQLException {
@@ -93,6 +120,21 @@ final class DatabaseTest {
             statement.setString(1, table);
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next();
+            }
+        }
+    }
+
+    private static boolean checkConstraintContains(
+            Database database,
+            String table,
+            String expected) throws SQLException {
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?
+                        """)) {
+            statement.setString(1, table);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getString(1).contains(expected);
             }
         }
     }

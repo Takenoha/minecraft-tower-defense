@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.config;
 
+import io.github.takenoha.towerdefense.domain.TowerType;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -19,7 +20,8 @@ final class PluginSettingsMapReader {
                 reader.enemies(),
                 reader.protection(),
                 reader.rewards(),
-                reader.terrainMutation());
+                reader.terrainMutation(),
+                reader.towers());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -73,7 +75,52 @@ final class PluginSettingsMapReader {
                             values,
                             "core",
                             "attack-interval-ticks",
-                            CoreSettings.DEFAULT_ATTACK_INTERVAL_TICKS));
+                            CoreSettings.DEFAULT_ATTACK_INTERVAL_TICKS),
+                    textOrDefault(
+                            values,
+                            "core",
+                            "repair-material",
+                            CoreSettings.DEFAULT_REPAIR_MATERIAL),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-health-per-unit",
+                            CoreSettings.DEFAULT_REPAIR_HEALTH_PER_UNIT),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-material-base-cost",
+                            CoreSettings.DEFAULT_REPAIR_MATERIAL_BASE_COST),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-shard-base-cost",
+                            CoreSettings.DEFAULT_REPAIR_SHARD_BASE_COST),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "repair-cost-per-clear-level",
+                            CoreSettings.DEFAULT_REPAIR_COST_PER_CLEAR_LEVEL),
+                    textOrDefault(
+                            values,
+                            "core",
+                            "warning-sound",
+                            CoreSettings.DEFAULT_WARNING_SOUND),
+                    decimalOrDefault(
+                            values,
+                            "core",
+                            "warning-volume",
+                            CoreSettings.DEFAULT_WARNING_VOLUME),
+                    decimalOrDefault(
+                            values,
+                            "core",
+                            "warning-pitch",
+                            CoreSettings.DEFAULT_WARNING_PITCH),
+                    integerOrDefault(
+                            values,
+                            "core",
+                            "warning-min-interval-ticks",
+                            CoreSettings.DEFAULT_WARNING_MIN_INTERVAL_TICKS));
         }
 
         private EnemySettings enemies() {
@@ -97,7 +144,22 @@ final class PluginSettingsMapReader {
                             values,
                             "enemies",
                             "builder-ratio",
-                            EnemySettings.DEFAULT_BUILDER_RATIO));
+                            EnemySettings.DEFAULT_BUILDER_RATIO),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-damage",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_DAMAGE),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-interval-ticks",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_INTERVAL_TICKS),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "tower-attack-range",
+                            EnemySettings.DEFAULT_TOWER_ATTACK_RANGE));
         }
 
         private ProtectionSettings protection() {
@@ -124,7 +186,62 @@ final class PluginSettingsMapReader {
                 return RewardSettings.defaults();
             }
             return new RewardSettings(
-                    integer(values, "rewards", "team-queue-retention-seconds"));
+                    integer(values, "rewards", "team-queue-retention-seconds"),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-base-per-stage",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_BASE_PER_STAGE),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-replay-percent",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_REPLAY_PERCENT),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "research-crystal-minimum-quantity",
+                            RewardSettings.DEFAULT_RESEARCH_CRYSTAL_MINIMUM_QUANTITY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-normal-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_NORMAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-special-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_SPECIAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-boss-enemy",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_BOSS_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "battle-funds-per-wave",
+                            RewardSettings.DEFAULT_BATTLE_FUNDS_PER_WAVE),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "defense-shards-normal-enemy",
+                            RewardSettings.DEFAULT_DEFENSE_SHARDS_NORMAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "defense-shards-special-enemy",
+                            RewardSettings.DEFAULT_DEFENSE_SHARDS_SPECIAL_ENEMY),
+                    integerOrDefault(
+                            values,
+                            "rewards",
+                            "enhancement-core-drop-percent",
+                            RewardSettings.DEFAULT_ENHANCEMENT_CORE_DROP_PERCENT),
+                    booleanOrDefault(
+                            values,
+                            "rewards",
+                            "legacy-resource-payments-enabled",
+                            true));
         }
 
         private TerrainMutationSettings terrainMutation() {
@@ -148,6 +265,267 @@ final class PluginSettingsMapReader {
                             "terrain-mutation",
                             "recovery-verified",
                             false));
+        }
+
+        private TowerSettings towers() {
+            Object raw = root.get("towers");
+            if (raw == null) {
+                return TowerSettings.defaults();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("towers", "must be a map");
+                return TowerSettings.defaults();
+            }
+            Map<?, ?> arrow = nestedSection(values, "towers", "arrow");
+            if (arrow == null) {
+                arrow = Map.of();
+            }
+            Map<?, ?> cannon = nestedSection(values, "towers", "cannon");
+            if (cannon == null) {
+                cannon = Map.of();
+            }
+            Map<?, ?> upgrade = nestedSection(values, "towers", "upgrade");
+            if (upgrade == null) {
+                upgrade = Map.of();
+            }
+            Map<?, ?> battleBoost = nestedSection(values, "towers", "battle-boost");
+            if (battleBoost == null) {
+                battleBoost = Map.of();
+            }
+            Map<?, ?> frost = nestedSection(values, "towers", "frost");
+            if (frost == null) {
+                frost = Map.of();
+            }
+            Map<?, ?> lightning = nestedSection(values, "towers", "lightning");
+            if (lightning == null) {
+                lightning = Map.of();
+            }
+            Map<?, ?> support = nestedSection(values, "towers", "support");
+            if (support == null) {
+                support = Map.of();
+            }
+            Map<?, ?> sniper = nestedSection(values, "towers", "sniper");
+            if (sniper == null) {
+                sniper = Map.of();
+            }
+            Map<?, ?> flame = nestedSection(values, "towers", "flame");
+            if (flame == null) {
+                flame = Map.of();
+            }
+            return new TowerSettings(
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "base-limit",
+                            TowerSettings.DEFAULT_BASE_LIMIT),
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "limit-increment",
+                            TowerSettings.DEFAULT_LIMIT_INCREMENT),
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "hard-cap",
+                            TowerSettings.DEFAULT_HARD_CAP),
+                    integerOrDefault(
+                            values,
+                            "towers",
+                            "max-health",
+                            TowerSettings.DEFAULT_TOWER_MAXIMUM_HIT_POINTS),
+                    integerOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "damage",
+                            TowerSettings.DEFAULT_ARROW_DAMAGE),
+                    decimalOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "range",
+                            TowerSettings.DEFAULT_ARROW_RANGE),
+                    integerOrDefault(
+                            arrow,
+                            "towers.arrow",
+                            "attack-interval-ticks",
+                            TowerSettings.DEFAULT_ARROW_ATTACK_INTERVAL_TICKS),
+                    integerOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "damage",
+                            TowerSettings.DEFAULT_CANNON_DAMAGE),
+                    decimalOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "range",
+                            TowerSettings.DEFAULT_CANNON_RANGE),
+                    integerOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "attack-interval-ticks",
+                            TowerSettings.DEFAULT_CANNON_ATTACK_INTERVAL_TICKS),
+                    decimalOrDefault(
+                            cannon,
+                            "towers.cannon",
+                            "splash-radius",
+                            TowerSettings.DEFAULT_CANNON_SPLASH_RADIUS),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "base-shard-cost",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_BASE_SHARD_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "base-core-cost",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_BASE_CORE_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "shard-cost-per-level",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_SHARD_COST_PER_LEVEL),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "core-cost-per-level",
+                            TowerSettings.DEFAULT_INDIVIDUAL_UPGRADE_CORE_COST_PER_LEVEL),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "research-base-cost",
+                            TowerSettings.DEFAULT_RESEARCH_BASE_COST),
+                    integerOrDefault(
+                            upgrade,
+                            "towers.upgrade",
+                            "research-cost-per-level",
+                            TowerSettings.DEFAULT_RESEARCH_COST_PER_LEVEL),
+                    integerOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "base-cost",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_BASE_COST),
+                    integerOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "cost-per-level",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_COST_PER_LEVEL),
+                    decimalOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "power-multiplier",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_POWER_MULTIPLIER),
+                    decimalOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "speed-multiplier",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_SPEED_MULTIPLIER),
+                    decimalOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "range-multiplier",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_RANGE_MULTIPLIER),
+                    integerOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "stack-limit",
+                            TowerSettings.DEFAULT_BATTLE_BOOST_STACK_LIMIT),
+                    integerOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "funds-per-health",
+                            TowerSettings.DEFAULT_BATTLE_REPAIR_FUNDS_PER_HEALTH),
+                    integerOrDefault(
+                            battleBoost,
+                            "towers.battle-boost",
+                            "health-per-purchase",
+                            TowerSettings.DEFAULT_BATTLE_REPAIR_HEALTH_PER_PURCHASE),
+                    Map.of(
+                            TowerType.FROST,
+                            specialistProfile(
+                                    frost,
+                                    "towers.frost",
+                                    TowerProfile.frostDefaults()),
+                            TowerType.LIGHTNING,
+                            specialistProfile(
+                                    lightning,
+                                    "towers.lightning",
+                                    TowerProfile.lightningDefaults()),
+                            TowerType.SUPPORT,
+                            specialistProfile(
+                                    support,
+                                    "towers.support",
+                                    TowerProfile.supportDefaults()),
+                            TowerType.SNIPER,
+                            specialistProfile(
+                                    sniper,
+                                    "towers.sniper",
+                                    TowerProfile.sniperDefaults()),
+                            TowerType.FLAME,
+                            specialistProfile(
+                                    flame,
+                                    "towers.flame",
+                                    TowerProfile.flameDefaults())));
+        }
+
+        private TowerProfile specialistProfile(
+                Map<?, ?> values,
+                String path,
+                TowerProfile defaults) {
+            return new TowerProfile(
+                    integerOrDefault(values, path, "damage", defaults.damage()),
+                    decimalOrDefault(values, path, "range", defaults.range()),
+                    integerOrDefault(
+                            values,
+                            path,
+                            "attack-interval-ticks",
+                            defaults.attackIntervalTicks()),
+                    decimalOrDefault(values, path, "area-radius", defaults.areaRadius()),
+                    decimalOrDefault(values, path, "slow-percent", defaults.slowPercent()),
+                    integerOrDefault(
+                            values,
+                            path,
+                            "slow-duration-ticks",
+                            defaults.slowDurationTicks()),
+                    integerOrDefault(values, path, "chain-count", defaults.chainCount()),
+                    decimalOrDefault(values, path, "chain-radius", defaults.chainRadius()),
+                    decimalOrDefault(
+                            values, path, "support-radius", defaults.supportRadius()),
+                    decimalOrDefault(
+                            values,
+                            path,
+                            "support-damage-multiplier",
+                            defaults.supportDamageMultiplier()),
+                    decimalOrDefault(
+                            values,
+                            path,
+                            "support-speed-multiplier",
+                            defaults.supportSpeedMultiplier()),
+                    decimalOrDefault(
+                            values,
+                            path,
+                            "support-range-multiplier",
+                            defaults.supportRangeMultiplier()),
+                    integerOrDefault(
+                            values,
+                            path,
+                            "support-stack-limit",
+                            defaults.supportStackLimit()),
+                    integerOrDefault(
+                            values,
+                            path,
+                            "burn-duration-ticks",
+                            defaults.burnDurationTicks()));
+        }
+
+        private Map<?, ?> nestedSection(Map<?, ?> parent, String parentPath, String name) {
+            Object raw = parent.get(name);
+            if (raw == null) {
+                return null;
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem(parentPath + "." + name, "must be a map");
+                return null;
+            }
+            return values;
         }
 
         private Set<String> forbiddenWorlds(Map<?, ?> section) {
@@ -280,6 +658,23 @@ final class PluginSettingsMapReader {
                 return defaultValue;
             }
             return (int) decimal;
+        }
+
+        private String textOrDefault(
+                Map<?, ?> section,
+                String sectionName,
+                String key,
+                String defaultValue) {
+            String path = sectionName + "." + key;
+            Object value = section.get(key);
+            if (value == null) {
+                return defaultValue;
+            }
+            if (!(value instanceof String text) || text.isBlank()) {
+                addProblem(path, "must be a non-blank string");
+                return defaultValue;
+            }
+            return text;
         }
 
         private double decimal(Map<?, ?> section, String sectionName, String key) {

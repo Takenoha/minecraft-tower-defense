@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.runtime;
 
+import io.github.takenoha.towerdefense.config.CoreWarningSoundResolver;
 import io.github.takenoha.towerdefense.config.PluginSettings;
 import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
@@ -10,16 +11,24 @@ import io.github.takenoha.towerdefense.domain.EnemyPathAction;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.domain.EnemyRoleSchedule;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
+import io.github.takenoha.towerdefense.paper.DefenseShardTagger;
+import io.github.takenoha.towerdefense.paper.EnhancementCoreTagger;
 import io.github.takenoha.towerdefense.paper.PaperBlockMutationAdapter;
 import io.github.takenoha.towerdefense.paper.PaperCombatAreaSafetyValidator;
 import io.github.takenoha.towerdefense.paper.PaperEscrowDropManager;
 import io.github.takenoha.towerdefense.paper.PaperEnemyPathIntegrationBoundary;
 import io.github.takenoha.towerdefense.paper.PaperEnemyTerrainAction;
 import io.github.takenoha.towerdefense.paper.RewardQueueDeliveryManager;
+import io.github.takenoha.towerdefense.tactical.TacticalBuildRuntime;
+import io.github.takenoha.towerdefense.tactical.TacticalTerminalResult;
+import io.github.takenoha.towerdefense.tactical.TacticalUnlockResult;
 import io.github.takenoha.towerdefense.paper.ThirdPartyRegionProtectionAdapter;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.EnemyLedgerEntry;
 import io.github.takenoha.towerdefense.persistence.EnemyStatus;
+import io.github.takenoha.towerdefense.persistence.ResourceRepository;
+import io.github.takenoha.towerdefense.persistence.TeamResourceSettlement;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -44,13 +53,16 @@ import org.bukkit.Chunk;
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.Sound;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Husk;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Zombie;
+import org.bukkit.entity.ZombieVillager;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -64,6 +76,8 @@ public final class DefenseSessionManager
         implements EnemyLifecycleSink, EnemyAccessPolicy, AutoCloseable {
     private static final long TICKS_PER_SECOND = 20L;
     private static final long PATH_REFRESH_TICKS = 20L;
+    /** A pathfinder acceptance without distance progress is not a usable direct path forever. */
+    private static final long PATH_STALL_ACTION_TICKS = 2L * PATH_REFRESH_TICKS;
     private static final long PATH_STALL_TIMEOUT_TICKS = 45L * TICKS_PER_SECOND;
     private static final double MIN_PATH_PROGRESS = 0.5d;
     private static final int SPAWN_ATTEMPTS_PER_ENEMY = 16;
@@ -87,6 +101,11 @@ public final class DefenseSessionManager
     private final PaperEnemyTerrainAction terrainAction;
     private final TerrainMutationActivationGate terrainMutationGate;
     private final EnemyRoleSchedule enemyRoles;
+    private final DefenseShardTagger defenseShards;
+    private final EnhancementCoreTagger enhancementCores;
+    private final ResourceRepository resources;
+    private final ActionBarBroker actionBars;
+    private final TacticalBuildRuntime tacticalRuntime;
 
     private BukkitTask tickTask;
     private ActiveDefense active;
@@ -164,6 +183,85 @@ public final class DefenseSessionManager
             RewardQueueDeliveryManager rewardQueues,
             CoreRegistry coreRegistry,
             ThirdPartyRegionProtectionAdapter regionProtection) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                null);
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                resources,
+                new ActionBarBroker());
+    }
+
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources,
+            ActionBarBroker actionBars) {
+        this(
+                plugin,
+                settings,
+                tagger,
+                persistence,
+                blockMutations,
+                escrowDrops,
+                rewardQueues,
+                coreRegistry,
+                regionProtection,
+                resources,
+                actionBars,
+                TacticalBuildRuntime.disabled());
+    }
+
+    /** Full constructor used by the tactical build integration. */
+    public DefenseSessionManager(
+            JavaPlugin plugin,
+            PluginSettings settings,
+            EventEnemyTagger tagger,
+            DefensePersistenceSink persistence,
+            PaperBlockMutationAdapter blockMutations,
+            PaperEscrowDropManager escrowDrops,
+            RewardQueueDeliveryManager rewardQueues,
+            CoreRegistry coreRegistry,
+            ThirdPartyRegionProtectionAdapter regionProtection,
+            ResourceRepository resources,
+            ActionBarBroker actionBars,
+            TacticalBuildRuntime tacticalRuntime) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.tagger = Objects.requireNonNull(tagger, "tagger");
@@ -173,6 +271,9 @@ public final class DefenseSessionManager
         this.rewardQueues = Objects.requireNonNull(rewardQueues, "rewardQueues");
         this.coreRegistry = Objects.requireNonNull(coreRegistry, "coreRegistry");
         this.regionProtection = Objects.requireNonNull(regionProtection, "regionProtection");
+        this.resources = resources;
+        this.actionBars = Objects.requireNonNull(actionBars, "actionBars");
+        this.tacticalRuntime = Objects.requireNonNull(tacticalRuntime, "tacticalRuntime");
         pathIntegration = new PaperEnemyPathIntegrationBoundary(coreRegistry, this);
         combatArea = new CombatArea(
                 settings.combat().radius(),
@@ -183,6 +284,8 @@ public final class DefenseSessionManager
         enemyRoles = new EnemyRoleSchedule(
                 settings.enemies().destroyerRatio(),
                 settings.enemies().builderRatio());
+        defenseShards = new DefenseShardTagger(plugin);
+        enhancementCores = new EnhancementCoreTagger(plugin);
         terrainMutationGate = new TerrainMutationActivationGate(settings.terrainMutation());
         terrainAction = new PaperEnemyTerrainAction(
                 new TerrainMutationPolicy(terrainMutationGate.enabled()),
@@ -260,8 +363,20 @@ public final class DefenseSessionManager
                         Component.text("防衛戦: カウントダウン"),
                         1.0f,
                         BossBar.Color.YELLOW,
-                        BossBar.Overlay.PROGRESS));
+                        BossBar.Overlay.PROGRESS),
+                new CoreWarningSoundGate(settings.core().warningMinIntervalTicks()));
         active = next;
+        try {
+            tacticalRuntime.rebuild(session.eventId());
+        } catch (RuntimeException recoveryFailure) {
+            // Unknown tactical state is fail-closed: the defense remains playable without
+            // tactical boosts until the next explicit lifecycle operation can rebuild it.
+            tacticalRuntime.invalidate(session.eventId());
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not rebuild tactical effects for defense " + session.eventId(),
+                    recoveryFailure);
+        }
         addChunkTicket(next, core.blockX() >> 4, core.blockZ() >> 4);
         next.phaseDeadlineTick = deadline(settings.combat().countdownSeconds());
         refreshCandidates(next);
@@ -314,6 +429,60 @@ public final class DefenseSessionManager
                 && defense.teamMembers.contains(playerId)
                 && isInside(defense, player)
                 && ensureEffectiveParticipant(defense, playerId);
+    }
+
+    @Override
+    public boolean mayAffectFromTower(TaggedEnemy taggedEnemy, UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(taggedEnemy, "taggedEnemy");
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        return defense != null
+                && !defense.ending
+                && defense.session.phase() == DefensePhase.WAVE_ACTIVE
+                && defense.session.eventId().equals(taggedEnemy.eventId())
+                && defense.session.teamId().equals(teamId)
+                && defense.entitiesByLogicalId.containsKey(taggedEnemy.logicalEnemyId());
+    }
+
+    /** Returns whether a team may install a tower in the current lifecycle window. */
+    public boolean mayPlaceTower(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        if (defense == null) {
+            return true;
+        }
+        return !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
+    }
+
+    /** Returns whether a tower's individual level may change for this team right now. */
+    public boolean mayUpgradeTower(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        if (defense == null) {
+            return true;
+        }
+        return !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
+    }
+
+    /** Returns whether event-scoped funds may be spent by this team's management GUI. */
+    public boolean maySpendBattleFunds(UUID teamId) {
+        requireMainThread();
+        Objects.requireNonNull(teamId, "teamId");
+        ActiveDefense defense = active;
+        return defense != null
+                && !defense.ending
+                && defense.session.teamId().equals(teamId)
+                && (defense.session.phase() == DefensePhase.PREPARATION
+                        || defense.session.phase() == DefensePhase.INTERMISSION);
     }
 
     @Override
@@ -407,6 +576,53 @@ public final class DefenseSessionManager
         if (active.session.phase() != DefensePhase.WAVE_ACTIVE) {
             return;
         }
+        int shardQuantity = settings.rewards().defenseShardsFor(taggedEnemy.role());
+        if (shardQuantity > 0) {
+            escrowDrops.issueEnemyDrop(
+                    taggedEnemy.eventId(),
+                    taggedEnemy.logicalEnemyId(),
+                    entity.getLocation(),
+                    "defense_shard",
+                    defenseShards.create(
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "DEFENSE_SHARD_ITEM",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            shardQuantity),
+                    Instant.now());
+        }
+        if (taggedEnemy.role() != EnemyRole.NORMAL
+                && settings.rewards().enhancementCoreDropPercent() > 0
+                && ThreadLocalRandom.current().nextInt(100)
+                        < settings.rewards().enhancementCoreDropPercent()) {
+            escrowDrops.issueEnemyDrop(
+                    taggedEnemy.eventId(),
+                    taggedEnemy.logicalEnemyId(),
+                    entity.getLocation(),
+                    "enhancement_core",
+                    enhancementCores.create(
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "ENHANCEMENT_CORE_ITEM",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            1),
+                    Instant.now());
+        }
+        int funds = settings.rewards().battleFundsFor(taggedEnemy.role());
+        if (funds > 0) {
+            observe(
+                    active,
+                    persistence.creditBattleFunds(
+                            taggedEnemy.eventId(),
+                            active.session.teamId(),
+                            deterministicOperation(
+                                    taggedEnemy.eventId(),
+                                    "BATTLE_FUNDS_ENEMY",
+                                    taggedEnemy.logicalEnemyId().toString()),
+                            "ENEMY_" + taggedEnemy.role().id()
+                                    + ":" + taggedEnemy.logicalEnemyId(),
+                            funds));
+        }
         boolean waveCleared = active.session.recordEnemyDefeated(1L);
         if (active.session.isTerminal()) {
             onWaveCleared(active);
@@ -421,11 +637,22 @@ public final class DefenseSessionManager
     private void tick() {
         requireMainThread();
         currentTick++;
+        actionBars.advance(currentTick);
         ActiveDefense defense = active;
         if (defense == null) {
             return;
         }
         if (defense.ending) {
+            // Claims can complete while terminal persistence is draining.  Keep rendering the
+            // broker here so the pickup notice receives its full TTL instead of being lost behind
+            // the ending short-circuit.
+            renderActionBars(defense);
+            if (defense.finishComplete) {
+                if (currentTick >= defense.finishActionBarDeadlineTick) {
+                    active = null;
+                }
+                return;
+            }
             if (!defense.finishInFlight && currentTick >= defense.finishRetryTick) {
                 submitFinish(defense);
             }
@@ -446,6 +673,7 @@ public final class DefenseSessionManager
                     defense,
                     "終端状態を検出したため防衛戦を清掃します。");
         }
+        renderActionBars(defense);
     }
 
     private void tickCountdown(ActiveDefense defense) {
@@ -462,6 +690,9 @@ public final class DefenseSessionManager
             return;
         }
         defense.session.completeCountdown(participants);
+        notifyTacticalUnlock(
+                defense,
+                activateTacticalAtPreparation(defense));
         defense.phaseDeadlineTick = deadline(settings.combat().preparationSeconds());
         persistTransition(defense);
         broadcast(defense, Component.text("参加者を確定しました。第1ウェーブを準備します。", NamedTextColor.GREEN));
@@ -478,6 +709,11 @@ public final class DefenseSessionManager
 
         long enemyCount = enemyCountForNextWave(defense.session);
         defense.session.startWave(enemyCount);
+        if (defense.session.currentWave() == defense.session.totalWaves()) {
+            notifyTacticalUnlock(
+                    defense,
+                    activateFinalTacticalTier(defense));
+        }
         populateLogicalQueue(defense, enemyCount);
         persistTransition(defense);
         broadcast(
@@ -521,11 +757,26 @@ public final class DefenseSessionManager
             defense.spawnFailureSinceTick = -1L;
             Zombie zombie;
             try {
-                zombie = defense.world.spawn(
-                        spawnLocation.orElseThrow(),
-                        Zombie.class,
-                        CreatureSpawnEvent.SpawnReason.CUSTOM,
-                        entity -> configureEnemy(entity, role));
+                Location location = spawnLocation.orElseThrow();
+                boolean finalWave = defense.session.currentWave()
+                        == defense.session.totalWaves();
+                zombie = switch (role) {
+                    case DESTROYER -> defense.world.spawn(
+                            location,
+                            Husk.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case BUILDER -> defense.world.spawn(
+                            location,
+                            ZombieVillager.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case NORMAL, BOSS -> defense.world.spawn(
+                            location,
+                            Zombie.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                };
             } catch (IllegalArgumentException spawnFailure) {
                 plugin.getLogger().warning("Could not spawn event enemy: " + spawnFailure.getMessage());
                 return;
@@ -561,7 +812,7 @@ public final class DefenseSessionManager
         }
     }
 
-    private void configureEnemy(Zombie zombie, EnemyRole role) {
+    private void configureEnemy(Zombie zombie, EnemyRole role, boolean finalWave) {
         zombie.setPersistent(true);
         zombie.setRemoveWhenFarAway(false);
         zombie.setCanPickupItems(false);
@@ -570,6 +821,9 @@ public final class DefenseSessionManager
         zombie.setLootTable(null);
         zombie.getPathfinder().setCanOpenDoors(false);
         zombie.getPathfinder().setCanPassDoors(false);
+        if (EventEnemyVisualPolicy.shouldGlow(role)) {
+            zombie.setGlowing(true);
+        }
         if (role == EnemyRole.BOSS) {
             AttributeInstance maximumHealth = Objects.requireNonNull(
                     zombie.getAttribute(Attribute.MAX_HEALTH),
@@ -578,9 +832,10 @@ public final class DefenseSessionManager
                     * settings.enemies().bossHealthMultiplier();
             maximumHealth.setBaseValue(boostedHealth);
             zombie.setHealth(boostedHealth);
-            zombie.customName(Component.text("防衛戦ボス", NamedTextColor.DARK_RED));
+            zombie.customName(Component.text(
+                    finalWave ? "防衛戦最終ボス" : "防衛戦中ボス",
+                    NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
-            zombie.setGlowing(true);
         } else if (role == EnemyRole.DESTROYER) {
             zombie.customName(Component.text("防衛戦破壊兵", NamedTextColor.DARK_RED));
             zombie.setCustomNameVisible(true);
@@ -608,6 +863,12 @@ public final class DefenseSessionManager
                 entity.remove();
                 requeueMissingEnemy(defense, logicalId, entityId);
                 continue;
+            }
+            EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
+                    logicalId,
+                    EnemyRole.NORMAL);
+            if (EventEnemyVisualPolicy.shouldGlow(role)) {
+                entity.setGlowing(true);
             }
             boolean atCore = entity.getLocation().distanceSquared(defense.coreTarget)
                     <= CORE_REACH_DISTANCE_SQUARED;
@@ -644,9 +905,6 @@ public final class DefenseSessionManager
             }
             if (currentTick - defense.lastPathRefreshTick >= PATH_REFRESH_TICKS
                     && entity instanceof Zombie zombie) {
-                EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
-                        logicalId,
-                        EnemyRole.NORMAL);
                 boolean accepted = zombie.getPathfinder().moveTo(
                         defense.coreTarget,
                         role.navigationSpeed(settings.enemies().moveSpeed()));
@@ -656,9 +914,11 @@ public final class DefenseSessionManager
                         defense.coreTarget,
                         role,
                         defense.pathMetrics);
+                boolean pathStalled = currentTick - progress.lastProgressTick
+                        >= PATH_STALL_ACTION_TICKS;
                 EnemyPathAction pathAction = EnemyPathController.decide(
                         role,
-                        accepted,
+                        accepted && !pathStalled,
                         obstacleFacts,
                         progress.consecutivePathFailures);
                 defense.pathMetrics.recordDecision(accepted, pathAction);
@@ -741,8 +1001,12 @@ public final class DefenseSessionManager
             return;
         }
         defense.coreAttackCount = increment(defense.coreAttackCount);
+        long beforeHitPoints = defense.session.coreState().currentHitPoints();
         boolean coreDestroyed = defense.session.damageCore(
                 settings.core().damagePerEnemy());
+        if (defense.session.coreState().currentHitPoints() < beforeHitPoints) {
+            playCoreWarningIfDue(defense);
+        }
         if (coreDestroyed) {
             finish(defense, "コアが破壊されたため敗北しました。");
             return;
@@ -750,13 +1014,174 @@ public final class DefenseSessionManager
         persistTransition(defense);
     }
 
+    private void playCoreWarningIfDue(ActiveDefense defense) {
+        if (defense.ending
+                || defense.session.phase() != DefensePhase.WAVE_ACTIVE
+                || !defense.coreWarningSoundGate.tryClaim(currentTick)) {
+            return;
+        }
+        var sound = CoreWarningSoundResolver.resolve(settings.core().warningSound());
+        if (sound.isEmpty()) {
+            plugin.getLogger().warning(
+                    "Skipping invalid core warning sound " + settings.core().warningSound());
+            return;
+        }
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.isOnline() && isInside(defense, player)) {
+                player.playSound(
+                        defense.coreTarget,
+                        sound.orElseThrow(),
+                        (float) settings.core().warningVolume(),
+                        (float) settings.core().warningPitch());
+            }
+        }
+    }
+
     private void onWaveCleared(ActiveDefense defense) {
+        int waveFunds = settings.rewards().battleFundsPerWave();
+        if (waveFunds > 0 && defense.session.currentWave() > 0) {
+            observe(
+                    defense,
+                    persistence.creditBattleFunds(
+                            defense.session.eventId(),
+                            defense.session.teamId(),
+                            deterministicOperation(
+                                    defense.session.eventId(),
+                                    "BATTLE_FUNDS_WAVE",
+                                    Integer.toString(defense.session.currentWave())),
+                            "WAVE_CLEAR:" + defense.session.currentWave(),
+                            waveFunds));
+        }
         if (defense.session.phase() == DefensePhase.VICTORY) {
             finish(defense, "全ウェーブを突破しました。勝利です。");
             return;
         }
+        notifyTacticalUnlock(
+                defense,
+                advanceTacticalAfterWave(defense));
         defense.phaseDeadlineTick = deadline(settings.combat().intermissionSeconds());
         broadcast(defense, Component.text("ウェーブを突破しました。次を準備します。", NamedTextColor.AQUA));
+    }
+
+    private TacticalUnlockResult activateTacticalAtPreparation(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.activateAtPreparation(
+                    defense.session.eventId(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_PREPARATION",
+                            "1"));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "preparation unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private TacticalUnlockResult advanceTacticalAfterWave(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.advanceAfterWave(
+                    defense.session.eventId(),
+                    defense.session.currentWave(),
+                    defense.session.totalWaves(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_WAVE",
+                            Integer.toString(defense.session.currentWave())));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "wave unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private TacticalUnlockResult activateFinalTacticalTier(ActiveDefense defense) {
+        try {
+            return tacticalRuntime.activateFinalTier(
+                    defense.session.eventId(),
+                    deterministicOperation(
+                            defense.session.eventId(),
+                            "TACTICAL_UNLOCK_FINAL",
+                            Integer.toString(defense.session.totalWaves())));
+        } catch (RuntimeException failure) {
+            recordTacticalFailure(defense, "final unlock", failure);
+            return TacticalUnlockResult.unchanged(0);
+        }
+    }
+
+    private void notifyTacticalUnlock(ActiveDefense defense, TacticalUnlockResult result) {
+        if (result == null || result.newlyUnlockedNodeIds().isEmpty()) {
+            return;
+        }
+        String message = "戦術ビルド Tier " + result.highestUnlockedTier() + " を解放しました。";
+        broadcast(defense, Component.text(message, NamedTextColor.LIGHT_PURPLE));
+        for (UUID memberId : defense.teamMembers) {
+            Player player = Bukkit.getPlayer(memberId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+            actionBars.publishTactical(memberId, message, currentTick);
+            try {
+                player.playSound(
+                        player.getLocation(),
+                        Sound.BLOCK_NOTE_BLOCK_PLING,
+                        0.7f,
+                        1.35f);
+            } catch (RuntimeException notificationFailure) {
+                // Notifications are advisory; a Paper-side sound failure must not roll back
+                // the already committed tactical unlock.
+                plugin.getLogger().log(
+                        java.util.logging.Level.FINE,
+                        "Could not play tactical unlock sound for " + memberId,
+                        notificationFailure);
+            }
+        }
+    }
+
+    private void recordTacticalFailure(
+            ActiveDefense defense,
+            String operation,
+            RuntimeException failure) {
+        if (defense.persistenceFailure == null) {
+            defense.persistenceFailure = rootMessage(failure);
+        }
+        plugin.getLogger().log(
+                java.util.logging.Level.SEVERE,
+                "Could not complete tactical " + operation + " for defense "
+                        + defense.session.eventId(),
+                failure);
+    }
+
+    private void markTacticalTerminal(ActiveDefense defense) {
+        if (defense.tacticalTerminalMarked) {
+            return;
+        }
+        defense.tacticalTerminalMarked = true;
+        try {
+            tacticalRuntime.markTerminal(
+                    defense.session.eventId(),
+                    terminalResult(defense.session.phase()),
+                    Objects.requireNonNull(
+                            defense.finishOperationId,
+                            "finishOperationId"));
+        } catch (RuntimeException failure) {
+            // Tactical cache invalidation is performed in TacticalBuildRuntime's finally block;
+            // terminal persistence failure is logged while the existing finish retry proceeds.
+            plugin.getLogger().log(
+                    java.util.logging.Level.WARNING,
+                    "Could not mark tactical terminal state for defense "
+                            + defense.session.eventId(),
+                    failure);
+        }
+    }
+
+    private static TacticalTerminalResult terminalResult(DefensePhase phase) {
+        return switch (phase) {
+            case VICTORY -> TacticalTerminalResult.VICTORY;
+            case DEFEAT -> TacticalTerminalResult.DEFEAT;
+            case ABORTED -> TacticalTerminalResult.ABORTED;
+            case RECOVERY -> TacticalTerminalResult.RECOVERY;
+            default -> throw new IllegalArgumentException(
+                    "non-terminal phase cannot be a tactical terminal result: " + phase);
+        };
     }
 
     private boolean defeatForAbsenceIfExpired(ActiveDefense defense) {
@@ -867,6 +1292,7 @@ public final class DefenseSessionManager
         defense.finishSnapshot = defense.session.snapshot();
         defense.finishRetryTick = currentTick;
         submitFinish(defense);
+        markTacticalTerminal(defense);
     }
 
     private void logPathMetrics(ActiveDefense defense) {
@@ -921,9 +1347,47 @@ public final class DefenseSessionManager
             escrowDrops.removeEventDisplays(defense.session.eventId());
             if (defense.finishSnapshot.phase() != DefensePhase.RECOVERY) {
                 rewardQueues.onEventSettled(defense.session.eventId());
+                notifyResourceSettlement(defense);
+            } else {
+                broadcast(
+                        defense,
+                        Component.text(
+                                "技術的復旧のため、今回の仮確保ポイントは失効しました。",
+                                NamedTextColor.YELLOW));
             }
-            active = null;
+            // Keep the ending state alive while the shared broker renders a pickup notice that
+            // completed at the terminal boundary. The event lock is released after the same
+            // 40-tick TTL used by the broker and PaperEscrowDropManager cleanup.
+            defense.finishComplete = true;
+            defense.finishActionBarDeadlineTick = currentTick
+                    + ActionBarBroker.PICKUP_TTL_TICKS;
         }));
+    }
+
+    private void notifyResourceSettlement(ActiveDefense defense) {
+        if (resources == null || defense.finishSnapshot == null) {
+            return;
+        }
+        UUID eventId = defense.session.eventId();
+        DefensePhase phase = defense.finishSnapshot.phase();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                TeamResourceSettlement settlement = resources.loadTerminalSettlement(eventId, phase);
+                runOnMainThread(() -> broadcast(
+                        defense,
+                        Component.text(
+                                "資源庫へ確定しました。防衛ポイント +"
+                                        + settlement.defensePoints()
+                                        + "P / 強化ポイント +"
+                                        + settlement.enhancementPoints() + "P",
+                                NamedTextColor.GREEN)));
+            } catch (RuntimeException failure) {
+                plugin.getLogger().log(
+                        java.util.logging.Level.WARNING,
+                        "Could not load resource settlement message for " + eventId,
+                        failure);
+            }
+        });
     }
 
     private boolean prepareTerrainSettlement(ActiveDefense defense) {
@@ -964,6 +1428,11 @@ public final class DefenseSessionManager
 
     private static long increment(long value) {
         return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
+    private static UUID deterministicOperation(UUID eventId, String namespace, String value) {
+        return UUID.nameUUIDFromBytes((eventId + "|" + namespace + "|" + value)
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     private void cleanupWorldState(ActiveDefense defense) {
@@ -1130,12 +1599,23 @@ public final class DefenseSessionManager
     private void showCountdownActionBar(ActiveDefense defense) {
         long remainingTicks = Math.max(0L, defense.phaseDeadlineTick - currentTick);
         long remainingSeconds = (remainingTicks + TICKS_PER_SECOND - 1L) / TICKS_PER_SECOND;
-        Component message = Component.text("準備: " + remainingSeconds + "秒", NamedTextColor.YELLOW);
+        String message = "準備: " + remainingSeconds + "秒";
         for (UUID memberId : defense.teamMembers) {
             Player player = Bukkit.getPlayer(memberId);
             if (player != null && isInside(defense, player)) {
-                player.sendActionBar(message);
+                actionBars.publishCountdown(memberId, message, currentTick);
             }
+        }
+    }
+
+    private void renderActionBars(ActiveDefense defense) {
+        for (UUID memberId : defense.teamMembers) {
+            Player player = Bukkit.getPlayer(memberId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+            actionBars.current(memberId).ifPresent(notice ->
+                    player.sendActionBar(Component.text(notice.text())));
         }
     }
 
@@ -1205,6 +1685,13 @@ public final class DefenseSessionManager
             if (!active.session.isTerminal()) {
                 active.session.enterRecovery();
             }
+            if (active.finishOperationId == null) {
+                active.finishOperationId = deterministicOperation(
+                        active.session.eventId(),
+                        "TACTICAL_CLOSE_RECOVERY",
+                        "1");
+            }
+            markTacticalTerminal(active);
             active.ending = true;
             cleanupWorldState(active);
         }
@@ -1217,6 +1704,7 @@ public final class DefenseSessionManager
         private final World world;
         private final Location coreTarget;
         private final BossBar bossBar;
+        private final CoreWarningSoundGate coreWarningSoundGate;
         private final Map<UUID, Long> candidateEntryTick = new HashMap<>();
         private final Deque<UUID> pendingLogicalIds = new ArrayDeque<>();
         private final Map<UUID, UUID> entitiesByLogicalId = new LinkedHashMap<>();
@@ -1234,8 +1722,11 @@ public final class DefenseSessionManager
         private long coreAttackCount;
         private boolean ending;
         private boolean finishInFlight;
+        private boolean finishComplete;
+        private boolean tacticalTerminalMarked;
         private int finishAttempts;
         private long finishRetryTick;
+        private long finishActionBarDeadlineTick;
         private UUID finishOperationId;
         private DefenseSessionSnapshot finishSnapshot;
         private boolean terrainSettlementComplete;
@@ -1247,13 +1738,15 @@ public final class DefenseSessionManager
                 Set<UUID> teamMembers,
                 World world,
                 Location coreTarget,
-                BossBar bossBar) {
+                BossBar bossBar,
+                CoreWarningSoundGate coreWarningSoundGate) {
             this.session = session;
             this.core = core;
             this.teamMembers = teamMembers;
             this.world = world;
             this.coreTarget = coreTarget;
             this.bossBar = bossBar;
+            this.coreWarningSoundGate = coreWarningSoundGate;
         }
     }
 

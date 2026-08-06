@@ -3,6 +3,9 @@ package io.github.takenoha.towerdefense.persistence;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
+import io.github.takenoha.towerdefense.domain.TeamProgress;
+import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.config.RewardSettings;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -31,18 +34,38 @@ import java.util.UUID;
 public final class DefenseRepository {
     private static final String TERMINAL_PHASES_SQL =
             "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')";
+    private static final int RESEARCH_CRYSTAL_SEGMENT_SIZE = 64;
     private static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
+    public static final int MAX_TEAM_MEMBERS = 8;
+    public static final Duration DEFAULT_INVITATION_RETENTION = Duration.ofDays(7L);
 
     private final Database database;
     private final Duration teamQueueRetention;
+    private final RewardSettings rewardSettings;
 
     public DefenseRepository(Database database) {
-        this(database, DEFAULT_TEAM_QUEUE_RETENTION);
+        this(database, DEFAULT_TEAM_QUEUE_RETENTION, RewardSettings.defaults());
     }
 
     public DefenseRepository(Database database, Duration teamQueueRetention) {
+        this(database, teamQueueRetention, RewardSettings.defaults());
+    }
+
+    /** Uses the configured queue and stage-reward policy. */
+    public DefenseRepository(Database database, RewardSettings rewardSettings) {
+        this(
+                database,
+                Objects.requireNonNull(rewardSettings, "rewardSettings").teamQueueRetention(),
+                rewardSettings);
+    }
+
+    public DefenseRepository(
+            Database database,
+            Duration teamQueueRetention,
+            RewardSettings rewardSettings) {
         this.database = Objects.requireNonNull(database, "database");
         this.teamQueueRetention = Objects.requireNonNull(teamQueueRetention, "teamQueueRetention");
+        this.rewardSettings = Objects.requireNonNull(rewardSettings, "rewardSettings");
         if (teamQueueRetention.isZero() || teamQueueRetention.isNegative()) {
             throw new IllegalArgumentException("teamQueueRetention must be positive");
         }
@@ -56,12 +79,13 @@ public final class DefenseRepository {
         try {
             return database.inImmediateTransaction(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement("""
-                        INSERT INTO teams(team_id, owner_player_id, created_at)
-                        VALUES (?, ?, ?)
+                        INSERT INTO teams(team_id, owner_player_id, display_name, created_at)
+                        VALUES (?, ?, ?, ?)
                         """)) {
                     statement.setString(1, teamId.toString());
                     statement.setString(2, ownerPlayerId.toString());
-                    statement.setString(3, createdAt.toString());
+                    statement.setString(3, TeamRecord.DEFAULT_DISPLAY_NAME);
+                    statement.setString(4, createdAt.toString());
                     statement.executeUpdate();
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
@@ -73,6 +97,28 @@ public final class DefenseRepository {
                     statement.setString(3, createdAt.toString());
                     statement.executeUpdate();
                 }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO team_progress(
+                            team_id, highest_cleared_level, unlocked_level, research_points, updated_at
+                        ) VALUES (?, 0, 1, 0, ?)
+                        """)) {
+                    statement.setString(1, teamId.toString());
+                    statement.setString(2, createdAt.toString());
+                    statement.executeUpdate();
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        INSERT INTO tower_research(team_id, tower_type, research_level, updated_at)
+                        VALUES (?, ?, 1, ?)
+                        """)) {
+                    for (TowerType towerType : TowerType.values()) {
+                        statement.setString(1, teamId.toString());
+                        statement.setString(2, towerType.id());
+                        statement.setString(3, createdAt.toString());
+                        statement.addBatch();
+                    }
+                    statement.executeBatch();
+                }
+                insertEmptyResourceBalances(connection, teamId, createdAt);
                 return new TeamRecord(teamId, ownerPlayerId, Set.of(ownerPlayerId), createdAt);
             });
         } catch (SQLException exception) {
@@ -111,18 +157,625 @@ public final class DefenseRepository {
     public Optional<TeamRecord> findTeamByMember(UUID playerId) {
         Objects.requireNonNull(playerId, "playerId");
         return read("load a team by member", connection -> {
-            try (PreparedStatement statement = connection.prepareStatement("""
-                    SELECT team_id FROM team_members WHERE player_id = ?
-                    """)) {
-                statement.setString(1, playerId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    if (!resultSet.next()) {
-                        return Optional.empty();
-                    }
-                    return loadTeam(connection, uuid(resultSet.getString("team_id")));
-                }
-            }
+            return findTeamByMember(connection, playerId);
         });
+    }
+
+    /** Renames a team through an owner-authorized, UUID-idempotent profile mutation. */
+    public TeamMutationResult renameTeam(
+            UUID teamId,
+            UUID actorId,
+            String displayName,
+            UUID operationId,
+            Instant renamedAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        String normalizedName = TeamRecord.normalizeDisplayName(displayName);
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(renamedAt, "renamedAt");
+        String fingerprint = managementFingerprint(
+                "TEAM_RENAME", teamId, actorId, normalizedName);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamProfileOperation> existing = loadTeamProfileOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamProfileOperation(
+                            existing.orElseThrow(), teamId, actorId, fingerprint);
+                    return new TeamMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadTeam(connection, teamId));
+                }
+                requireNoActiveEvent(connection, "rename a team");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE teams SET display_name = ? WHERE team_id = ?
+                        """)) {
+                    statement.setString(1, normalizedName);
+                    statement.setString(2, teamId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The team rename affected no rows");
+                    }
+                }
+                insertTeamProfileOperation(
+                        connection,
+                        operationId,
+                        teamId,
+                        actorId,
+                        "TEAM_RENAME",
+                        fingerprint,
+                        renamedAt);
+                return new TeamMutationResult(
+                        ManagementOutcome.APPLIED,
+                        loadTeam(connection, teamId));
+            });
+        } catch (SQLException exception) {
+            throw failure("rename a team", exception);
+        }
+    }
+
+    /** Lists unexpired invitations and durably expires stale pending rows for this recipient. */
+    public List<TeamInvitation> findPendingTeamInvitations(UUID inviteeId, Instant now) {
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(now, "now");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                List<TeamInvitation> invitations = new ArrayList<>();
+                List<TeamInvitation> loaded = new ArrayList<>();
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        SELECT invite_id, team_id, inviter_id, invitee_id, state,
+                               created_at, expires_at, resolved_at
+                        FROM team_invites
+                        WHERE invitee_id = ? AND state = 'PENDING'
+                        ORDER BY created_at, invite_id
+                        """)) {
+                    statement.setString(1, inviteeId.toString());
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        while (resultSet.next()) {
+                            loaded.add(teamInvitationFromRow(resultSet));
+                        }
+                    }
+                }
+                for (TeamInvitation invitation : loaded) {
+                    if (invitation.isPendingAt(now)) {
+                        invitations.add(invitation);
+                    } else {
+                        expireInvitation(connection, invitation.id(), now);
+                    }
+                }
+                return List.copyOf(invitations);
+            });
+        } catch (SQLException exception) {
+            throw failure("load pending team invitations", exception);
+        }
+    }
+
+    /** Loads one invitation for reconnect-aware status checks and recovery tooling. */
+    public Optional<TeamInvitation> findTeamInvitation(UUID invitationId) {
+        Objects.requireNonNull(invitationId, "invitationId");
+        return read(
+                "load a team invitation",
+                connection -> loadTeamInvitation(connection, invitationId));
+    }
+
+    /** Creates an owner-authorized invitation that remains valid while both players are offline. */
+    public TeamInvitationMutationResult createTeamInvitation(
+            UUID teamId,
+            UUID actorId,
+            UUID inviteeId,
+            UUID invitationId,
+            UUID operationId,
+            Instant createdAt,
+            Instant expiresAt) {
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(invitationId, "invitationId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(createdAt, "createdAt");
+        Objects.requireNonNull(expiresAt, "expiresAt");
+        if (!expiresAt.isAfter(createdAt)) {
+            throw new IllegalArgumentException("Invitation expiration must be after creation");
+        }
+        String fingerprint = managementFingerprint(
+                "TEAM_INVITE_CREATE",
+                teamId,
+                actorId,
+                inviteeId,
+                invitationId,
+                expiresAt);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamInviteOperation(
+                            existing.orElseThrow(),
+                            "TEAM_INVITE_CREATE",
+                            actorId,
+                            fingerprint);
+                    TeamInvitation invitation = requireTeamInvitation(
+                            connection, existing.orElseThrow().inviteId());
+                    return invitationMutation(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            connection,
+                            invitation);
+                }
+                requireNoActiveEvent(connection, "create a team invitation");
+                TeamRecord team = requireTeam(connection, teamId);
+                requireTeamOwner(team, actorId);
+                if (actorId.equals(inviteeId)) {
+                    throw new PersistenceConflictException("A team owner cannot invite themselves");
+                }
+                if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                    throw new PersistenceConflictException(
+                            "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
+                }
+                if (findTeamByMember(connection, inviteeId).isPresent()) {
+                    throw new PersistenceConflictException(
+                            "The invited player already belongs to a team");
+                }
+                if (hasPendingInvitation(connection, teamId, inviteeId)) {
+                    throw new PersistenceConflictException(
+                            "This player already has a pending invitation for the team");
+                }
+                TeamInvitation invitation = new TeamInvitation(
+                        invitationId,
+                        teamId,
+                        actorId,
+                        inviteeId,
+                        TeamInvitationState.PENDING,
+                        createdAt,
+                        expiresAt,
+                        null);
+                insertTeamInvitation(connection, invitation, fingerprint);
+                insertTeamInviteOperation(
+                        connection,
+                        operationId,
+                        invitationId,
+                        actorId,
+                        "TEAM_INVITE_CREATE",
+                        fingerprint,
+                        createdAt);
+                return invitationMutation(ManagementOutcome.APPLIED, connection, invitation);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The invitation conflicts with an existing team or invitation", exception);
+            }
+            throw failure("create a team invitation", exception);
+        }
+    }
+
+    /** Accepts a pending invitation for the invited player and adds them atomically. */
+    public TeamInvitationMutationResult acceptTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant acceptedAt) {
+        TeamInvitationMutationResult result = resolveTeamInvitation(
+                invitationId,
+                inviteeId,
+                operationId,
+                acceptedAt,
+                "TEAM_INVITE_ACCEPT",
+                true);
+        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
+            throw new PersistenceConflictException("This invitation has expired");
+        }
+        return result;
+    }
+
+    /** Declines a pending invitation without changing team membership. */
+    public TeamInvitationMutationResult declineTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant declinedAt) {
+        TeamInvitationMutationResult result = resolveTeamInvitation(
+                invitationId,
+                inviteeId,
+                operationId,
+                declinedAt,
+                "TEAM_INVITE_DECLINE",
+                false);
+        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
+            throw new PersistenceConflictException("This invitation has expired");
+        }
+        return result;
+    }
+
+    /** Loads the durable team progression snapshot used by repair quotes and future research. */
+    public TeamProgress loadTeamProgress(UUID teamId) {
+        Objects.requireNonNull(teamId, "teamId");
+        return read(
+                "load team progression",
+                connection -> loadTeamProgress(connection, teamId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Team " + teamId + " has no progression row")));
+    }
+
+    /** Loads one immutable research-crystal issuance batch. */
+    public Optional<ResearchCrystalBatch> findResearchCrystalBatch(UUID batchId) {
+        Objects.requireNonNull(batchId, "batchId");
+        return read(
+                "load a research crystal batch",
+                connection -> loadResearchCrystalBatch(connection, batchId));
+    }
+
+    /** Loads one redemption receipt so the Paper inventory handoff can recover after a restart. */
+    public Optional<ResearchCrystalRedemption> findResearchCrystalRedemption(UUID operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return read(
+                "load a research crystal redemption",
+                connection -> loadResearchCrystalRedemption(connection, operationId));
+    }
+
+    /**
+     * Reserves a team-bound crystal redemption before the Paper inventory item is removed.
+     *
+     * <p>The returned operation is the durable receipt for the physical handoff. Calling this
+     * method again with the same UUID and payload returns the original reservation.</p>
+     */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
+        return prepareResearchCrystalRedemption(
+                batchId,
+                coreId,
+                actorId,
+                null,
+                -1,
+                null,
+                null,
+                quantity,
+                operationId,
+                preparedAt);
+    }
+
+    /**
+     * Reserves a redemption while validating the PDC team and issuance quantity carried by the
+     * physical item.  The compatibility overload above remains for durable records created by
+     * earlier plugin versions.
+     */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
+        return prepareResearchCrystalRedemption(
+                batchId,
+                coreId,
+                actorId,
+                itemTeamId,
+                itemIssuedQuantity,
+                null,
+                null,
+                quantity,
+                operationId,
+                preparedAt);
+    }
+
+    /** Reserves a redemption and, for v2 items, binds it to one issued stack segment. */
+    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            Integer itemSegmentOffset,
+            Integer itemSegmentQuantity,
+            int quantity,
+            UUID operationId,
+            Instant preparedAt) {
+        Objects.requireNonNull(batchId, "batchId");
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(preparedAt, "preparedAt");
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("quantity must be positive");
+        }
+        if (itemTeamId != null && itemIssuedQuantity <= 0) {
+            throw new IllegalArgumentException("itemIssuedQuantity must be positive");
+        }
+        if ((itemSegmentOffset == null) != (itemSegmentQuantity == null)) {
+            throw new IllegalArgumentException(
+                    "itemSegmentOffset and itemSegmentQuantity must be supplied together");
+        }
+        if (itemSegmentOffset != null && itemTeamId == null) {
+            throw new IllegalArgumentException(
+                    "an issued research crystal segment requires team metadata");
+        }
+        if (itemSegmentOffset != null
+                && (itemSegmentOffset < 0
+                        || itemSegmentQuantity <= 0
+                        || itemSegmentQuantity > RESEARCH_CRYSTAL_SEGMENT_SIZE)) {
+            throw new IllegalArgumentException("research crystal item segment is invalid");
+        }
+        String fingerprint = itemTeamId == null
+                ? crystalRedemptionFingerprint(batchId, coreId, actorId, quantity)
+                : crystalRedemptionFingerprint(
+                        batchId,
+                        coreId,
+                        actorId,
+                        itemTeamId,
+                        itemIssuedQuantity,
+                        itemSegmentOffset,
+                        itemSegmentQuantity,
+                        quantity);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ResearchCrystalRedemption> existing =
+                        loadResearchCrystalRedemption(connection, operationId);
+                if (existing.isPresent()) {
+                    ResearchCrystalRedemption redemption = existing.orElseThrow();
+                    requireMatchingCrystalRedemption(
+                            redemption,
+                            operationId,
+                            batchId,
+                            coreId,
+                            actorId,
+                            quantity,
+                            fingerprint);
+                    return redemption;
+                }
+                requireNoActiveEvent(connection, "redeem research crystals");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "Unknown research crystal batch " + batchId));
+                if (!batch.teamId().equals(core.teamId())) {
+                    throw new PersistenceConflictException(
+                            "Research crystals can only be redeemed at their source team's core");
+                }
+                if (itemTeamId != null && !batch.teamId().equals(itemTeamId)) {
+                    throw new PersistenceConflictException(
+                            "The research crystal PDC team does not match its issuance batch");
+                }
+                if (itemIssuedQuantity > 0 && batch.issuedQuantity() != itemIssuedQuantity) {
+                    throw new PersistenceConflictException(
+                            "The research crystal PDC issuance quantity is invalid");
+                }
+                if (itemSegmentOffset != null) {
+                    if ((long) itemSegmentOffset + itemSegmentQuantity > batch.issuedQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal PDC segment is outside its batch");
+                    }
+                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                                    connection, batchId, itemSegmentOffset)
+                            .orElseThrow(() -> new PersistenceConflictException(
+                                    "The research crystal PDC segment is not issued"));
+                    if (segment.segmentQuantity() != itemSegmentQuantity
+                            || quantity > segment.remainingQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal PDC segment has no remaining quantity");
+                    }
+                }
+                if (batch.status() == ResearchCrystalBatchStatus.VOIDED
+                        || quantity > batch.remainingQuantity()) {
+                    throw new PersistenceConflictException(
+                            "The research crystal batch has no remaining redeemable quantity");
+                }
+                ResearchCrystalRedemption redemption = new ResearchCrystalRedemption(
+                        operationId,
+                        batchId,
+                        coreId,
+                        core.teamId(),
+                        actorId,
+                        quantity,
+                        fingerprint,
+                        itemSegmentOffset,
+                        itemSegmentQuantity,
+                        ResearchCrystalRedemptionState.PREPARED,
+                        preparedAt,
+                        null,
+                        null);
+                insertResearchCrystalRedemption(connection, redemption);
+                return redemption;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The research crystal redemption conflicts with persisted data", exception);
+            }
+            throw failure("prepare a research crystal redemption", exception);
+        }
+    }
+
+    /** Applies a prepared crystal redemption and credits the team's research points atomically. */
+    public ResearchCrystalRedemptionResult applyResearchCrystalRedemption(
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                ResearchCrystalRedemption redemption = loadResearchCrystalRedemption(
+                                connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "Unknown research crystal redemption " + operationId));
+                if (redemption.state() == ResearchCrystalRedemptionState.APPLIED) {
+                    return crystalRedemptionResult(
+                            connection, OperationOutcome.ALREADY_APPLIED, redemption.batchId());
+                }
+                if (redemption.state() == ResearchCrystalRedemptionState.ROLLED_BACK) {
+                    throw new PersistenceConflictException(
+                            "The research crystal redemption was already rolled back");
+                }
+                requireNoActiveEvent(connection, "apply a research crystal redemption");
+                CoreRecord core = requireCore(connection, redemption.coreId());
+                requireTeamMember(connection, core.teamId(), redemption.actorId());
+                if (!core.teamId().equals(redemption.teamId())) {
+                    throw new PersistenceConflictException(
+                            "The redemption team no longer matches the core");
+                }
+                ResearchCrystalBatch batch = loadResearchCrystalBatch(
+                                connection, redemption.batchId())
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The research crystal batch disappeared"));
+                if (batch.status() == ResearchCrystalBatchStatus.VOIDED
+                        || redemption.quantity() > batch.remainingQuantity()) {
+                    throw new PersistenceConflictException(
+                            "The research crystal batch was already exhausted or voided");
+                }
+                if (redemption.segmentOffset() != null) {
+                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                                    connection,
+                                    redemption.batchId(),
+                                    redemption.segmentOffset())
+                            .orElseThrow(() -> new PersistenceConflictException(
+                                    "The research crystal redemption segment disappeared"));
+                    if (!Objects.equals(
+                                segment.segmentQuantity(), redemption.segmentQuantity())
+                            || redemption.quantity() > segment.remainingQuantity()) {
+                        throw new PersistenceConflictException(
+                                "The research crystal redemption segment was already consumed");
+                    }
+                    try (PreparedStatement statement = connection.prepareStatement("""
+                            UPDATE research_crystal_segments
+                            SET redeemed_quantity = redeemed_quantity + ?
+                            WHERE batch_id = ? AND segment_offset = ?
+                              AND redeemed_quantity + ? <= segment_quantity
+                            """)) {
+                        statement.setInt(1, redemption.quantity());
+                        statement.setString(2, redemption.batchId().toString());
+                        statement.setInt(3, redemption.segmentOffset());
+                        statement.setInt(4, redemption.quantity());
+                        if (statement.executeUpdate() != 1) {
+                            throw new PersistenceConflictException(
+                                    "The research crystal redemption segment was concurrently resolved");
+                        }
+                    }
+                }
+                TeamProgress progress = loadTeamProgress(connection, redemption.teamId())
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The redemption team has no progression row"));
+                long creditedPoints;
+                try {
+                    creditedPoints = Math.addExact(
+                            progress.researchPoints(), redemption.quantity());
+                } catch (ArithmeticException overflow) {
+                    throw new PersistenceConflictException(
+                            "The team's research point balance cannot increase further", overflow);
+                }
+                TeamProgress updatedProgress = new TeamProgress(
+                        progress.teamId(),
+                        progress.highestClearedLevel(),
+                        progress.unlockedLevel(),
+                        creditedPoints);
+                int redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
+                ResearchCrystalBatchStatus nextStatus = redeemedQuantity == batch.issuedQuantity()
+                        ? ResearchCrystalBatchStatus.EXHAUSTED
+                        : ResearchCrystalBatchStatus.ISSUED;
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_batches
+                        SET redeemed_quantity = ?, state = ?, updated_at = ?
+                        WHERE batch_id = ? AND state = 'ISSUED'
+                        """)) {
+                    statement.setInt(1, redeemedQuantity);
+                    statement.setString(2, nextStatus.name());
+                    statement.setString(3, appliedAt.toString());
+                    statement.setString(4, batch.batchId().toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The research crystal batch was concurrently resolved");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE team_progress
+                        SET research_points = ?, updated_at = ?
+                        WHERE team_id = ?
+                        """)) {
+                    statement.setLong(1, updatedProgress.researchPoints());
+                    statement.setString(2, appliedAt.toString());
+                    statement.setString(3, updatedProgress.teamId().toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The research point update affected no rows");
+                    }
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_redemptions
+                        SET state = 'APPLIED', applied_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, appliedAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The crystal redemption apply affected no rows");
+                    }
+                }
+                ResearchCrystalBatch updatedBatch = loadResearchCrystalBatch(
+                                connection, batch.batchId())
+                        .orElseThrow(() -> new SQLException(
+                                "The crystal batch disappeared after apply"));
+                return new ResearchCrystalRedemptionResult(
+                        OperationOutcome.APPLIED, updatedProgress, updatedBatch);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The research crystal redemption conflicts with persisted data", exception);
+            }
+            throw failure("apply a research crystal redemption", exception);
+        }
+    }
+
+    /** Rolls back a reservation when the Paper-side physical handoff did not complete. */
+    public Optional<ResearchCrystalRedemption> rollbackResearchCrystalRedemption(
+            UUID operationId,
+            Instant rolledBackAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rolledBackAt, "rolledBackAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<ResearchCrystalRedemption> loaded =
+                        loadResearchCrystalRedemption(connection, operationId);
+                if (loaded.isEmpty()
+                        || loaded.orElseThrow().state() != ResearchCrystalRedemptionState.PREPARED) {
+                    return loaded;
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE research_crystal_redemptions
+                        SET state = 'ROLLED_BACK', rolled_back_at = ?
+                        WHERE operation_id = ? AND state = 'PREPARED'
+                        """)) {
+                    statement.setString(1, rolledBackAt.toString());
+                    statement.setString(2, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new SQLException("The crystal redemption rollback affected no rows");
+                    }
+                }
+                ResearchCrystalRedemption redemption = loaded.orElseThrow();
+                return Optional.of(new ResearchCrystalRedemption(
+                        redemption.operationId(),
+                        redemption.batchId(),
+                        redemption.coreId(),
+                        redemption.teamId(),
+                        redemption.actorId(),
+                        redemption.quantity(),
+                        redemption.payloadFingerprint(),
+                        redemption.segmentOffset(),
+                        redemption.segmentQuantity(),
+                        ResearchCrystalRedemptionState.ROLLED_BACK,
+                        redemption.preparedAt(),
+                        null,
+                        rolledBackAt));
+            });
+        } catch (SQLException exception) {
+            throw failure("roll back a research crystal redemption", exception);
+        }
     }
 
     /** Adds a member when the actor is the owner and no event is active. */
@@ -165,6 +818,10 @@ public final class DefenseRepository {
                     return new TeamMutationResult(
                             ManagementOutcome.APPLIED,
                             loadTeam(connection, teamId));
+                }
+                if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                    throw new PersistenceConflictException(
+                            "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
                 }
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO team_members(team_id, player_id, role, joined_at)
@@ -603,9 +1260,26 @@ public final class DefenseRepository {
                 }
                 requireNoActiveEvent(connection, "prepare a core placement");
                 TeamRecord team = requireTeam(connection, placement.teamId());
-                requireTeamOwner(team, placement.actorId());
+                if (placement.relocatingExistingCore()) {
+                    requireTeamMember(connection, placement.teamId(), placement.actorId());
+                } else {
+                    requireTeamOwner(team, placement.actorId());
+                }
                 Optional<CoreRecord> current = loadCoreByTeam(connection, placement.teamId());
-                if (placement.rebuildingDestroyedCore()) {
+                if (placement.relocatingExistingCore()) {
+                    CoreRecord existingCore = current.orElseThrow(
+                            () -> new PersistenceConflictException(
+                                    "The core to relocate does not exist"));
+                    if (!existingCore.id().equals(placement.coreId())
+                            || existingCore.currentHitPoints() != existingCore.maximumHitPoints()) {
+                        throw new PersistenceConflictException(
+                                "Only the team's full-health core can be relocated");
+                    }
+                    if (loadCore(connection, placement.coreId()).isEmpty()) {
+                        throw new PersistenceConflictException(
+                                "The core to relocate has no durable row");
+                    }
+                } else if (placement.rebuildingDestroyedCore()) {
                     CoreRecord existingCore = current.orElseThrow(
                             () -> new PersistenceConflictException(
                                     "The destroyed core to rebuild does not exist"));
@@ -658,9 +1332,43 @@ public final class DefenseRepository {
                 }
                 requireNoActiveEvent(connection, "apply a core placement");
                 TeamRecord team = requireTeam(connection, placement.teamId());
-                requireTeamOwner(team, placement.actorId());
+                if (placement.relocatingExistingCore()) {
+                    requireTeamMember(connection, placement.teamId(), placement.actorId());
+                } else {
+                    requireTeamOwner(team, placement.actorId());
+                }
                 CoreRecord core;
-                if (placement.rebuildingDestroyedCore()) {
+                if (placement.relocatingExistingCore()) {
+                    CoreRecord existing = requireCore(connection, placement.coreId());
+                    if (existing.currentHitPoints() != existing.maximumHitPoints()
+                            || !existing.teamId().equals(placement.teamId())) {
+                        throw new PersistenceConflictException(
+                                "The team's core is no longer relocatable");
+                    }
+                    Optional<CoreRecord> nearby = findDistanceConflict(
+                            connection,
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockZ(),
+                            placement.minimumCoreDistance(),
+                            existing.id());
+                    if (nearby.isPresent()) {
+                        throw new PersistenceConflictException(
+                                "Core position is too close to core " + nearby.orElseThrow().id());
+                    }
+                    core = new CoreRecord(
+                            existing.id(),
+                            existing.teamId(),
+                            placement.worldId(),
+                            placement.blockX(),
+                            placement.blockY(),
+                            placement.blockZ(),
+                            existing.currentHitPoints(),
+                            existing.maximumHitPoints(),
+                            existing.createdAt(),
+                            appliedAt);
+                    updateCorePosition(connection, core);
+                } else if (placement.rebuildingDestroyedCore()) {
                     CoreRecord existing = requireCore(connection, placement.coreId());
                     if (existing.currentHitPoints() != 0L
                             || !existing.teamId().equals(placement.teamId())) {
@@ -717,6 +1425,7 @@ public final class DefenseRepository {
                         placement.maximumHitPoints(),
                         placement.minimumCoreDistance(),
                         placement.rebuildingDestroyedCore(),
+                        placement.relocatingExistingCore(),
                         placement.previousBlockData(),
                         CorePlacementState.APPLIED,
                         placement.preparedAt(),
@@ -758,6 +1467,7 @@ public final class DefenseRepository {
                         loaded.orElseThrow().maximumHitPoints(),
                         loaded.orElseThrow().minimumCoreDistance(),
                         loaded.orElseThrow().rebuildingDestroyedCore(),
+                        loaded.orElseThrow().relocatingExistingCore(),
                         loaded.orElseThrow().previousBlockData(),
                         CorePlacementState.ROLLED_BACK,
                         loaded.orElseThrow().preparedAt(),
@@ -794,6 +1504,30 @@ public final class DefenseRepository {
         });
     }
 
+    /** Loads the last applied placement ledger for a core's physical source block. */
+    public Optional<CorePlacement> findAppliedCorePlacementByCore(UUID coreId) {
+        Objects.requireNonNull(coreId, "coreId");
+        return read("load a core's applied placement", connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, max_hp, minimum_core_distance,
+                           rebuilding_destroyed_core, relocating_existing_core,
+                           previous_block_data, state, prepared_at, applied_at, rolled_back_at
+                    FROM core_placement_operations
+                    WHERE core_id = ? AND state = 'APPLIED'
+                    ORDER BY applied_at DESC, operation_id DESC
+                    LIMIT 1
+                    """)) {
+                statement.setString(1, coreId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    return resultSet.next()
+                            ? Optional.of(corePlacementFromRow(resultSet))
+                            : Optional.empty();
+                }
+            }
+        });
+    }
+
     /** Returns the first same-world core strictly nearer than the configured distance. */
     public Optional<CoreRecord> findDistanceConflict(
             UUID worldId, int blockX, int blockZ, double minimumCoreDistance) {
@@ -812,14 +1546,60 @@ public final class DefenseRepository {
             long amount,
             UUID operationId,
             Instant repairedAt) {
+        return repairCore(
+                coreId,
+                actorId,
+                amount,
+                0L,
+                PaymentMode.LEGACY_ITEMS,
+                operationId,
+                repairedAt);
+    }
+
+    /** Repairs a core and debits the team point wallet in the same SQLite transaction. */
+    public CoreMutationResult repairCore(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            UUID operationId,
+            Instant repairedAt) {
+        return repairCore(
+                coreId,
+                actorId,
+                amount,
+                defensePointCost,
+                defensePointCost > 0L ? PaymentMode.POINT_WALLET : PaymentMode.LEGACY_ITEMS,
+                operationId,
+                repairedAt);
+    }
+
+    /** Repairs a core using an explicitly persisted payment mode. */
+    public CoreMutationResult repairCore(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            PaymentMode paymentMode,
+            UUID operationId,
+            Instant repairedAt) {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(paymentMode, "paymentMode");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(repairedAt, "repairedAt");
         if (amount <= 0L) {
             throw new IllegalArgumentException("repair amount must be positive");
         }
-        String fingerprint = managementFingerprint("CORE_REPAIR", coreId, actorId, amount);
+        if (defensePointCost < 0L) {
+            throw new IllegalArgumentException("defensePointCost must not be negative");
+        }
+        if (paymentMode == PaymentMode.LEGACY_ITEMS && defensePointCost != 0L) {
+            throw new IllegalArgumentException(
+                    "legacy item repairs cannot include a wallet payment");
+        }
+        String fingerprint = managementFingerprint(
+                "CORE_REPAIR", coreId, actorId, amount, defensePointCost, paymentMode);
         try {
             return database.inImmediateTransaction(connection -> {
                 Optional<ManagementOperation> existing = loadManagementOperation(
@@ -830,7 +1610,8 @@ public final class DefenseRepository {
                             "CORE",
                             coreId,
                             "CORE_REPAIR",
-                            fingerprint);
+                            fingerprint,
+                            paymentMode);
                     return new CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, coreId));
@@ -845,6 +1626,19 @@ public final class DefenseRepository {
                 long missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
                 long repairedHitPoints = core.currentHitPoints()
                         + Math.min(amount, missingHitPoints);
+                if (paymentMode == PaymentMode.POINT_WALLET && defensePointCost > 0L) {
+                    ResourceRepository.debitInTransaction(
+                            connection,
+                            core.teamId(),
+                            actorId,
+                            ResourceType.DEFENSE_POINTS,
+                            defensePointCost,
+                            UUID.nameUUIDFromBytes((operationId + "|DEFENSE_POINTS")
+                                    .getBytes(StandardCharsets.UTF_8)),
+                            operationId.toString(),
+                            fingerprint,
+                            repairedAt);
+                }
                 CoreRecord updated = new CoreRecord(
                         core.id(),
                         core.teamId(),
@@ -864,6 +1658,7 @@ public final class DefenseRepository {
                         coreId,
                         "CORE_REPAIR",
                         fingerprint,
+                        paymentMode,
                         repairedAt);
                 return new CoreMutationResult(
                         ManagementOutcome.APPLIED,
@@ -872,6 +1667,551 @@ public final class DefenseRepository {
         } catch (SQLException exception) {
             throw failure("repair a core", exception);
         }
+    }
+
+    /**
+     * Reserves a core repair before any vanilla inventory material is moved into a receipt stack.
+     * The prepared row fixes the core HP, wallet cost, legacy material and operation fingerprint
+     * so a restart cannot silently apply a different repair payload.
+     */
+    public CoreRepairOperation prepareCoreRepair(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            PaymentMode paymentMode,
+            String vanillaMaterial,
+            long vanillaMaterialAmount,
+            UUID operationId,
+            Instant preparedAt) {
+        return prepareCoreRepair(
+                coreId,
+                actorId,
+                amount,
+                defensePointCost,
+                paymentMode,
+                vanillaMaterial,
+                vanillaMaterialAmount,
+                0L,
+                operationId,
+                preparedAt);
+    }
+
+    /**
+     * Prepares a repair with an explicit legacy defense-shard quantity. Wallet repairs keep this
+     * quantity at zero; legacy repairs persist it so a restart can distinguish a physical shard
+     * payment from a wallet debit without reconstructing the quote from current settings.
+     */
+    public CoreRepairOperation prepareCoreRepair(
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            PaymentMode paymentMode,
+            String vanillaMaterial,
+            long vanillaMaterialAmount,
+            long legacyDefenseShardAmount,
+            UUID operationId,
+            Instant preparedAt) {
+        Objects.requireNonNull(coreId, "coreId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(paymentMode, "paymentMode");
+        Objects.requireNonNull(vanillaMaterial, "vanillaMaterial");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(preparedAt, "preparedAt");
+        if (amount <= 0L || defensePointCost < 0L || vanillaMaterialAmount < 0L
+                || legacyDefenseShardAmount < 0L) {
+            throw new IllegalArgumentException("core repair quantities are invalid");
+        }
+        if (paymentMode == PaymentMode.LEGACY_ITEMS && defensePointCost != 0L) {
+            throw new IllegalArgumentException(
+                    "legacy item repairs cannot include a wallet payment");
+        }
+        String fingerprint = managementFingerprint(
+                "CORE_REPAIR_RECEIPT",
+                coreId,
+                actorId,
+                amount,
+                defensePointCost,
+                paymentMode,
+                vanillaMaterial,
+                vanillaMaterialAmount,
+                legacyDefenseShardAmount);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<CoreRepairOperation> existing = loadCoreRepairOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingCoreRepairOperation(
+                            existing.orElseThrow(),
+                            coreId,
+                            actorId,
+                            amount,
+                            defensePointCost,
+                            paymentMode,
+                            vanillaMaterial,
+                            vanillaMaterialAmount,
+                            legacyDefenseShardAmount,
+                            fingerprint);
+                    return existing.orElseThrow();
+                }
+                requireNoActiveEvent(connection, "prepare a core repair");
+                CoreRecord core = requireCore(connection, coreId);
+                requireTeamMember(connection, core.teamId(), actorId);
+                if (core.currentHitPoints() == 0L) {
+                    throw new PersistenceConflictException(
+                            "A destroyed core must be rebuilt before it can be repaired");
+                }
+                if (core.currentHitPoints() >= core.maximumHitPoints()) {
+                    throw new PersistenceConflictException("The core is already at full health");
+                }
+                CoreRepairOperation prepared = new CoreRepairOperation(
+                        operationId,
+                        core.id(),
+                        core.teamId(),
+                        actorId,
+                        core.currentHitPoints(),
+                        amount,
+                        defensePointCost,
+                        paymentMode,
+                        vanillaMaterial,
+                        vanillaMaterialAmount,
+                        legacyDefenseShardAmount,
+                        fingerprint,
+                        CoreRepairOperationState.PREPARED,
+                        preparedAt,
+                        null,
+                        null);
+                insertCoreRepairOperation(connection, prepared);
+                return prepared;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The prepared core repair conflicts with persisted data", exception);
+            }
+            throw failure("prepare a core repair", exception);
+        }
+    }
+
+    /** Persists the inventory receipt after the prepared operation has been created. */
+    public CoreRepairReceipt reserveCoreRepairReceipt(
+            UUID operationId,
+            UUID playerId,
+            String material,
+            long quantity,
+            Instant reservedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(material, "material");
+        Objects.requireNonNull(reservedAt, "reservedAt");
+        if (quantity <= 0L) {
+            throw new IllegalArgumentException("receipt quantity must be positive");
+        }
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The prepared core repair does not exist"));
+                if (operation.state() != CoreRepairOperationState.PREPARED) {
+                    throw new PersistenceConflictException(
+                            "The core repair is no longer reservable");
+                }
+                if (!operation.actorId().equals(playerId)
+                        || !expectedReceiptMaterial(operation).equals(material)
+                        || expectedReceiptQuantity(operation) != quantity) {
+                    throw new PersistenceConflictException(
+                            "The core repair receipt does not match its prepared payload");
+                }
+                Optional<CoreRepairReceipt> existing = loadCoreRepairReceipt(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    CoreRepairReceipt receipt = existing.orElseThrow();
+                    if (!receipt.playerId().equals(playerId)
+                            || !receipt.material().equals(material)
+                            || receipt.quantity() != quantity) {
+                        throw new PersistenceConflictException(
+                                "The core repair receipt UUID is already assigned to another payload");
+                    }
+                    return receipt;
+                }
+                CoreRepairReceipt receipt = new CoreRepairReceipt(
+                        operationId,
+                        playerId,
+                        material,
+                        quantity,
+                        CoreRepairReceiptState.RESERVED,
+                        reservedAt,
+                        null);
+                insertCoreRepairReceipt(connection, receipt);
+                return receipt;
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The core repair receipt conflicts with persisted data", exception);
+            }
+            throw failure("reserve a core repair receipt", exception);
+        }
+    }
+
+    /** Applies a prepared repair and wallet debit atomically after its receipt is secured. */
+    public CoreMutationResult applyPreparedCoreRepair(
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The prepared core repair does not exist"));
+                if (operation.state() == CoreRepairOperationState.APPLIED) {
+                    return new CoreMutationResult(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            loadCore(connection, operation.coreId()));
+                }
+                if (operation.state() == CoreRepairOperationState.ROLLED_BACK) {
+                    throw new PersistenceConflictException(
+                            "The prepared core repair was already rolled back");
+                }
+                if (expectedReceiptQuantity(operation) > 0L) {
+                    CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                            .orElseThrow(() -> new PersistenceConflictException(
+                                    "The core repair receipt was not secured"));
+                    if (receipt.state() != CoreRepairReceiptState.SECURED) {
+                        throw new PersistenceConflictException(
+                                "The core repair receipt has not reached the secured handoff");
+                    }
+                }
+                requireNoActiveEvent(connection, "apply a core repair");
+                CoreRecord core = requireCore(connection, operation.coreId());
+                requireTeamMember(connection, core.teamId(), operation.actorId());
+                if (core.currentHitPoints() != operation.expectedCurrentHitPoints()) {
+                    throw new PersistenceConflictException(
+                            "The core HP changed before the prepared repair was applied");
+                }
+                long missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
+                long repairedHitPoints = core.currentHitPoints()
+                        + Math.min(operation.repairAmount(), missingHitPoints);
+                if (operation.paymentMode() == PaymentMode.POINT_WALLET
+                        && operation.defensePointCost() > 0L) {
+                    ResourceRepository.debitInTransaction(
+                            connection,
+                            core.teamId(),
+                            operation.actorId(),
+                            ResourceType.DEFENSE_POINTS,
+                            operation.defensePointCost(),
+                            UUID.nameUUIDFromBytes((operationId + "|DEFENSE_POINTS")
+                                    .getBytes(StandardCharsets.UTF_8)),
+                            operationId.toString(),
+                            operation.payloadFingerprint(),
+                            appliedAt);
+                }
+                CoreRecord updated = new CoreRecord(
+                        core.id(),
+                        core.teamId(),
+                        core.worldId(),
+                        core.blockX(),
+                        core.blockY(),
+                        core.blockZ(),
+                        repairedHitPoints,
+                        core.maximumHitPoints(),
+                        core.createdAt(),
+                        appliedAt);
+                updateCoreHealth(connection, updated);
+                insertManagementOperation(
+                        connection,
+                        operation.operationId(),
+                        "CORE",
+                        operation.coreId(),
+                        "CORE_REPAIR",
+                        managementFingerprint(
+                                "CORE_REPAIR",
+                                operation.coreId(),
+                                operation.actorId(),
+                                operation.repairAmount(),
+                                operation.defensePointCost(),
+                                operation.paymentMode()),
+                        operation.paymentMode(),
+                        appliedAt);
+                updateCoreRepairOperationState(
+                        connection,
+                        operationId,
+                        CoreRepairOperationState.APPLIED,
+                        appliedAt);
+                return new CoreMutationResult(ManagementOutcome.APPLIED, Optional.of(updated));
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The prepared core repair conflicts with persisted data", exception);
+            }
+            throw failure("apply a prepared core repair", exception);
+        }
+    }
+
+    /** Durably records that the exact material stacks were replaced with tagged receipt stacks. */
+    public OperationOutcome secureCoreRepairReceipt(UUID operationId, Instant securedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(securedAt, "securedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair receipt does not exist"));
+                if (receipt.state() == CoreRepairReceiptState.SECURED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.RESERVED) {
+                    throw new PersistenceConflictException(
+                            "The core repair receipt is no longer reservable");
+                }
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        UPDATE core_repair_receipts
+                        SET state = 'SECURED'
+                        WHERE operation_id = ? AND state = 'RESERVED'
+                        """)) {
+                    statement.setString(1, operationId.toString());
+                    if (statement.executeUpdate() != 1) {
+                        throw new PersistenceConflictException(
+                                "The core repair receipt changed concurrently");
+                    }
+                }
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("secure a core repair receipt", exception);
+        }
+    }
+
+    /** Marks the physical receipt clear as the next durable step after the applied mutation. */
+    public OperationOutcome markCoreRepairReceiptClearPending(
+            UUID operationId,
+            Instant pendingAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(pendingAt, "pendingAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair operation does not exist"));
+                if (operation.state() != CoreRepairOperationState.APPLIED) {
+                    throw new PersistenceConflictException(
+                            "Only an applied core repair can clear its receipt");
+                }
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElse(null);
+                if (receipt == null
+                        || receipt.state() == CoreRepairReceiptState.CLEARED
+                        || receipt.state() == CoreRepairReceiptState.CLEAR_PENDING) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.SECURED) {
+                    throw new PersistenceConflictException(
+                            "Only a secured core repair receipt can enter physical clear");
+                }
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.CLEAR_PENDING,
+                        pendingAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("mark a core repair receipt clear-pending", exception);
+        }
+    }
+
+    /** Marks the physical receipt clear after the applied core mutation is confirmed. */
+    public OperationOutcome clearCoreRepairReceipt(UUID operationId, Instant clearedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(clearedAt, "clearedAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair operation does not exist"));
+                if (operation.state() != CoreRepairOperationState.APPLIED) {
+                    throw new PersistenceConflictException(
+                            "Only an applied core repair can clear its receipt");
+                }
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElse(null);
+                if (receipt == null || receipt.state() == CoreRepairReceiptState.CLEARED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.SECURED
+                        && receipt.state() != CoreRepairReceiptState.CLEAR_PENDING) {
+                    throw new PersistenceConflictException(
+                            "Only a secured core repair receipt can be cleared");
+                }
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.CLEARED,
+                        clearedAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("clear a core repair receipt", exception);
+        }
+    }
+
+    /** Rolls back a prepared operation and releases its receipt after a failed physical step. */
+    public OperationOutcome rollbackPreparedCoreRepair(
+            UUID operationId,
+            Instant rolledBackAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(rolledBackAt, "rolledBackAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow(() -> new PersistenceConflictException(
+                                "The core repair operation does not exist"));
+                if (operation.state() == CoreRepairOperationState.ROLLED_BACK) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (operation.state() == CoreRepairOperationState.APPLIED) {
+                    throw new PersistenceConflictException(
+                            "An applied core repair cannot be rolled back");
+                }
+                updateCoreRepairOperationState(
+                        connection,
+                        operationId,
+                        CoreRepairOperationState.ROLLED_BACK,
+                        rolledBackAt);
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.RETURN_PENDING,
+                        rolledBackAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("roll back a prepared core repair", exception);
+        }
+    }
+
+    /** Completes a physical refund after the player inventory has been durably saved. */
+    public OperationOutcome restoreCoreRepairReceipt(UUID operationId, Instant restoredAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(restoredAt, "restoredAt");
+        try {
+            return database.inImmediateTransaction(connection -> {
+                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElse(null);
+                if (receipt == null || receipt.state() == CoreRepairReceiptState.RESTORED) {
+                    return OperationOutcome.ALREADY_APPLIED;
+                }
+                if (receipt.state() != CoreRepairReceiptState.RETURN_PENDING) {
+                    throw new PersistenceConflictException(
+                            "Only a return-pending core receipt can be restored");
+                }
+                updateCoreRepairReceiptState(
+                        connection,
+                        operationId,
+                        CoreRepairReceiptState.RESTORED,
+                        restoredAt);
+                return OperationOutcome.APPLIED;
+            });
+        } catch (SQLException exception) {
+            throw failure("restore a core repair receipt", exception);
+        }
+    }
+
+    public Optional<CoreRepairOperation> findCoreRepairOperation(UUID operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return read(
+                "load a core repair operation",
+                connection -> loadCoreRepairOperation(connection, operationId));
+    }
+
+    public Optional<CoreRepairReceipt> findCoreRepairReceipt(UUID operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return read(
+                "load a core repair receipt",
+                connection -> loadCoreRepairReceipt(connection, operationId));
+    }
+
+    public List<CoreRepairOperation> loadPreparedCoreRepairs(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load prepared core repairs", connection -> {
+            List<CoreRepairOperation> operations = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
+                           repair_amount, defense_point_cost, payment_mode, vanilla_material,
+                           vanilla_material_amount, legacy_defense_shard_amount,
+                           payload_fingerprint, state, prepared_at,
+                           applied_at, rolled_back_at
+                    FROM core_repair_operations
+                    WHERE actor_id = ?
+                      AND (state = 'PREPARED'
+                           OR (state = 'APPLIED' AND EXISTS (
+                               SELECT 1
+                               FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state IN ('RESERVED', 'SECURED', 'CLEAR_PENDING')
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1
+                               FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'RETURN_PENDING'
+                           )))
+                    ORDER BY prepared_at, operation_id
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        operations.add(coreRepairOperationFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(operations);
+        });
+    }
+
+    /**
+     * Loads terminal receipt rows as a bounded idempotent inventory tombstone.
+     *
+     * <p>A player save can race the database terminal transition during shutdown.  Keeping the
+     * terminal operation visible to the next join lets the Paper bridge strip a resurrected
+     * tagged stack without minting or charging anything again.</p>
+     */
+    public List<CoreRepairOperation> loadTerminalCoreRepairReceipts(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        return read("load terminal core repair receipt tombstones", connection -> {
+            List<CoreRepairOperation> operations = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
+                           repair_amount, defense_point_cost, payment_mode, vanilla_material,
+                           vanilla_material_amount, legacy_defense_shard_amount,
+                           payload_fingerprint, state, prepared_at,
+                           applied_at, rolled_back_at
+                    FROM core_repair_operations
+                    WHERE actor_id = ?
+                      AND ((state = 'APPLIED' AND EXISTS (
+                               SELECT 1 FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'CLEARED'
+                           ))
+                           OR (state = 'ROLLED_BACK' AND EXISTS (
+                               SELECT 1 FROM core_repair_receipts r
+                               WHERE r.operation_id = core_repair_operations.operation_id
+                                 AND r.state = 'RESTORED'
+                           )))
+                    ORDER BY prepared_at, operation_id
+                    """)) {
+                statement.setString(1, playerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        operations.add(coreRepairOperationFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(operations);
+        });
     }
 
     /** Moves an intact core after checking ownership, idle state, and world separation. */
@@ -1068,6 +2408,45 @@ public final class DefenseRepository {
      * inserted when another event owns the lock.
      */
     public StartOutcome tryStart(StartRequest request) {
+        return tryStart(request, true);
+    }
+
+    /**
+     * Creates an event while leaving a supplied raid seal RESERVED. The Paper caller removes the
+     * matching physical item on the main thread and must then call
+     * {@link #consumeReservedStartSeal(UUID, UUID, Instant)}. A failed or interrupted event is
+     * eligible for the normal technical-refund transaction.
+     */
+    public StartOutcome tryStartReserved(StartRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (request.raidSealId().isEmpty()) {
+            throw new IllegalArgumentException("A reserved start requires a raid seal");
+        }
+        return tryStart(request, false);
+    }
+
+    /** Consumes the reservation after the corresponding physical token has been removed. */
+    public OperationOutcome consumeReservedStartSeal(
+            UUID eventId,
+            UUID sealId,
+            Instant consumedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(sealId, "sealId");
+        Objects.requireNonNull(consumedAt, "consumedAt");
+        try {
+            return database.inImmediateTransaction(connection ->
+                    RaidSealRepository.consumeReservedForStart(
+                            connection, eventId, sealId, consumedAt));
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The reserved raid seal conflicts with persisted data", exception);
+            }
+            throw failure("consume the reserved raid seal", exception);
+        }
+    }
+
+    private StartOutcome tryStart(StartRequest request, boolean consumeSeal) {
         Objects.requireNonNull(request, "request");
         try {
             return database.inImmediateTransaction(connection -> {
@@ -1086,6 +2465,7 @@ public final class DefenseRepository {
                 validateStartCore(snapshot, core);
 
                 insertEvent(connection, request, core);
+                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt());
                 replaceParticipants(connection, snapshot, request.startedAt());
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO event_lock(singleton, event_id, acquired_at)
@@ -1095,7 +2475,11 @@ public final class DefenseRepository {
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
                 }
-                RaidSealRepository.consumeForStart(connection, request);
+                if (consumeSeal) {
+                    RaidSealRepository.consumeForStart(connection, request);
+                } else {
+                    RaidSealRepository.reserveForStart(connection, request);
+                }
                 return StartOutcome.STARTED;
             });
         } catch (SQLException exception) {
@@ -1109,6 +2493,414 @@ public final class DefenseRepository {
 
     public Optional<UUID> activeEventId() {
         return read("load the active event lock", DefenseRepository::loadActiveEventId);
+    }
+
+    /** Loads the event-scoped battle-funds account. */
+    public BattleFunds loadBattleFunds(UUID eventId) {
+        Objects.requireNonNull(eventId, "eventId");
+        return read(
+                "load event battle funds",
+                connection -> loadBattleFunds(connection, eventId).orElseThrow(
+                        () -> new PersistenceConflictException(
+                                "Defense event " + eventId + " has no battle-funds account")));
+    }
+
+    /** Credits event funds for a deterministic enemy or wave reward operation. */
+    public BattleFundsMutationResult creditBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt) {
+        return mutateBattleFunds(
+                eventId,
+                teamId,
+                null,
+                operationId,
+                operationKind,
+                amount,
+                appliedAt,
+                false);
+    }
+
+    /** Spends event funds for a team-member operation during preparation or intermission. */
+    public BattleFundsMutationResult spendBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt) {
+        return mutateBattleFunds(
+                eventId,
+                teamId,
+                actorId,
+                operationId,
+                operationKind,
+                amount,
+                appliedAt,
+                true);
+    }
+
+    /** Loads the temporary boosts that survived a restart while an event was still active. */
+    public List<BattleBoost> loadBattleBoosts(UUID eventId) {
+        Objects.requireNonNull(eventId, "eventId");
+        return read("load event tower boosts", connection -> {
+            List<BattleBoost> boosts = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                    FROM event_tower_boosts
+                    WHERE event_id = ?
+                    ORDER BY tower_id, boost_kind
+                    """)) {
+                statement.setString(1, eventId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        boosts.add(battleBoostFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(boosts);
+        });
+    }
+
+    /** Purchases one cumulative temporary boost and spends its funds in the same transaction. */
+    public BattleBoostMutationResult purchaseBattleBoost(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (cost <= 0L) {
+            throw new IllegalArgumentException("cost must be positive");
+        }
+        if (!Double.isFinite(boostMultiplier) || boostMultiplier <= 0.0d) {
+            throw new IllegalArgumentException("boostMultiplier must be finite and positive");
+        }
+        String operationKind = "BOOST_" + kind.id();
+        String fingerprint = managementFingerprint(
+                "BATTLE_BOOST",
+                eventId,
+                teamId,
+                actorId,
+                towerId,
+                kind.id(),
+                cost,
+                boostMultiplier);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<BattleBoostOperation> existing = loadBattleBoostOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingBattleBoostOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            towerId,
+                            kind,
+                            cost,
+                            boostMultiplier,
+                            fingerprint);
+                    return new BattleBoostMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireBattleBoost(connection, eventId, towerId, kind),
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, true);
+                requireTeamMember(connection, teamId, actorId);
+                requireTowerBelongsToTeam(connection, towerId, teamId);
+                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                if (!currentFunds.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The battle-boost operation belongs to another team");
+                }
+                if (currentFunds.balance() < cost) {
+                    throw new PersistenceConflictException(
+                            "The team does not have enough battle funds for this boost");
+                }
+                Optional<BattleBoost> current = loadBattleBoost(
+                        connection, eventId, towerId, kind);
+                int nextLevel = current.isPresent()
+                        ? Math.addExact(current.orElseThrow().level(), 1)
+                        : 1;
+                double previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0d);
+                double nextMultiplier = previousMultiplier * boostMultiplier;
+                if (!Double.isFinite(nextMultiplier)) {
+                    throw new PersistenceConflictException(
+                            "The battle boost multiplier is outside the supported range");
+                }
+                BattleFunds updatedFunds = new BattleFunds(
+                        currentFunds.eventId(),
+                        currentFunds.teamId(),
+                        currentFunds.balance() - cost,
+                        currentFunds.totalEarned(),
+                        Math.addExact(currentFunds.totalSpent(), cost),
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                BattleBoost updatedBoost = new BattleBoost(
+                        eventId,
+                        teamId,
+                        towerId,
+                        kind,
+                        nextLevel,
+                        nextMultiplier,
+                        appliedAt);
+                updateBattleFunds(connection, updatedFunds);
+                upsertBattleBoost(connection, updatedBoost);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                insertBattleBoostOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        towerId,
+                        kind,
+                        cost,
+                        boostMultiplier,
+                        fingerprint,
+                        appliedAt);
+                return new BattleBoostMutationResult(
+                        OperationOutcome.APPLIED, updatedBoost, updatedFunds);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The battle-boost operation conflicts with persisted data", exception);
+            }
+            throw failure("purchase a battle boost", exception);
+        } catch (ArithmeticException overflow) {
+            throw new PersistenceConflictException(
+                    "The battle-boost account cannot represent this purchase", overflow);
+        }
+    }
+
+    /** Repairs a tower's durable HP and spends battle funds atomically. */
+    public TowerRepairMutationResult repairTowerWithBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (repairedHitPoints <= 0L || cost <= 0L) {
+            throw new IllegalArgumentException("tower repair amount and cost must be positive");
+        }
+        String operationKind = "REPAIR_TOWER";
+        String fingerprint = managementFingerprint(
+                "TOWER_REPAIR",
+                eventId,
+                teamId,
+                actorId,
+                towerId,
+                repairedHitPoints,
+                cost);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerRepairOperation> existing = loadTowerRepairOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTowerRepairOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            towerId,
+                            repairedHitPoints,
+                            cost,
+                            fingerprint);
+                    return new TowerRepairMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireTowerDurability(connection, towerId),
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, true);
+                requireTeamMember(connection, teamId, actorId);
+                TowerDurability current = requireTowerDurability(connection, towerId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower repair belongs to another team");
+                }
+                if (repairedHitPoints > current.maximumHitPoints() - current.currentHitPoints()) {
+                    throw new PersistenceConflictException(
+                            "The tower repair exceeds the missing HP");
+                }
+                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                if (!currentFunds.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower repair belongs to another event team");
+                }
+                if (currentFunds.balance() < cost) {
+                    throw new PersistenceConflictException(
+                            "The team does not have enough battle funds for tower repair");
+                }
+                TowerDurability updatedDurability = new TowerDurability(
+                        towerId,
+                        teamId,
+                        current.currentHitPoints() + repairedHitPoints,
+                        current.maximumHitPoints());
+                BattleFunds updatedFunds = new BattleFunds(
+                        currentFunds.eventId(),
+                        currentFunds.teamId(),
+                        currentFunds.balance() - cost,
+                        currentFunds.totalEarned(),
+                        Math.addExact(currentFunds.totalSpent(), cost),
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                updateTowerDurability(connection, updatedDurability, appliedAt);
+                updateBattleFunds(connection, updatedFunds);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                insertTowerRepairOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        towerId,
+                        repairedHitPoints,
+                        cost,
+                        fingerprint,
+                        appliedAt);
+                return new TowerRepairMutationResult(
+                        OperationOutcome.APPLIED, updatedDurability, updatedFunds);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower repair operation conflicts with persisted data", exception);
+            }
+            throw failure("repair a tower with battle funds", exception);
+        } catch (ArithmeticException overflow) {
+            throw new PersistenceConflictException(
+                    "The tower repair account cannot represent this purchase", overflow);
+        }
+    }
+
+    /** Applies one destroyer attack to a tower and deletes the tower atomically at zero HP. */
+    public TowerDamageMutationResult damageTowerByEnemy(
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            UUID operationId,
+            Instant appliedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(attackerLogicalEnemyId, "attackerLogicalEnemyId");
+        Objects.requireNonNull(towerId, "towerId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (damage <= 0L) {
+            throw new IllegalArgumentException("tower damage must be positive");
+        }
+        String fingerprint = managementFingerprint(
+                "TOWER_DAMAGE",
+                eventId,
+                teamId,
+                attackerLogicalEnemyId,
+                towerId,
+                damage);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TowerDamageOperation> existing = loadTowerDamageOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    TowerDamageOperation operation = existing.orElseThrow();
+                    requireMatchingTowerDamageOperation(
+                            operation,
+                            eventId,
+                            teamId,
+                            attackerLogicalEnemyId,
+                            towerId,
+                            damage,
+                            fingerprint);
+                    return damageResult(operation, OperationOutcome.ALREADY_APPLIED);
+                }
+
+                requireActiveTowerDamageEvent(connection, eventId, teamId);
+                TowerDurability current = requireTowerDurability(connection, towerId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The tower damage belongs to another team");
+                }
+                boolean destroyed = current.currentHitPoints() <= damage;
+                long remainingHitPoints = destroyed
+                        ? 0L
+                        : current.currentHitPoints() - damage;
+                if (destroyed) {
+                    deleteTower(connection, towerId, teamId);
+                } else {
+                    updateTowerDurability(
+                            connection,
+                            new TowerDurability(
+                                    towerId,
+                                    teamId,
+                                    remainingHitPoints,
+                                    current.maximumHitPoints()),
+                            appliedAt);
+                }
+                TowerDamageOperation operation = new TowerDamageOperation(
+                        eventId,
+                        teamId,
+                        attackerLogicalEnemyId,
+                        towerId,
+                        damage,
+                        remainingHitPoints,
+                        destroyed,
+                        fingerprint);
+                insertTowerDamageOperation(connection, operation, operationId, appliedAt);
+                return damageResult(operation, OperationOutcome.APPLIED);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The tower damage operation conflicts with persisted data", exception);
+            }
+            throw failure("damage a tower by an event enemy", exception);
+        }
     }
 
     public Optional<StoredDefenseEvent> findEvent(UUID eventId) {
@@ -1384,6 +3176,8 @@ public final class DefenseRepository {
                         connection, eventId, operationId, occurredAt);
                 RaidSealRepository.refundIfPresent(
                         connection, eventId, operationId, occurredAt);
+                clearBattleBoosts(connection, eventId);
+                settleBattleFunds(connection, eventId, occurredAt);
                 markTerminal(connection, eventId, operationId, occurredAt);
                 insertOperation(
                         connection,
@@ -1596,6 +3390,16 @@ public final class DefenseRepository {
                     return OperationOutcome.STATE_MISMATCH;
                 }
 
+                if (terminalSnapshot.phase() == DefensePhase.VICTORY) {
+                    issueVictoryResearchCrystals(
+                            connection,
+                            terminalSnapshot,
+                            operationId,
+                            occurredAt);
+                    advanceTeamProgressAfterVictory(
+                            connection, terminalSnapshot.teamId(), terminalSnapshot.stageLevel(), occurredAt);
+                }
+
                 BlockChangeRepository.settleAppliedEventBlocks(
                         connection,
                         terminalSnapshot.eventId(),
@@ -1617,6 +3421,8 @@ public final class DefenseRepository {
                         terminalSnapshot.phase(),
                         occurredAt,
                         teamQueueRetention);
+                clearBattleBoosts(connection, terminalSnapshot.eventId());
+                settleBattleFunds(connection, terminalSnapshot.eventId(), occurredAt);
                 markEnemiesDespawned(
                         connection, terminalSnapshot.eventId(), occurredAt);
                 markTerminal(
@@ -1643,6 +3449,1092 @@ public final class DefenseRepository {
         }
     }
 
+    /**
+     * Creates the one team-scoped crystal drop for a successful terminal before queue settlement.
+     *
+     * <p>The existing escrow queue is deliberately reused as the physical delivery boundary:
+     * defeats and recovery settle the synthetic drop without issuing a queue row, while victory
+     * turns it into exactly one TEAM row. The separate batch ledger supplies the source-team and
+     * redeemed-quantity authority used by the core deposit path.</p>
+     */
+    private BattleFundsMutationResult mutateBattleFunds(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID operationId,
+            String operationKind,
+            long amount,
+            Instant appliedAt,
+            boolean spend) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(teamId, "teamId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(operationKind, "operationKind");
+        Objects.requireNonNull(appliedAt, "appliedAt");
+        if (operationKind.isBlank()) {
+            throw new IllegalArgumentException("operationKind must not be blank");
+        }
+        if (amount <= 0L) {
+            throw new IllegalArgumentException("amount must be positive");
+        }
+        String fingerprint = managementFingerprint(
+                spend ? "BATTLE_FUNDS_SPEND" : "BATTLE_FUNDS_CREDIT",
+                eventId,
+                teamId,
+                actorId == null ? "SYSTEM" : actorId,
+                operationKind,
+                amount);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<BattleFundsOperation> existing = loadBattleFundsOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingBattleFundsOperation(
+                            existing.orElseThrow(),
+                            eventId,
+                            teamId,
+                            actorId,
+                            operationKind,
+                            amount,
+                            fingerprint);
+                    return new BattleFundsMutationResult(
+                            OperationOutcome.ALREADY_APPLIED,
+                            requireBattleFunds(connection, eventId));
+                }
+
+                requireActiveBattleFundsEvent(connection, eventId, spend);
+                BattleFunds current = requireBattleFunds(connection, eventId);
+                if (!current.teamId().equals(teamId)) {
+                    throw new PersistenceConflictException(
+                            "The battle-funds operation belongs to another team");
+                }
+                if (spend) {
+                    requireTeamMember(connection, teamId, Objects.requireNonNull(actorId, "actorId"));
+                    if (current.balance() < amount) {
+                        throw new PersistenceConflictException(
+                                "The team does not have enough battle funds");
+                    }
+                }
+                long nextBalance;
+                long nextEarned = current.totalEarned();
+                long nextSpent = current.totalSpent();
+                try {
+                    if (spend) {
+                        nextBalance = Math.subtractExact(current.balance(), amount);
+                        nextSpent = Math.addExact(current.totalSpent(), amount);
+                    } else {
+                        nextBalance = Math.addExact(current.balance(), amount);
+                        nextEarned = Math.addExact(current.totalEarned(), amount);
+                    }
+                } catch (ArithmeticException overflow) {
+                    throw new PersistenceConflictException(
+                            "The battle-funds account cannot represent this mutation", overflow);
+                }
+                BattleFunds updated = new BattleFunds(
+                        current.eventId(),
+                        current.teamId(),
+                        nextBalance,
+                        nextEarned,
+                        nextSpent,
+                        BattleFundsState.ACTIVE,
+                        appliedAt);
+                updateBattleFunds(connection, updated);
+                insertBattleFundsOperation(
+                        connection,
+                        operationId,
+                        eventId,
+                        teamId,
+                        actorId,
+                        operationKind,
+                        amount,
+                        fingerprint,
+                        appliedAt);
+                return new BattleFundsMutationResult(OperationOutcome.APPLIED, updated);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The battle-funds operation conflicts with persisted data", exception);
+            }
+            throw failure("mutate event battle funds", exception);
+        }
+    }
+
+    private static void requireActiveBattleFundsEvent(
+            Connection connection,
+            UUID eventId,
+            boolean spend) throws SQLException {
+        Optional<UUID> activeEvent = loadActiveEventId(connection);
+        if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
+            throw new PersistenceConflictException(
+                    "Battle funds are available only for the active defense event");
+        }
+        StoredDefenseEvent event = requireEvent(connection, eventId);
+        if (event.session().phase().isTerminal()
+                || (spend && (event.session().phase() == DefensePhase.WAVE_ACTIVE
+                        || event.session().phase() == DefensePhase.COUNTDOWN))) {
+            throw new PersistenceConflictException(
+                    spend
+                            ? "Battle funds may only be spent during preparation or intermission"
+                            : "The defense event is already terminal");
+        }
+    }
+
+    private static void requireActiveTowerDamageEvent(
+            Connection connection,
+            UUID eventId,
+            UUID teamId) throws SQLException {
+        Optional<UUID> activeEvent = loadActiveEventId(connection);
+        if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
+            throw new PersistenceConflictException(
+                    "Tower damage is available only for the active defense event");
+        }
+        StoredDefenseEvent event = requireEvent(connection, eventId);
+        if (!event.session().teamId().equals(teamId)
+                || event.session().phase() != DefensePhase.WAVE_ACTIVE) {
+            throw new PersistenceConflictException(
+                    "Tower damage is available only during the owning team's active wave");
+        }
+    }
+
+    private static void insertBattleFunds(
+            Connection connection,
+            UUID eventId,
+            UUID teamId,
+            Instant createdAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_battle_funds(
+                    event_id, team_id, balance, total_earned, total_spent, state, updated_at
+                ) VALUES (?, ?, 0, 0, 0, 'ACTIVE', ?)
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.setString(2, teamId.toString());
+            statement.setString(3, createdAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void settleBattleFunds(
+            Connection connection,
+            UUID eventId,
+            Instant settledAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE event_battle_funds
+                SET balance = 0, state = 'SETTLED', updated_at = ?
+                WHERE event_id = ? AND state = 'ACTIVE'
+                """)) {
+            statement.setString(1, settledAt.toString());
+            statement.setString(2, eventId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void clearBattleBoosts(Connection connection, UUID eventId)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                DELETE FROM event_tower_boosts WHERE event_id = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void updateBattleFunds(Connection connection, BattleFunds funds)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE event_battle_funds
+                SET balance = ?, total_earned = ?, total_spent = ?, state = ?, updated_at = ?
+                WHERE event_id = ? AND state = 'ACTIVE'
+                """)) {
+            statement.setLong(1, funds.balance());
+            statement.setLong(2, funds.totalEarned());
+            statement.setLong(3, funds.totalSpent());
+            statement.setString(4, funds.state().name());
+            statement.setString(5, funds.updatedAt().toString());
+            statement.setString(6, funds.eventId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new PersistenceConflictException(
+                        "The battle-funds account was concurrently settled");
+            }
+        }
+    }
+
+    private static Optional<BattleFunds> loadBattleFunds(
+            Connection connection,
+            UUID eventId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, balance, total_earned, total_spent, state, updated_at
+                FROM event_battle_funds WHERE event_id = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(battleFundsFromRow(resultSet)) : Optional.empty();
+            }
+        }
+    }
+
+    private static BattleFunds requireBattleFunds(Connection connection, UUID eventId)
+            throws SQLException {
+        return loadBattleFunds(connection, eventId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Defense event " + eventId + " has no battle-funds account"));
+    }
+
+    private static BattleFunds battleFundsFromRow(ResultSet resultSet) throws SQLException {
+        return new BattleFunds(
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                resultSet.getLong("balance"),
+                resultSet.getLong("total_earned"),
+                resultSet.getLong("total_spent"),
+                BattleFundsState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static BattleBoost battleBoostFromRow(ResultSet resultSet) throws SQLException {
+        return new BattleBoost(
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("tower_id")),
+                battleBoostKind(resultSet.getString("boost_kind")),
+                resultSet.getInt("level"),
+                resultSet.getDouble("multiplier"),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static BattleBoostKind battleBoostKind(String id) {
+        for (BattleBoostKind kind : BattleBoostKind.values()) {
+            if (kind.id().equals(id)) {
+                return kind;
+            }
+        }
+        throw new PersistenceException("Unknown persisted battle boost kind: " + id, null);
+    }
+
+    private static Optional<BattleBoost> loadBattleBoost(
+            Connection connection,
+            UUID eventId,
+            UUID towerId,
+            BattleBoostKind kind) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                FROM event_tower_boosts
+                WHERE event_id = ? AND tower_id = ? AND boost_kind = ?
+                """)) {
+            statement.setString(1, eventId.toString());
+            statement.setString(2, towerId.toString());
+            statement.setString(3, kind.id());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(battleBoostFromRow(resultSet)) : Optional.empty();
+            }
+        }
+    }
+
+    private static BattleBoost requireBattleBoost(
+            Connection connection,
+            UUID eventId,
+            UUID towerId,
+            BattleBoostKind kind) throws SQLException {
+        return loadBattleBoost(connection, eventId, towerId, kind).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "The battle boost was not stored for tower " + towerId));
+    }
+
+    private static void upsertBattleBoost(Connection connection, BattleBoost boost)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_boosts(
+                    event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id, tower_id, boost_kind) DO UPDATE SET
+                    team_id = excluded.team_id,
+                    level = excluded.level,
+                    multiplier = excluded.multiplier,
+                    updated_at = excluded.updated_at
+                """)) {
+            statement.setString(1, boost.eventId().toString());
+            statement.setString(2, boost.teamId().toString());
+            statement.setString(3, boost.towerId().toString());
+            statement.setString(4, boost.kind().id());
+            statement.setInt(5, boost.level());
+            statement.setDouble(6, boost.multiplier());
+            statement.setString(7, boost.updatedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void insertBattleBoostOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_boost_operations(
+                    operation_id, event_id, team_id, actor_id, tower_id, boost_kind,
+                    cost, boost_multiplier, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId.toString());
+            statement.setString(5, towerId.toString());
+            statement.setString(6, kind.id());
+            statement.setLong(7, cost);
+            statement.setDouble(8, boostMultiplier);
+            statement.setString(9, fingerprint);
+            statement.setString(10, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<BattleBoostOperation> loadBattleBoostOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, tower_id, boost_kind,
+                       cost, boost_multiplier, payload_fingerprint
+                FROM event_tower_boost_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new BattleBoostOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        battleBoostKind(resultSet.getString("boost_kind")),
+                        resultSet.getLong("cost"),
+                        resultSet.getDouble("boost_multiplier"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingBattleBoostOperation(
+            BattleBoostOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.actorId().equals(actorId)
+                || !existing.towerId().equals(towerId)
+                || existing.kind() != kind
+                || existing.cost() != cost
+                || Double.compare(existing.boostMultiplier(), boostMultiplier) != 0
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The battle-boost operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static Optional<TowerDurability> loadTowerDurability(
+            Connection connection,
+            UUID towerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT tower_id, team_id, current_hp, max_hp
+                FROM towers WHERE tower_id = ?
+                """)) {
+            statement.setString(1, towerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new TowerDurability(
+                                uuid(resultSet.getString("tower_id")),
+                                uuid(resultSet.getString("team_id")),
+                                resultSet.getLong("current_hp"),
+                                resultSet.getLong("max_hp")))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TowerDurability requireTowerDurability(
+            Connection connection,
+            UUID towerId) throws SQLException {
+        return loadTowerDurability(connection, towerId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "The tower to repair does not exist"));
+    }
+
+    private static void updateTowerDurability(
+            Connection connection,
+            TowerDurability durability,
+            Instant updatedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE towers
+                SET current_hp = ?, updated_at = ?
+                WHERE tower_id = ?
+                """)) {
+            statement.setLong(1, durability.currentHitPoints());
+            statement.setString(2, updatedAt.toString());
+            statement.setString(3, durability.towerId().toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The tower durability update affected no rows");
+            }
+        }
+    }
+
+    private static void deleteTower(
+            Connection connection,
+            UUID towerId,
+            UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM towers WHERE tower_id = ? AND team_id = ?")) {
+            statement.setString(1, towerId.toString());
+            statement.setString(2, teamId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The destroyed tower delete affected no rows");
+            }
+        }
+    }
+
+    private static void insertTowerDamageOperation(
+            Connection connection,
+            TowerDamageOperation operation,
+            UUID operationId,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_damage_operations(
+                    operation_id, event_id, team_id, attacker_enemy_id, tower_id,
+                    damage, remaining_hp, destroyed, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, operation.eventId().toString());
+            statement.setString(3, operation.teamId().toString());
+            statement.setString(4, operation.attackerLogicalEnemyId().toString());
+            statement.setString(5, operation.towerId().toString());
+            statement.setLong(6, operation.damage());
+            statement.setLong(7, operation.remainingHitPoints());
+            statement.setInt(8, operation.destroyed() ? 1 : 0);
+            statement.setString(9, operation.payloadFingerprint());
+            statement.setString(10, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TowerDamageOperation> loadTowerDamageOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, attacker_enemy_id, tower_id,
+                       damage, remaining_hp, destroyed, payload_fingerprint
+                FROM event_tower_damage_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TowerDamageOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("attacker_enemy_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        resultSet.getLong("damage"),
+                        resultSet.getLong("remaining_hp"),
+                        resultSet.getInt("destroyed") == 1,
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTowerDamageOperation(
+            TowerDamageOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.attackerLogicalEnemyId().equals(attackerLogicalEnemyId)
+                || !existing.towerId().equals(towerId)
+                || existing.damage() != damage
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The tower-damage operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static TowerDamageMutationResult damageResult(
+            TowerDamageOperation operation,
+            OperationOutcome outcome) {
+        return new TowerDamageMutationResult(
+                outcome,
+                operation.eventId(),
+                operation.teamId(),
+                operation.towerId(),
+                operation.attackerLogicalEnemyId(),
+                operation.damage(),
+                operation.remainingHitPoints(),
+                operation.destroyed());
+    }
+
+    private static void insertTowerRepairOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_tower_repair_operations(
+                    operation_id, event_id, team_id, actor_id, tower_id,
+                    repaired_hit_points, cost, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId.toString());
+            statement.setString(5, towerId.toString());
+            statement.setLong(6, repairedHitPoints);
+            statement.setLong(7, cost);
+            statement.setString(8, fingerprint);
+            statement.setString(9, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TowerRepairOperation> loadTowerRepairOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, tower_id,
+                       repaired_hit_points, cost, payload_fingerprint
+                FROM event_tower_repair_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TowerRepairOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        uuid(resultSet.getString("tower_id")),
+                        resultSet.getLong("repaired_hit_points"),
+                        resultSet.getLong("cost"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTowerRepairOperation(
+            TowerRepairOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !existing.actorId().equals(actorId)
+                || !existing.towerId().equals(towerId)
+                || existing.repairedHitPoints() != repairedHitPoints
+                || existing.cost() != cost
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The tower-repair operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static void requireTowerBelongsToTeam(
+            Connection connection,
+            UUID towerId,
+            UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id FROM towers WHERE tower_id = ?
+                """)) {
+            statement.setString(1, towerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()
+                        || !teamId.toString().equals(resultSet.getString("team_id"))) {
+                    throw new PersistenceConflictException(
+                            "The tower is missing or belongs to another team");
+                }
+            }
+        }
+    }
+
+    private static void insertBattleFundsOperation(
+            Connection connection,
+            UUID operationId,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String fingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_battle_fund_operations(
+                    operation_id, event_id, team_id, actor_id, operation_kind,
+                    amount, payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, eventId.toString());
+            statement.setString(3, teamId.toString());
+            statement.setString(4, actorId == null ? null : actorId.toString());
+            statement.setString(5, operationKind);
+            statement.setLong(6, amount);
+            statement.setString(7, fingerprint);
+            statement.setString(8, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<BattleFundsOperation> loadBattleFundsOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT event_id, team_id, actor_id, operation_kind, amount, payload_fingerprint
+                FROM event_battle_fund_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                String actor = resultSet.getString("actor_id");
+                return Optional.of(new BattleFundsOperation(
+                        uuid(resultSet.getString("event_id")),
+                        uuid(resultSet.getString("team_id")),
+                        actor == null ? null : uuid(actor),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getLong("amount"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingBattleFundsOperation(
+            BattleFundsOperation existing,
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String fingerprint) {
+        if (!existing.eventId().equals(eventId)
+                || !existing.teamId().equals(teamId)
+                || !Objects.equals(existing.actorId(), actorId)
+                || !existing.operationKind().equals(operationKind)
+                || existing.amount() != amount
+                || !existing.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The battle-funds operation UUID is already assigned to another payload");
+        }
+    }
+
+    private void issueVictoryResearchCrystals(
+            Connection connection,
+            DefenseSessionSnapshot terminalSnapshot,
+            UUID terminalOperationId,
+            Instant issuedAt) throws SQLException {
+        TeamProgress beforeVictory = loadTeamProgress(connection, terminalSnapshot.teamId())
+                .orElseThrow(() -> new PersistenceConflictException(
+                        "Team " + terminalSnapshot.teamId() + " has no progression row"));
+        int quantity = rewardSettings.researchCrystalQuantity(
+                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel());
+        if (quantity <= 0) {
+            return;
+        }
+        UUID batchId = deterministicUuid(
+                terminalOperationId,
+                "RESEARCH_CRYSTAL_BATCH",
+                terminalSnapshot.eventId().toString());
+        UUID createOperationId = deterministicUuid(
+                terminalOperationId,
+                "RESEARCH_CRYSTAL_DROP",
+                batchId.toString());
+        String payload = researchCrystalPayload(
+                batchId,
+                terminalSnapshot.teamId(),
+                quantity);
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_batches(
+                    batch_id, event_id, team_id, stage_level, issued_quantity,
+                    redeemed_quantity, state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, 'ISSUED', ?, ?)
+                ON CONFLICT(batch_id) DO NOTHING
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setString(2, terminalSnapshot.eventId().toString());
+            statement.setString(3, terminalSnapshot.teamId().toString());
+            statement.setLong(4, terminalSnapshot.stageLevel());
+            statement.setInt(5, quantity);
+            statement.setString(6, issuedAt.toString());
+            statement.setString(7, issuedAt.toString());
+            statement.executeUpdate();
+        }
+        ResearchCrystalBatch existing = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow(() -> new SQLException(
+                        "The research crystal batch was not persisted"));
+        if (!existing.eventId().equals(terminalSnapshot.eventId())
+                || !existing.teamId().equals(terminalSnapshot.teamId())
+                || existing.stageLevel() != terminalSnapshot.stageLevel()
+                || existing.issuedQuantity() != quantity) {
+            throw new PersistenceConflictException(
+                    "The research crystal batch UUID is already assigned to another payload");
+        }
+        ensureResearchCrystalSegments(connection, batchId, quantity);
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO event_drop_escrow(
+                    drop_id, event_id, source_kind, source_id, item_id, item_payload,
+                    quantity, claimed_quantity, status, display_entity_id,
+                    create_operation_id, created_at, updated_at
+                ) VALUES (?, ?, 'ENEMY', ?, 'research_crystal', ?, ?, 0, 'HELD', NULL, ?, ?, ?)
+                ON CONFLICT(drop_id) DO NOTHING
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setString(2, terminalSnapshot.eventId().toString());
+            statement.setString(3, terminalSnapshot.eventId().toString());
+            statement.setString(4, payload);
+            statement.setInt(5, quantity);
+            statement.setString(6, createOperationId.toString());
+            statement.setString(7, issuedAt.toString());
+            statement.setString(8, issuedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static void advanceTeamProgressAfterVictory(
+            Connection connection,
+            UUID teamId,
+            long stageLevel,
+            Instant updatedAt) throws SQLException {
+        TeamProgress current = loadTeamProgress(connection, teamId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team " + teamId + " has no progression row"));
+        TeamProgress advanced = current.afterVictory(stageLevel);
+        if (advanced.equals(current)) {
+            return;
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_progress
+                SET highest_cleared_level = ?, unlocked_level = ?, updated_at = ?
+                WHERE team_id = ?
+                """)) {
+            statement.setLong(1, advanced.highestClearedLevel());
+            statement.setLong(2, advanced.unlockedLevel());
+            statement.setString(3, updatedAt.toString());
+            statement.setString(4, teamId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The victory progression update affected no rows");
+            }
+        }
+    }
+
+    private TeamInvitationMutationResult resolveTeamInvitation(
+            UUID invitationId,
+            UUID inviteeId,
+            UUID operationId,
+            Instant resolvedAt,
+            String operationKind,
+            boolean accept) {
+        Objects.requireNonNull(invitationId, "invitationId");
+        Objects.requireNonNull(inviteeId, "inviteeId");
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(resolvedAt, "resolvedAt");
+        String fingerprint = managementFingerprint(operationKind, invitationId, inviteeId);
+        try {
+            return database.inImmediateTransaction(connection -> {
+                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+                        connection, operationId);
+                if (existing.isPresent()) {
+                    requireMatchingTeamInviteOperation(
+                            existing.orElseThrow(),
+                            operationKind,
+                            inviteeId,
+                            fingerprint);
+                    TeamInvitation invitation = requireTeamInvitation(
+                            connection, existing.orElseThrow().inviteId());
+                    return invitationMutation(
+                            ManagementOutcome.ALREADY_APPLIED,
+                            connection,
+                            invitation);
+                }
+                requireNoActiveEvent(connection, accept
+                        ? "accept a team invitation"
+                        : "decline a team invitation");
+                TeamInvitation invitation = requireTeamInvitation(connection, invitationId);
+                if (!invitation.inviteeId().equals(inviteeId)) {
+                    throw new PersistenceConflictException(
+                            "This invitation is addressed to another player");
+                }
+                if (invitation.state() != TeamInvitationState.PENDING) {
+                    throw new PersistenceConflictException(
+                            "This invitation is no longer pending");
+                }
+                if (!resolvedAt.isBefore(invitation.expiresAt())) {
+                    expireInvitation(connection, invitationId, resolvedAt);
+                    return invitationMutation(
+                            ManagementOutcome.APPLIED,
+                            connection,
+                            requireTeamInvitation(connection, invitationId));
+                }
+                if (accept) {
+                    TeamRecord team = requireTeam(connection, invitation.teamId());
+                    if (findTeamByMember(connection, inviteeId).isPresent()) {
+                        throw new PersistenceConflictException(
+                                "The invited player already belongs to a team");
+                    }
+                    if (team.members().size() >= MAX_TEAM_MEMBERS) {
+                        throw new PersistenceConflictException(
+                                "The team has reached the maximum of " + MAX_TEAM_MEMBERS
+                                        + " members");
+                    }
+                    try (PreparedStatement statement = connection.prepareStatement("""
+                            INSERT INTO team_members(team_id, player_id, role, joined_at)
+                            VALUES (?, ?, 'MEMBER', ?)
+                            """)) {
+                        statement.setString(1, team.id().toString());
+                        statement.setString(2, inviteeId.toString());
+                        statement.setString(3, resolvedAt.toString());
+                        statement.executeUpdate();
+                    }
+                }
+                updateInvitationState(
+                        connection,
+                        invitationId,
+                        accept ? TeamInvitationState.ACCEPTED : TeamInvitationState.DECLINED,
+                        resolvedAt);
+                insertTeamInviteOperation(
+                        connection,
+                        operationId,
+                        invitationId,
+                        inviteeId,
+                        operationKind,
+                        fingerprint,
+                        resolvedAt);
+                TeamInvitation updated = requireTeamInvitation(connection, invitationId);
+                return invitationMutation(ManagementOutcome.APPLIED, connection, updated);
+            });
+        } catch (SQLException exception) {
+            if (isConstraintViolation(exception)) {
+                throw new PersistenceConflictException(
+                        "The invitation cannot change team membership", exception);
+            }
+            throw failure(
+                    accept ? "accept a team invitation" : "decline a team invitation",
+                    exception);
+        }
+    }
+
+    private static TeamInvitationMutationResult invitationMutation(
+            ManagementOutcome outcome,
+            Connection connection,
+            TeamInvitation invitation) throws SQLException {
+        return new TeamInvitationMutationResult(
+                outcome,
+                invitation,
+                loadTeam(connection, invitation.teamId()));
+    }
+
+    private static void insertTeamInvitation(
+            Connection connection,
+            TeamInvitation invitation,
+            String payloadFingerprint) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_invites(
+                    invite_id, team_id, inviter_id, invitee_id, state,
+                    created_at, expires_at, resolved_at, create_payload_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, invitation.id().toString());
+            statement.setString(2, invitation.teamId().toString());
+            statement.setString(3, invitation.inviterId().toString());
+            statement.setString(4, invitation.inviteeId().toString());
+            statement.setString(5, invitation.state().name());
+            statement.setString(6, invitation.createdAt().toString());
+            statement.setString(7, invitation.expiresAt().toString());
+            statement.setString(8, nullableInstantString(invitation.resolvedAt()));
+            statement.setString(9, payloadFingerprint);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void updateInvitationState(
+            Connection connection,
+            UUID invitationId,
+            TeamInvitationState state,
+            Instant resolvedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_invites
+                SET state = ?, resolved_at = ?
+                WHERE invite_id = ? AND state = 'PENDING'
+                """)) {
+            statement.setString(1, state.name());
+            statement.setString(2, resolvedAt.toString());
+            statement.setString(3, invitationId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("The invitation state update affected no rows");
+            }
+        }
+    }
+
+    private static void expireInvitation(
+            Connection connection, UUID invitationId, Instant resolvedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE team_invites
+                SET state = 'EXPIRED', resolved_at = ?
+                WHERE invite_id = ? AND state = 'PENDING'
+                """)) {
+            statement.setString(1, resolvedAt.toString());
+            statement.setString(2, invitationId.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static boolean hasPendingInvitation(
+            Connection connection, UUID teamId, UUID inviteeId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_invites
+                WHERE team_id = ? AND invitee_id = ? AND state = 'PENDING'
+                LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            statement.setString(2, inviteeId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    private static Optional<TeamInvitation> loadTeamInvitation(
+            Connection connection, UUID invitationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT invite_id, team_id, inviter_id, invitee_id, state,
+                       created_at, expires_at, resolved_at
+                FROM team_invites WHERE invite_id = ?
+                """)) {
+            statement.setString(1, invitationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(teamInvitationFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static TeamInvitation requireTeamInvitation(
+            Connection connection, UUID invitationId) throws SQLException {
+        return loadTeamInvitation(connection, invitationId).orElseThrow(
+                () -> new PersistenceConflictException(
+                        "Team invitation " + invitationId + " does not exist"));
+    }
+
+    private static TeamInvitation teamInvitationFromRow(ResultSet resultSet) throws SQLException {
+        return new TeamInvitation(
+                uuid(resultSet.getString("invite_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("inviter_id")),
+                uuid(resultSet.getString("invitee_id")),
+                TeamInvitationState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("created_at")),
+                instant(resultSet.getString("expires_at")),
+                nullableInstant(resultSet.getString("resolved_at")));
+    }
+
+    private static void insertTeamInviteOperation(
+            Connection connection,
+            UUID operationId,
+            UUID invitationId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_invite_operations(
+                    operation_id, invite_id, actor_id, operation_kind,
+                    payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, invitationId.toString());
+            statement.setString(3, actorId.toString());
+            statement.setString(4, operationKind);
+            statement.setString(5, payloadFingerprint);
+            statement.setString(6, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TeamInviteOperation> loadTeamInviteOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT invite_id, actor_id, operation_kind, payload_fingerprint
+                FROM team_invite_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TeamInviteOperation(
+                        uuid(resultSet.getString("invite_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTeamInviteOperation(
+            TeamInviteOperation operation,
+            String operationKind,
+            UUID actorId,
+            String payloadFingerprint) {
+        if (!operation.actorId().equals(actorId)
+                || !operation.operationKind().equals(operationKind)
+                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The invitation operation UUID is already assigned to a different payload");
+        }
+    }
+
+    private static Optional<TeamRecord> findTeamByMember(
+            Connection connection, UUID playerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id FROM team_members WHERE player_id = ?
+                """)) {
+            statement.setString(1, playerId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return loadTeam(connection, uuid(resultSet.getString("team_id")));
+            }
+        }
+    }
+
     private static TeamRecord teamFromRow(Connection connection, ResultSet resultSet)
             throws SQLException {
         UUID teamId = uuid(resultSet.getString("team_id"));
@@ -1659,13 +4551,19 @@ public final class DefenseRepository {
                 }
             }
         }
-        return new TeamRecord(teamId, ownerId, members, createdAt);
+        return new TeamRecord(
+                teamId,
+                ownerId,
+                members,
+                resultSet.getString("display_name"),
+                createdAt);
     }
 
     private static Optional<TeamRecord> loadTeam(Connection connection, UUID teamId)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT team_id, owner_player_id, created_at FROM teams WHERE team_id = ?
+                SELECT team_id, owner_player_id, display_name, created_at
+                FROM teams WHERE team_id = ?
                 """)) {
             statement.setString(1, teamId.toString());
             try (ResultSet resultSet = statement.executeQuery()) {
@@ -1674,6 +4572,194 @@ public final class DefenseRepository {
                 }
                 return Optional.of(teamFromRow(connection, resultSet));
             }
+        }
+    }
+
+    private static Optional<TeamProgress> loadTeamProgress(
+            Connection connection, UUID teamId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, highest_cleared_level, unlocked_level, research_points
+                FROM team_progress WHERE team_id = ?
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new TeamProgress(
+                                uuid(resultSet.getString("team_id")),
+                                resultSet.getLong("highest_cleared_level"),
+                                resultSet.getLong("unlocked_level"),
+                                resultSet.getLong("research_points")))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<ResearchCrystalBatch> loadResearchCrystalBatch(
+            Connection connection, UUID batchId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT batch_id, event_id, team_id, stage_level, issued_quantity,
+                       redeemed_quantity, state, created_at, updated_at
+                FROM research_crystal_batches WHERE batch_id = ?
+                """)) {
+            statement.setString(1, batchId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(researchCrystalBatchFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<ResearchCrystalSegment> loadResearchCrystalSegment(
+            Connection connection,
+            UUID batchId,
+            int segmentOffset) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT segment_quantity, redeemed_quantity
+                FROM research_crystal_segments
+                WHERE batch_id = ? AND segment_offset = ?
+                """)) {
+            statement.setString(1, batchId.toString());
+            statement.setInt(2, segmentOffset);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(new ResearchCrystalSegment(
+                                resultSet.getInt("segment_quantity"),
+                                resultSet.getInt("redeemed_quantity")))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static void ensureResearchCrystalSegments(
+            Connection connection,
+            UUID batchId,
+            int issuedQuantity) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_segments(
+                    batch_id, segment_offset, segment_quantity)
+                VALUES (?, ?, ?)
+                ON CONFLICT(batch_id, segment_offset) DO NOTHING
+                """)) {
+            for (int offset = 0; offset < issuedQuantity; offset += RESEARCH_CRYSTAL_SEGMENT_SIZE) {
+                statement.setString(1, batchId.toString());
+                statement.setInt(2, offset);
+                statement.setInt(
+                        3,
+                        Math.min(
+                                RESEARCH_CRYSTAL_SEGMENT_SIZE,
+                                issuedQuantity - offset));
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private static ResearchCrystalBatch researchCrystalBatchFromRow(ResultSet resultSet)
+            throws SQLException {
+        return new ResearchCrystalBatch(
+                uuid(resultSet.getString("batch_id")),
+                uuid(resultSet.getString("event_id")),
+                uuid(resultSet.getString("team_id")),
+                resultSet.getLong("stage_level"),
+                resultSet.getInt("issued_quantity"),
+                resultSet.getInt("redeemed_quantity"),
+                ResearchCrystalBatchStatus.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("created_at")),
+                instant(resultSet.getString("updated_at")));
+    }
+
+    private static Optional<ResearchCrystalRedemption> loadResearchCrystalRedemption(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, batch_id, core_id, team_id, actor_id, quantity,
+                       payload_fingerprint, segment_offset, segment_quantity, state,
+                       prepared_at, applied_at, rolled_back_at
+                FROM research_crystal_redemptions WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(researchCrystalRedemptionFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static ResearchCrystalRedemption researchCrystalRedemptionFromRow(
+            ResultSet resultSet) throws SQLException {
+        return new ResearchCrystalRedemption(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("batch_id")),
+                uuid(resultSet.getString("core_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("actor_id")),
+                resultSet.getInt("quantity"),
+                resultSet.getString("payload_fingerprint"),
+                nullableInteger(resultSet, "segment_offset"),
+                nullableInteger(resultSet, "segment_quantity"),
+                ResearchCrystalRedemptionState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                nullableInstant(resultSet.getString("applied_at")),
+                nullableInstant(resultSet.getString("rolled_back_at")));
+    }
+
+    private static void insertResearchCrystalRedemption(
+            Connection connection,
+            ResearchCrystalRedemption redemption) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO research_crystal_redemptions(
+                    operation_id, batch_id, core_id, team_id, actor_id, quantity,
+                    payload_fingerprint, segment_offset, segment_quantity,
+                    state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                """)) {
+            statement.setString(1, redemption.operationId().toString());
+            statement.setString(2, redemption.batchId().toString());
+            statement.setString(3, redemption.coreId().toString());
+            statement.setString(4, redemption.teamId().toString());
+            statement.setString(5, redemption.actorId().toString());
+            statement.setInt(6, redemption.quantity());
+            statement.setString(7, redemption.payloadFingerprint());
+            if (redemption.segmentOffset() == null) {
+                statement.setNull(8, java.sql.Types.INTEGER);
+                statement.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                statement.setInt(8, redemption.segmentOffset());
+                statement.setInt(9, redemption.segmentQuantity());
+            }
+            statement.setString(10, redemption.preparedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static ResearchCrystalRedemptionResult crystalRedemptionResult(
+            Connection connection,
+            OperationOutcome outcome,
+            UUID batchId) throws SQLException {
+        ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow(() -> new SQLException("The crystal batch disappeared"));
+        TeamProgress progress = loadTeamProgress(connection, batch.teamId())
+                .orElseThrow(() -> new SQLException("The crystal team progression disappeared"));
+        return new ResearchCrystalRedemptionResult(outcome, progress, batch);
+    }
+
+    private static void requireMatchingCrystalRedemption(
+            ResearchCrystalRedemption redemption,
+            UUID operationId,
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity,
+            String fingerprint) {
+        if (!redemption.operationId().equals(operationId)
+                || !redemption.batchId().equals(batchId)
+                || !redemption.coreId().equals(coreId)
+                || !redemption.actorId().equals(actorId)
+                || redemption.quantity() != quantity
+                || !redemption.payloadFingerprint().equals(fingerprint)) {
+            throw new PersistenceConflictException(
+                    "The research crystal redemption UUID is already assigned to another payload");
         }
     }
 
@@ -1722,6 +4808,22 @@ public final class DefenseRepository {
 
     private static void requireTeamCanBeDeleted(Connection connection, UUID teamId)
             throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_resource_balances
+                WHERE team_id = ? AND balance > 0 LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "A team with resource wallet points cannot be disbanded");
+                }
+            }
+        }
+        if (ResourceVoucherRepository.hasLiveVouchers(connection, teamId)) {
+            throw new PersistenceConflictException(
+                    "A team with an unredeemed resource voucher cannot be disbanded");
+        }
         if (loadCoreByTeam(connection, teamId).isPresent()) {
             throw new PersistenceConflictException(
                     "A team with a core cannot be disbanded or left by its sole owner");
@@ -1737,6 +4839,19 @@ public final class DefenseRepository {
                 }
             }
         }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM team_resource_balances
+                WHERE team_id = ? AND balance > 0
+                LIMIT 1
+                """)) {
+            statement.setString(1, teamId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    throw new PersistenceConflictException(
+                            "A team with a non-zero resource wallet cannot be deleted");
+                }
+            }
+        }
     }
 
     private static void deleteTeam(Connection connection, UUID teamId) throws SQLException {
@@ -1749,6 +4864,265 @@ public final class DefenseRepository {
         }
     }
 
+    private static void insertTeamProfileOperation(
+            Connection connection,
+            UUID operationId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint,
+            Instant appliedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_profile_operations(
+                    operation_id, team_id, actor_id, operation_kind,
+                    payload_fingerprint, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, operationId.toString());
+            statement.setString(2, teamId.toString());
+            statement.setString(3, actorId.toString());
+            statement.setString(4, operationKind);
+            statement.setString(5, payloadFingerprint);
+            statement.setString(6, appliedAt.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<TeamProfileOperation> loadTeamProfileOperation(
+            Connection connection, UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT team_id, actor_id, operation_kind, payload_fingerprint
+                FROM team_profile_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new TeamProfileOperation(
+                        uuid(resultSet.getString("team_id")),
+                        uuid(resultSet.getString("actor_id")),
+                        resultSet.getString("operation_kind"),
+                        resultSet.getString("payload_fingerprint")));
+            }
+        }
+    }
+
+    private static void requireMatchingTeamProfileOperation(
+            TeamProfileOperation operation,
+            UUID teamId,
+            UUID actorId,
+            String payloadFingerprint) {
+        if (!operation.teamId().equals(teamId)
+                || !operation.actorId().equals(actorId)
+                || !operation.operationKind().equals("TEAM_RENAME")
+                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The team profile operation UUID is already assigned to a different payload");
+        }
+    }
+
+    private static void insertCoreRepairOperation(
+            Connection connection,
+            CoreRepairOperation operation) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO core_repair_operations(
+                    operation_id, core_id, team_id, actor_id, expected_current_hp,
+                    repair_amount, defense_point_cost, payment_mode, vanilla_material,
+                    vanilla_material_amount, legacy_defense_shard_amount,
+                    payload_fingerprint, state, prepared_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                """)) {
+            statement.setString(1, operation.operationId().toString());
+            statement.setString(2, operation.coreId().toString());
+            statement.setString(3, operation.teamId().toString());
+            statement.setString(4, operation.actorId().toString());
+            statement.setLong(5, operation.expectedCurrentHitPoints());
+            statement.setLong(6, operation.repairAmount());
+            statement.setLong(7, operation.defensePointCost());
+            statement.setString(8, operation.paymentMode().name());
+            statement.setString(9, operation.vanillaMaterial());
+            statement.setLong(10, operation.vanillaMaterialAmount());
+            statement.setLong(11, operation.legacyDefenseShardAmount());
+            statement.setString(12, operation.payloadFingerprint());
+            statement.setString(13, operation.preparedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<CoreRepairOperation> loadCoreRepairOperation(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
+                       repair_amount, defense_point_cost, payment_mode, vanilla_material,
+                       vanilla_material_amount, legacy_defense_shard_amount,
+                       payload_fingerprint, state, prepared_at,
+                       applied_at, rolled_back_at
+                FROM core_repair_operations WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next()
+                        ? Optional.of(coreRepairOperationFromRow(resultSet))
+                        : Optional.empty();
+            }
+        }
+    }
+
+    private static CoreRepairOperation coreRepairOperationFromRow(ResultSet resultSet)
+            throws SQLException {
+        return new CoreRepairOperation(
+                uuid(resultSet.getString("operation_id")),
+                uuid(resultSet.getString("core_id")),
+                uuid(resultSet.getString("team_id")),
+                uuid(resultSet.getString("actor_id")),
+                resultSet.getLong("expected_current_hp"),
+                resultSet.getLong("repair_amount"),
+                resultSet.getLong("defense_point_cost"),
+                PaymentMode.valueOf(resultSet.getString("payment_mode")),
+                resultSet.getString("vanilla_material"),
+                resultSet.getLong("vanilla_material_amount"),
+                resultSet.getLong("legacy_defense_shard_amount"),
+                resultSet.getString("payload_fingerprint"),
+                CoreRepairOperationState.valueOf(resultSet.getString("state")),
+                instant(resultSet.getString("prepared_at")),
+                nullableInstant(resultSet.getString("applied_at")),
+                nullableInstant(resultSet.getString("rolled_back_at")));
+    }
+
+    private static void requireMatchingCoreRepairOperation(
+            CoreRepairOperation existing,
+            UUID coreId,
+            UUID actorId,
+            long amount,
+            long defensePointCost,
+            PaymentMode paymentMode,
+            String vanillaMaterial,
+            long vanillaMaterialAmount,
+            long legacyDefenseShardAmount,
+            String payloadFingerprint) {
+        if (!existing.coreId().equals(coreId)
+                || !existing.actorId().equals(actorId)
+                || existing.repairAmount() != amount
+                || existing.defensePointCost() != defensePointCost
+                || existing.paymentMode() != paymentMode
+                || !existing.vanillaMaterial().equals(vanillaMaterial)
+                || existing.vanillaMaterialAmount() != vanillaMaterialAmount
+                || existing.legacyDefenseShardAmount() != legacyDefenseShardAmount
+                || !existing.payloadFingerprint().equals(payloadFingerprint)) {
+            throw new PersistenceConflictException(
+                    "The core repair operation UUID is already assigned to another payload");
+        }
+    }
+
+    private static String expectedReceiptMaterial(CoreRepairOperation operation) {
+        return operation.paymentMode() == PaymentMode.LEGACY_ITEMS
+                && operation.legacyDefenseShardAmount() > 0L
+                ? "CORE_REPAIR_BUNDLE"
+                : operation.vanillaMaterial();
+    }
+
+    private static long expectedReceiptQuantity(CoreRepairOperation operation) {
+        return Math.addExact(operation.vanillaMaterialAmount(), operation.legacyDefenseShardAmount());
+    }
+
+    private static void updateCoreRepairOperationState(
+            Connection connection,
+            UUID operationId,
+            CoreRepairOperationState state,
+            Instant at) throws SQLException {
+        String sql = switch (state) {
+            case APPLIED -> """
+                    UPDATE core_repair_operations
+                    SET state = 'APPLIED', applied_at = ?
+                    WHERE operation_id = ? AND state = 'PREPARED'
+                    """;
+            case ROLLED_BACK -> """
+                    UPDATE core_repair_operations
+                    SET state = 'ROLLED_BACK', rolled_back_at = ?
+                    WHERE operation_id = ? AND state = 'PREPARED'
+                    """;
+            case PREPARED -> throw new IllegalArgumentException(
+                    "A core repair cannot transition back to PREPARED");
+        };
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, at.toString());
+            statement.setString(2, operationId.toString());
+            if (statement.executeUpdate() != 1) {
+                throw new PersistenceConflictException(
+                        "The core repair state changed concurrently");
+            }
+        }
+    }
+
+    private static void insertCoreRepairReceipt(
+            Connection connection,
+            CoreRepairReceipt receipt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO core_repair_receipts(
+                    operation_id, player_id, material, quantity, state, reserved_at)
+                VALUES (?, ?, ?, ?, 'RESERVED', ?)
+                """)) {
+            statement.setString(1, receipt.operationId().toString());
+            statement.setString(2, receipt.playerId().toString());
+            statement.setString(3, receipt.material());
+            statement.setLong(4, receipt.quantity());
+            statement.setString(5, receipt.reservedAt().toString());
+            statement.executeUpdate();
+        }
+    }
+
+    private static Optional<CoreRepairReceipt> loadCoreRepairReceipt(
+            Connection connection,
+            UUID operationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT operation_id, player_id, material, quantity, state,
+                       reserved_at, resolved_at
+                FROM core_repair_receipts WHERE operation_id = ?
+                """)) {
+            statement.setString(1, operationId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new CoreRepairReceipt(
+                        uuid(resultSet.getString("operation_id")),
+                        uuid(resultSet.getString("player_id")),
+                        resultSet.getString("material"),
+                        resultSet.getLong("quantity"),
+                        CoreRepairReceiptState.valueOf(resultSet.getString("state")),
+                        instant(resultSet.getString("reserved_at")),
+                        nullableInstant(resultSet.getString("resolved_at"))));
+            }
+        }
+    }
+
+    private static void updateCoreRepairReceiptState(
+            Connection connection,
+            UUID operationId,
+            CoreRepairReceiptState state,
+            Instant at) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE core_repair_receipts
+                SET state = ?, resolved_at = ?
+                WHERE operation_id = ?
+                  AND ((? = 'CLEARED' AND state IN ('SECURED', 'CLEAR_PENDING'))
+                       OR (? = 'RESTORED' AND state IN ('RESERVED', 'SECURED', 'RETURN_PENDING'))
+                       OR (? = 'RETURN_PENDING' AND state IN ('RESERVED', 'SECURED'))
+                       OR (? = 'CLEAR_PENDING' AND state = 'SECURED'))
+                """)) {
+            statement.setString(1, state.name());
+            statement.setString(2, at.toString());
+            statement.setString(3, operationId.toString());
+            statement.setString(4, state.name());
+            statement.setString(5, state.name());
+            statement.setString(6, state.name());
+            statement.setString(7, state.name());
+            statement.executeUpdate();
+        }
+    }
+
     private static void insertManagementOperation(
             Connection connection,
             UUID operationId,
@@ -1757,18 +5131,39 @@ public final class DefenseRepository {
             String operationKind,
             String payloadFingerprint,
             Instant appliedAt) throws SQLException {
+        insertManagementOperation(
+                connection,
+                operationId,
+                resourceType,
+                resourceId,
+                operationKind,
+                payloadFingerprint,
+                PaymentMode.LEGACY_ITEMS,
+                appliedAt);
+    }
+
+    private static void insertManagementOperation(
+            Connection connection,
+            UUID operationId,
+            String resourceType,
+            UUID resourceId,
+            String operationKind,
+            String payloadFingerprint,
+            PaymentMode paymentMode,
+            Instant appliedAt) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO management_operations(
                     operation_id, resource_type, resource_id, operation_kind,
-                    payload_fingerprint, applied_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    payload_fingerprint, payment_mode, applied_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """)) {
             statement.setString(1, operationId.toString());
             statement.setString(2, resourceType);
             statement.setString(3, resourceId.toString());
             statement.setString(4, operationKind);
             statement.setString(5, payloadFingerprint);
-            statement.setString(6, appliedAt.toString());
+            statement.setString(6, paymentMode.name());
+            statement.setString(7, appliedAt.toString());
             statement.executeUpdate();
         }
     }
@@ -1776,7 +5171,7 @@ public final class DefenseRepository {
     private static Optional<ManagementOperation> loadManagementOperation(
             Connection connection, UUID operationId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT resource_type, resource_id, operation_kind, payload_fingerprint
+                SELECT resource_type, resource_id, operation_kind, payload_fingerprint, payment_mode
                 FROM management_operations WHERE operation_id = ?
                 """)) {
             statement.setString(1, operationId.toString());
@@ -1788,7 +5183,8 @@ public final class DefenseRepository {
                         resultSet.getString("resource_type"),
                         uuid(resultSet.getString("resource_id")),
                         resultSet.getString("operation_kind"),
-                        resultSet.getString("payload_fingerprint")));
+                        resultSet.getString("payload_fingerprint"),
+                        PaymentMode.valueOf(resultSet.getString("payment_mode"))));
             }
         }
     }
@@ -1799,10 +5195,27 @@ public final class DefenseRepository {
             UUID resourceId,
             String operationKind,
             String payloadFingerprint) {
+        requireMatchingManagementOperation(
+                operation,
+                resourceType,
+                resourceId,
+                operationKind,
+                payloadFingerprint,
+                PaymentMode.LEGACY_ITEMS);
+    }
+
+    private static void requireMatchingManagementOperation(
+            ManagementOperation operation,
+            String resourceType,
+            UUID resourceId,
+            String operationKind,
+            String payloadFingerprint,
+            PaymentMode paymentMode) {
         if (!operation.resourceType().equals(resourceType)
                 || !operation.resourceId().equals(resourceId)
                 || !operation.operationKind().equals(operationKind)
-                || !operation.payloadFingerprint().equals(payloadFingerprint)) {
+                || !operation.payloadFingerprint().equals(payloadFingerprint)
+                || operation.paymentMode() != paymentMode) {
             throw new PersistenceConflictException(
                     "The management operation UUID is already assigned to a different payload");
         }
@@ -1963,7 +5376,8 @@ public final class DefenseRepository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                            block_x, block_y, block_z, max_hp, minimum_core_distance,
-                           rebuilding_destroyed_core, previous_block_data, state,
+                           rebuilding_destroyed_core, relocating_existing_core,
+                           previous_block_data, state,
                            prepared_at, applied_at, rolled_back_at
                     FROM core_placement_operations
                     WHERE state = ?
@@ -1980,12 +5394,29 @@ public final class DefenseRepository {
         });
     }
 
+    private static void insertEmptyResourceBalances(
+            Connection connection, UUID teamId, Instant createdAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO team_resource_balances(team_id, resource_type, balance, updated_at)
+                VALUES (?, ?, 0, ?)
+                """)) {
+            for (ResourceType resourceType : ResourceType.values()) {
+                statement.setString(1, teamId.toString());
+                statement.setString(2, resourceType.name());
+                statement.setString(3, createdAt.toString());
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
     private static Optional<CorePlacement> loadCorePlacement(
             Connection connection, UUID operationId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                        block_x, block_y, block_z, max_hp, minimum_core_distance,
-                       rebuilding_destroyed_core, previous_block_data, state,
+                       rebuilding_destroyed_core, relocating_existing_core,
+                       previous_block_data, state,
                        prepared_at, applied_at, rolled_back_at
                 FROM core_placement_operations
                 WHERE operation_id = ?
@@ -2005,8 +5436,9 @@ public final class DefenseRepository {
                 INSERT INTO core_placement_operations(
                     operation_id, item_id, core_id, actor_id, team_id, world_id,
                     block_x, block_y, block_z, max_hp, minimum_core_distance,
-                    rebuilding_destroyed_core, previous_block_data, state, prepared_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
+                    rebuilding_destroyed_core, relocating_existing_core,
+                    previous_block_data, state, prepared_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
                 """)) {
             statement.setString(1, placement.operationId().toString());
             statement.setString(2, placement.itemId().toString());
@@ -2020,8 +5452,9 @@ public final class DefenseRepository {
             statement.setLong(10, placement.maximumHitPoints());
             statement.setDouble(11, placement.minimumCoreDistance());
             statement.setInt(12, placement.rebuildingDestroyedCore() ? 1 : 0);
-            statement.setString(13, placement.previousBlockData());
-            statement.setString(14, placement.preparedAt().toString());
+            statement.setInt(13, placement.relocatingExistingCore() ? 1 : 0);
+            statement.setString(14, placement.previousBlockData());
+            statement.setString(15, placement.preparedAt().toString());
             statement.executeUpdate();
         }
     }
@@ -2071,6 +5504,7 @@ public final class DefenseRepository {
                 resultSet.getLong("max_hp"),
                 resultSet.getDouble("minimum_core_distance"),
                 resultSet.getInt("rebuilding_destroyed_core") != 0,
+                resultSet.getInt("relocating_existing_core") != 0,
                 resultSet.getString("previous_block_data"),
                 CorePlacementState.valueOf(resultSet.getString("state")),
                 instant(resultSet.getString("prepared_at")),
@@ -2093,6 +5527,7 @@ public final class DefenseRepository {
                                 existing.minimumCoreDistance(), requested.minimumCoreDistance())
                         != 0
                 || existing.rebuildingDestroyedCore() != requested.rebuildingDestroyedCore()
+                || existing.relocatingExistingCore() != requested.relocatingExistingCore()
                 || !existing.previousBlockData().equals(requested.previousBlockData())) {
             throw new PersistenceConflictException(
                     "The operation UUID was reused with a different core placement payload");
@@ -2656,6 +6091,42 @@ public final class DefenseRepository {
         }
     }
 
+    private static String researchCrystalPayload(
+            UUID batchId,
+            UUID teamId,
+            int issuedQuantity) {
+        return "research_crystal:v2:" + batchId + ":" + teamId + ":" + issuedQuantity;
+    }
+
+    private static String crystalRedemptionFingerprint(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            int quantity) {
+        return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|" + quantity;
+    }
+
+    private static String crystalRedemptionFingerprint(
+            UUID batchId,
+            UUID coreId,
+            UUID actorId,
+            UUID itemTeamId,
+            int itemIssuedQuantity,
+            Integer itemSegmentOffset,
+            Integer itemSegmentQuantity,
+            int quantity) {
+        return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|"
+                + itemTeamId + "|" + itemIssuedQuantity + "|"
+                + (itemSegmentOffset == null ? "legacy" : itemSegmentOffset)
+                + "|" + (itemSegmentQuantity == null ? "legacy" : itemSegmentQuantity)
+                + "|" + quantity;
+    }
+
+    private static UUID deterministicUuid(UUID base, String namespace, String value) {
+        return UUID.nameUUIDFromBytes(
+                (base + "|" + namespace + "|" + value).getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void appendSortedUuids(StringBuilder target, Set<UUID> values) {
         values.stream()
                 .map(UUID::toString)
@@ -2701,6 +6172,21 @@ public final class DefenseRepository {
         return value == null ? null : Instant.parse(value);
     }
 
+    private static Integer nullableInteger(ResultSet resultSet, String column) throws SQLException {
+        int value = resultSet.getInt(column);
+        return resultSet.wasNull() ? null : value;
+    }
+
+    private static String nullableInstantString(Instant value) {
+        return value == null ? null : value.toString();
+    }
+
+    private record ResearchCrystalSegment(int segmentQuantity, int redeemedQuantity) {
+        private int remainingQuantity() {
+            return segmentQuantity - redeemedQuantity;
+        }
+    }
+
     private record ParticipantSets(Set<UUID> registered, Set<UUID> effective) {
     }
 
@@ -2715,6 +6201,62 @@ public final class DefenseRepository {
             String resourceType,
             UUID resourceId,
             String operationKind,
+            String payloadFingerprint,
+            PaymentMode paymentMode) {
+    }
+
+    private record TeamProfileOperation(
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint) {
+    }
+
+    private record TeamInviteOperation(
+            UUID inviteId,
+            UUID actorId,
+            String operationKind,
+            String payloadFingerprint) {
+    }
+
+    private record BattleFundsOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            String operationKind,
+            long amount,
+            String payloadFingerprint) {
+    }
+
+    private record BattleBoostOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            BattleBoostKind kind,
+            long cost,
+            double boostMultiplier,
+            String payloadFingerprint) {
+    }
+
+    private record TowerRepairOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID actorId,
+            UUID towerId,
+            long repairedHitPoints,
+            long cost,
+            String payloadFingerprint) {
+    }
+
+    private record TowerDamageOperation(
+            UUID eventId,
+            UUID teamId,
+            UUID attackerLogicalEnemyId,
+            UUID towerId,
+            long damage,
+            long remainingHitPoints,
+            boolean destroyed,
             String payloadFingerprint) {
     }
 

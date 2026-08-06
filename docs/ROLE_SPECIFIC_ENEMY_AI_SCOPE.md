@@ -7,14 +7,20 @@ enabled. It does not enable terrain mutation in the production plugin.
 
 - Optional `enemies.destroyer-ratio` and `enemies.builder-ratio` settings with non-negative,
   finite values whose sum cannot exceed one. Existing configurations keep the 0.15/0.10 defaults.
-- A deterministic wave role schedule for normal enemies, destroyers, builders, and a single final
-  wave boss slot. Special-role allocation grows by a bounded stage/wave multiplier and never
-  changes the total logical enemy count.
+- A deterministic wave role schedule for normal enemies, destroyers, builders, intermediate
+  bosses, and a final-wave boss slot. Special-role allocation grows by a bounded stage/wave
+  multiplier and never changes the total logical enemy count.
 - Role metadata in `TaggedEnemy` and the event-enemy PDC. Legacy tags without the role key remain
   readable as normal enemies; malformed role values are rejected.
 - Role-specific navigation speed and persisted ledger types for spawned event enemies.
+- Role-specific Paper variants: Destroyers spawn as Husks, Builders as Zombie Villagers, and
+  normal/boss roles remain Zombies. All variants carry the same event/logical PDC identity and
+  reconcile through the same restart and recovery path.
 - A Paper-independent path planner that distinguishes advance, protected-obstacle recalculation,
   destroyer breaking, builder support, and bounded recovery.
+- A stalled pathfinder acceptance is no longer treated as an indefinitely usable direct path:
+  after two refresh intervals the latest classified obstacle can select the role-specific break
+  or bridge action, while the longer recovery timeout remains fail-closed.
 - A terrain authorization gate: destroyers may break, builders may build, and normal enemies may
   break only when a caller explicitly proves the fallback condition. Mandatory block protection
   still runs first.

@@ -1,5 +1,6 @@
 package io.github.takenoha.towerdefense.config;
 
+import io.github.takenoha.towerdefense.domain.TowerType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -37,7 +38,223 @@ public final class PluginSettingsValidator {
         validateProtection(settings.protection(), unreadablePaths, violations);
         validateRewards(settings.rewards(), unreadablePaths, violations);
         validateTerrainMutation(settings.terrainMutation(), unreadablePaths, violations);
+        validateTowers(settings.towers(), unreadablePaths, violations);
         return List.copyOf(violations);
+    }
+
+    private static void validateTowers(
+            TowerSettings towers,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (towers == null) {
+            if (!unreadablePaths.contains("towers")) {
+                violations.add("towers: section is required");
+            }
+            return;
+        }
+        requirePositive("towers.base-limit", towers.baseLimit(), unreadablePaths, violations);
+        if (isReadable("towers.limit-increment", unreadablePaths)
+                && towers.limitIncrement() < 0) {
+            violations.add(
+                    "towers.limit-increment: must be >= 0 (was "
+                            + towers.limitIncrement() + ")");
+        }
+        requirePositive("towers.hard-cap", towers.hardCap(), unreadablePaths, violations);
+        requirePositive(
+                "towers.max-health",
+                towers.towerMaximumHitPoints(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.base-limit", unreadablePaths)
+                && isReadable("towers.hard-cap", unreadablePaths)
+                && towers.hardCap() < towers.baseLimit()) {
+            violations.add(
+                    "towers.hard-cap: must be >= towers.base-limit (was "
+                            + towers.hardCap() + " < " + towers.baseLimit() + ")");
+        }
+        requirePositive("towers.arrow.damage", towers.arrowDamage(), unreadablePaths, violations);
+        requireFinite("towers.arrow.range", towers.arrowRange(), unreadablePaths, violations);
+        if (isReadable("towers.arrow.range", unreadablePaths)
+                && Double.isFinite(towers.arrowRange())
+                && towers.arrowRange() <= 0.0d) {
+            violations.add(
+                    "towers.arrow.range: must be > 0 (was " + towers.arrowRange() + ")");
+        }
+        requirePositive(
+                "towers.arrow.attack-interval-ticks",
+                towers.arrowAttackIntervalTicks(),
+                unreadablePaths,
+                violations);
+        requirePositive("towers.cannon.damage", towers.cannonDamage(), unreadablePaths, violations);
+        requireFinite("towers.cannon.range", towers.cannonRange(), unreadablePaths, violations);
+        if (isReadable("towers.cannon.range", unreadablePaths)
+                && Double.isFinite(towers.cannonRange())
+                && towers.cannonRange() <= 0.0d) {
+            violations.add(
+                    "towers.cannon.range: must be > 0 (was " + towers.cannonRange() + ")");
+        }
+        requirePositive(
+                "towers.cannon.attack-interval-ticks",
+                towers.cannonAttackIntervalTicks(),
+                unreadablePaths,
+                violations);
+        requireFinite(
+                "towers.cannon.splash-radius",
+                towers.cannonSplashRadius(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.cannon.splash-radius", unreadablePaths)
+                && Double.isFinite(towers.cannonSplashRadius())
+                && towers.cannonSplashRadius() <= 0.0d) {
+            violations.add(
+                    "towers.cannon.splash-radius: must be > 0 (was "
+                            + towers.cannonSplashRadius() + ")");
+        }
+        requirePositive(
+                "towers.upgrade.base-shard-cost",
+                towers.individualUpgradeBaseShardCost(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.upgrade.base-core-cost",
+                towers.individualUpgradeBaseCoreCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.upgrade.shard-cost-per-level", unreadablePaths)
+                && towers.individualUpgradeShardCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.shard-cost-per-level: must be >= 0 (was "
+                            + towers.individualUpgradeShardCostPerLevel() + ")");
+        }
+        if (isReadable("towers.upgrade.core-cost-per-level", unreadablePaths)
+                && towers.individualUpgradeCoreCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.core-cost-per-level: must be >= 0 (was "
+                            + towers.individualUpgradeCoreCostPerLevel() + ")");
+        }
+        requirePositive(
+                "towers.upgrade.research-base-cost",
+                towers.researchBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.upgrade.research-cost-per-level", unreadablePaths)
+                && towers.researchCostPerLevel() < 0) {
+            violations.add(
+                    "towers.upgrade.research-cost-per-level: must be >= 0 (was "
+                            + towers.researchCostPerLevel() + ")");
+        }
+        requirePositive(
+                "towers.battle-boost.base-cost",
+                towers.battleBoostBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("towers.battle-boost.cost-per-level", unreadablePaths)
+                && towers.battleBoostCostPerLevel() < 0) {
+            violations.add(
+                    "towers.battle-boost.cost-per-level: must be >= 0 (was "
+                            + towers.battleBoostCostPerLevel() + ")");
+        }
+        requireAtLeastFinite(
+                "towers.battle-boost.power-multiplier",
+                towers.battleBoostPowerMultiplier(),
+                1.0d,
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                "towers.battle-boost.speed-multiplier",
+                towers.battleBoostSpeedMultiplier(),
+                unreadablePaths,
+                violations);
+        requireAtLeastFinite(
+                "towers.battle-boost.range-multiplier",
+                towers.battleBoostRangeMultiplier(),
+                1.0d,
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.stack-limit",
+                towers.battleBoostStackLimit(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.funds-per-health",
+                towers.battleRepairFundsPerHealth(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "towers.battle-boost.health-per-purchase",
+                towers.battleRepairHealthPerPurchase(),
+                unreadablePaths,
+                violations);
+        for (TowerType type : TowerType.values()) {
+            if (type == TowerType.ARROW || type == TowerType.CANNON) {
+                continue;
+            }
+            TowerProfile profile = towers.specialistProfiles().get(type);
+            if (profile == null) {
+                violations.add("towers." + type.id() + ": profile is required");
+                continue;
+            }
+            requirePositive(
+                    "towers." + type.id() + ".damage",
+                    profile.damage(),
+                    unreadablePaths,
+                    violations);
+            requirePositive(
+                    "towers." + type.id() + ".attack-interval-ticks",
+                    profile.attackIntervalTicks(),
+                    unreadablePaths,
+                    violations);
+            String path = "towers." + type.id();
+            requirePositiveFinite(path + ".range", profile.range(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".area-radius", profile.areaRadius(), unreadablePaths, violations);
+            if (isReadable(path + ".slow-percent", unreadablePaths)
+                    && (!Double.isFinite(profile.slowPercent())
+                            || profile.slowPercent() < 0.0d
+                            || profile.slowPercent() > 1.0d)) {
+                violations.add(path + ".slow-percent: must be finite and between 0 and 1");
+            }
+            requireNonNegative(
+                    path + ".slow-duration-ticks",
+                    profile.slowDurationTicks(),
+                    unreadablePaths,
+                    violations);
+            requireNonNegative(path + ".chain-count", profile.chainCount(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".chain-radius", profile.chainRadius(), unreadablePaths, violations);
+            requireNonNegativeFinite(
+                    path + ".support-radius", profile.supportRadius(), unreadablePaths, violations);
+            if (type == TowerType.SUPPORT) {
+                requireAtLeastFinite(
+                        path + ".support-damage-multiplier",
+                        profile.supportDamageMultiplier(),
+                        1.0d,
+                        unreadablePaths,
+                        violations);
+                requirePositiveFinite(
+                        path + ".support-speed-multiplier",
+                        profile.supportSpeedMultiplier(),
+                        unreadablePaths,
+                        violations);
+                requireAtLeastFinite(
+                        path + ".support-range-multiplier",
+                        profile.supportRangeMultiplier(),
+                        1.0d,
+                        unreadablePaths,
+                        violations);
+                requirePositive(
+                        path + ".support-stack-limit",
+                        profile.supportStackLimit(),
+                        unreadablePaths,
+                        violations);
+            }
+            requireNonNegative(
+                    path + ".burn-duration-ticks",
+                    profile.burnDurationTicks(),
+                    unreadablePaths,
+                    violations);
+        }
     }
 
     private static void validateTerrainMutation(
@@ -160,6 +377,43 @@ public final class PluginSettingsValidator {
                 core.attackIntervalTicks(),
                 unreadablePaths,
                 violations);
+        if (isReadable("core.repair-material", unreadablePaths)
+                && (core.repairMaterial() == null || core.repairMaterial().isBlank())) {
+            violations.add("core.repair-material: must be a non-blank string");
+        }
+        if (isReadable("core.warning-sound", unreadablePaths)
+                && (core.warningSound() == null || core.warningSound().isBlank())) {
+            violations.add("core.warning-sound: must be a non-blank string");
+        }
+        requirePositiveFinite(
+                "core.warning-volume", core.warningVolume(), unreadablePaths, violations);
+        requirePositiveFinite(
+                "core.warning-pitch", core.warningPitch(), unreadablePaths, violations);
+        requirePositive(
+                "core.warning-min-interval-ticks",
+                core.warningMinIntervalTicks(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "core.repair-health-per-unit",
+                core.repairHealthPerUnit(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "core.repair-material-base-cost",
+                core.repairMaterialBaseCost(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "core.repair-shard-base-cost",
+                core.repairShardBaseCost(),
+                unreadablePaths,
+                violations);
+        if (isReadable("core.repair-cost-per-clear-level", unreadablePaths)
+                && core.repairCostPerClearLevel() < 0) {
+            violations.add("core.repair-cost-per-clear-level: must be >= 0 (was "
+                    + core.repairCostPerClearLevel() + ")");
+        }
     }
 
     private static void validateEnemies(
@@ -182,6 +436,16 @@ public final class PluginSettingsValidator {
         requirePositive(
                 "enemies.base-per-wave",
                 enemies.basePerWave(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "enemies.tower-attack-damage",
+                enemies.towerAttackDamage(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "enemies.tower-attack-interval-ticks",
+                enemies.towerAttackIntervalTicks(),
                 unreadablePaths,
                 violations);
         if (isReadable("enemies.added-per-wave", unreadablePaths)
@@ -209,6 +473,17 @@ public final class PluginSettingsValidator {
             } else if (enemies.moveSpeed() <= 0.0) {
                 violations.add(speedPath + ": must be > 0 (was "
                         + enemies.moveSpeed() + ")");
+            }
+        }
+
+        String towerAttackRangePath = "enemies.tower-attack-range";
+        if (isReadable(towerAttackRangePath, unreadablePaths)) {
+            if (!Double.isFinite(enemies.towerAttackRange())) {
+                violations.add(towerAttackRangePath + ": must be finite (was "
+                        + enemies.towerAttackRange() + ")");
+            } else if (enemies.towerAttackRange() <= 0.0d) {
+                violations.add(towerAttackRangePath + ": must be > 0 (was "
+                        + enemies.towerAttackRange() + ")");
             }
         }
 
@@ -318,6 +593,61 @@ public final class PluginSettingsValidator {
                 rewards.teamQueueRetentionSeconds(),
                 unreadablePaths,
                 violations);
+        requirePositive(
+                "rewards.research-crystal-base-per-stage",
+                rewards.researchCrystalBasePerStage(),
+                unreadablePaths,
+                violations);
+        if (isReadable("rewards.research-crystal-replay-percent", unreadablePaths)
+                && (rewards.researchCrystalReplayPercent() < 0
+                        || rewards.researchCrystalReplayPercent() > 100)) {
+            violations.add(
+                    "rewards.research-crystal-replay-percent: must be between 0 and 100"
+                            + " (was " + rewards.researchCrystalReplayPercent() + ")");
+        }
+        if (isReadable("rewards.research-crystal-minimum-quantity", unreadablePaths)
+                && rewards.researchCrystalMinimumQuantity() < 0) {
+            violations.add(
+                    "rewards.research-crystal-minimum-quantity: must be >= 0"
+                            + " (was " + rewards.researchCrystalMinimumQuantity() + ")");
+        }
+        requirePositive(
+                "rewards.battle-funds-normal-enemy",
+                rewards.battleFundsNormalEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-special-enemy",
+                rewards.battleFundsSpecialEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-boss-enemy",
+                rewards.battleFundsBossEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.battle-funds-per-wave",
+                rewards.battleFundsPerWave(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.defense-shards-normal-enemy",
+                rewards.defenseShardsNormalEnemy(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "rewards.defense-shards-special-enemy",
+                rewards.defenseShardsSpecialEnemy(),
+                unreadablePaths,
+                violations);
+        if (isReadable("rewards.enhancement-core-drop-percent", unreadablePaths)
+                && (rewards.enhancementCoreDropPercent() < 0
+                        || rewards.enhancementCoreDropPercent() > 100)) {
+            violations.add(
+                    "rewards.enhancement-core-drop-percent: must be between 0 and 100"
+                            + " (was " + rewards.enhancementCoreDropPercent() + ")");
+        }
     }
 
     private static void requirePositive(
@@ -327,6 +657,50 @@ public final class PluginSettingsValidator {
             List<String> violations) {
         if (isReadable(path, unreadablePaths) && value <= 0) {
             violations.add(path + ": must be > 0 (was " + value + ")");
+        }
+    }
+
+    private static void requireNonNegative(
+            String path,
+            int value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths) && value < 0) {
+            violations.add(path + ": must be >= 0 (was " + value + ")");
+        }
+    }
+
+    private static void requirePositiveFinite(
+            String path,
+            double value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value <= 0.0d)) {
+            violations.add(path + ": must be finite and > 0 (was " + value + ")");
+        }
+    }
+
+    private static void requireAtLeastFinite(
+            String path,
+            double value,
+            double minimum,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value < minimum)) {
+            violations.add(path + ": must be finite and >= " + minimum + " (was " + value + ")");
+        }
+    }
+
+    private static void requireNonNegativeFinite(
+            String path,
+            double value,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (isReadable(path, unreadablePaths)
+                && (!Double.isFinite(value) || value < 0.0d)) {
+            violations.add(path + ": must be finite and >= 0 (was " + value + ")");
         }
     }
 

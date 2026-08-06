@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import io.github.takenoha.towerdefense.domain.DefensePhase;
+import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -32,9 +33,7 @@ public final class RaidSealRepository {
         Objects.requireNonNull(sealId, "sealId");
         Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
         Objects.requireNonNull(createdAt, "createdAt");
-        if (stageLevel <= 0L) {
-            throw new IllegalArgumentException("stageLevel must be positive");
-        }
+        StageWaveSchedule.requireValidStageLevel(stageLevel);
         RaidSeal seal = new RaidSeal(
                 sealId,
                 ownerPlayerId,
@@ -159,8 +158,51 @@ public final class RaidSealRepository {
         });
     }
 
+    /**
+     * Loads technical-refund seals which are ready to be materialized as a new physical item.
+     * The returned UUID is never the UUID that was consumed for the failed event.
+     */
+    public List<RaidSeal> loadAvailableRefunds(UUID ownerPlayerId) {
+        Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
+        return read("load a player's refundable raid seals", connection -> {
+            List<RaidSeal> seals = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    SELECT s.seal_id, s.owner_player_id, s.stage_level, s.state, s.event_id,
+                           s.reservation_operation_id, s.consumption_operation_id,
+                           s.refund_operation_id, s.created_at, s.updated_at
+                    FROM raid_seals s
+                    INNER JOIN raid_seal_returns r ON r.returned_seal_id = s.seal_id
+                    WHERE s.owner_player_id = ? AND s.state = 'AVAILABLE'
+                    ORDER BY s.created_at, s.seal_id
+                    """)) {
+                statement.setString(1, ownerPlayerId.toString());
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        seals.add(sealFromRow(resultSet));
+                    }
+                }
+            }
+            return List.copyOf(seals);
+        });
+    }
+
     /** Package-private hook used by the atomic start transaction when a seal is supplied. */
     static void consumeForStart(
+            Connection connection,
+            StartRequest request) throws SQLException {
+        if (request.raidSealId().isEmpty()) {
+            return;
+        }
+        reserveForStart(connection, request);
+        consumeReservedForStart(
+                connection,
+                request.session().eventId(),
+                request.raidSealId().orElseThrow(),
+                request.startedAt());
+    }
+
+    /** Package-private hook for a Paper start which must remove the physical item between reserve and consume. */
+    static void reserveForStart(
             Connection connection,
             StartRequest request) throws SQLException {
         if (request.raidSealId().isEmpty()) {
@@ -171,7 +213,6 @@ public final class RaidSealRepository {
         UUID teamId = request.session().teamId();
         UUID ownerPlayerId = loadTeamOwner(connection, teamId);
         UUID reservationOperationId = deterministicOperation(eventId, "SEAL_RESERVE");
-        UUID consumptionOperationId = deterministicOperation(eventId, "SEAL_CONSUME");
         long stageLevel = request.session().stageLevel();
         OperationOutcome reserved = reserve(
                 connection,
@@ -188,7 +229,21 @@ public final class RaidSealRepository {
                 return;
             }
         }
-        consume(connection, sealId, eventId, consumptionOperationId, request.startedAt());
+    }
+
+    /** Package-private hook for a Paper start after its physical item has been removed. */
+    static OperationOutcome consumeReservedForStart(
+            Connection connection,
+            UUID eventId,
+            UUID sealId,
+            Instant consumedAt) throws SQLException {
+        requireActiveEvent(connection, eventId);
+        return consume(
+                connection,
+                sealId,
+                eventId,
+                deterministicOperation(eventId, "SEAL_CONSUME"),
+                consumedAt);
     }
 
     /** Package-private hook used by technical event recovery. */
@@ -479,9 +534,7 @@ public final class RaidSealRepository {
         Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(timestamp, "timestamp");
-        if (stageLevel <= 0L) {
-            throw new IllegalArgumentException("stageLevel must be positive");
-        }
+        StageWaveSchedule.requireValidStageLevel(stageLevel);
     }
 
     private static UUID deterministicOperation(UUID eventId, String kind) {

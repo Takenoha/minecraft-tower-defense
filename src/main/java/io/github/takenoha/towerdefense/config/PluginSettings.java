@@ -9,7 +9,8 @@ public record PluginSettings(
         EnemySettings enemies,
         ProtectionSettings protection,
         RewardSettings rewards,
-        TerrainMutationSettings terrainMutation) {
+        TerrainMutationSettings terrainMutation,
+        TowerSettings towers) {
 
     /** Keeps five-field construction source-compatible while the activation gate is opt-in. */
     public PluginSettings(
@@ -18,7 +19,32 @@ public record PluginSettings(
             EnemySettings enemies,
             ProtectionSettings protection,
             RewardSettings rewards) {
-        this(combat, core, enemies, protection, rewards, TerrainMutationSettings.disabled());
+        this(
+                combat,
+                core,
+                enemies,
+                protection,
+                rewards,
+                TerrainMutationSettings.disabled(),
+                TowerSettings.defaults());
+    }
+
+    /** Keeps direct settings construction source-compatible with the terrain gate boundary. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies,
+            ProtectionSettings protection,
+            RewardSettings rewards,
+            TerrainMutationSettings terrainMutation) {
+        this(
+                combat,
+                core,
+                enemies,
+                protection,
+                rewards,
+                terrainMutation,
+                TowerSettings.defaults());
     }
 
     /** Keeps direct settings construction source-compatible with the pre-boundary model. */

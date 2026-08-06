@@ -38,6 +38,48 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsConfiguredCoreRepairEconomy() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "core").putAll(Map.of(
+                "repair-material", "GOLD_INGOT",
+                "repair-health-per-unit", 250,
+                "repair-material-base-cost", 2,
+                "repair-shard-base-cost", 3,
+                "repair-cost-per-clear-level", 4));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(
+                new CoreSettings(1_000, 20, 20, "GOLD_INGOT", 250, 2, 3, 4),
+                settings.core());
+    }
+
+    @Test
+    void readsConfiguredCannonValues() {
+        Map<String, Object> values = validValues();
+        values.put("towers", Map.of(
+                "base-limit", 8,
+                "limit-increment", 2,
+                "hard-cap", 40,
+                "arrow", Map.of(
+                        "damage", 4,
+                        "range", 16.0,
+                        "attack-interval-ticks", 20),
+                "cannon", Map.of(
+                        "damage", 12,
+                        "range", 15.0,
+                        "attack-interval-ticks", 50,
+                        "splash-radius", 3.0)));
+
+        TowerSettings settings = PluginSettings.from(values).towers();
+
+        assertEquals(12, settings.cannonDamage());
+        assertEquals(15.0, settings.cannonRange());
+        assertEquals(50, settings.cannonAttackIntervalTicks());
+        assertEquals(3.0, settings.cannonSplashRadius());
+    }
+
+    @Test
     void rejectsANonPositiveCoreAttackInterval() {
         Map<String, Object> values = validValues();
         mutableSection(values, "core").put("attack-interval-ticks", 0);
@@ -76,6 +118,21 @@ class PluginSettingsMapReaderTest {
         assertEquals(
                 new EnemySettings(120, 8, 4, 2, 4.0, 1.0),
                 PluginSettings.from(validValues()).enemies());
+    }
+
+    @Test
+    void readsConfiguredDestroyerTowerAttackValues() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "enemies").putAll(Map.of(
+                "tower-attack-damage", 13,
+                "tower-attack-interval-ticks", 27,
+                "tower-attack-range", 3.5d));
+
+        EnemySettings enemies = PluginSettings.from(values).enemies();
+
+        assertEquals(13, enemies.towerAttackDamage());
+        assertEquals(27, enemies.towerAttackIntervalTicks());
+        assertEquals(3.5d, enemies.towerAttackRange());
     }
 
     @Test
