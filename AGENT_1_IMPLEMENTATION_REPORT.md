@@ -4,8 +4,10 @@
 
 - Base: `1afcbe0` (`feat/reward-ux-vouchers`)
 - Shared contract: `aa7ff53cd56cd63f0bdc57165c9834d497b35686`
-- Branch: `feat/tactical-foundation`
+- Foundation branch: `feat/tactical-foundation`
+- Integration branch: `feat/tactical-integration`
 - Foundation implementation: `c9b0b82`
+- Runtime integration validation commit: `42795d8`
 
 The implementation preserves the existing defense, team, core, seal, and operation boundaries.
 Agent 2-owned runtime files were not edited on this branch.
@@ -55,12 +57,15 @@ Tests and acceptance material:
 - `src/test/java/io/github/takenoha/towerdefense/persistence/DatabaseTest.java`
 - `docs/PAPER_ACCEPTANCE_RUNBOOK.md`
 
-## Verification
+## Integrated verification
 
 - Migration version: `38`.
 - Final Foundation validation command:
   `./gradlew.bat clean test build --rerun-tasks --no-daemon`.
 - Result: `246` tests, `0` failures, `0` errors, `0` skipped; build successful.
+- After applying Agent 2 commits `792a5bd`/`59c1e4f` and the production wiring commit
+  `42795d8`, the same full command passed with `255` tests, `0` failures, `0` errors, and
+  `0` skipped.
 - `git diff --check`: clean before commit.
 - Paper 26.2 build 87 / Java 25 manual acceptance: not run.
 
@@ -77,6 +82,6 @@ The shared APIs consumed by that runtime are implemented by `TacticalBuildReposi
   `markTerminal` are transactional and operation-idempotent.
 - Unknown/corrupt snapshots fail closed instead of selecting a default build.
 
-The production runtime wiring described in `AGENT_1_INTEGRATION_NOTES.md` should be applied after
-the Agent 2 PR is merged, because this Foundation PR intentionally does not modify
+The production runtime wiring described in `AGENT_1_INTEGRATION_NOTES.md` was applied in the
+separate integration worktree at `42795d8`; the Foundation PR itself intentionally does not modify
 `DefenseSessionManager.java` or `TowerManager.java`.

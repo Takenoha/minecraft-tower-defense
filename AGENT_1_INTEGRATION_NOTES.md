@@ -12,8 +12,8 @@ documentation at `59c1e4f2c42dfaef4164bd7fc8366686d82a5680`. Buzz PR:
 
 `buzz://pr?id=35800ba31aa95ec0f8b660ef6508828aec395a1918986100b9573e013da60314&owner=9a44b3bf2660b3731822095c0de5967fa33b3738a9c394e6a636e6041b59cd65&d=minecraft-tower-defense-plugin`
 
-The runtime intentionally leaves `TowerDefensePlugin.java` untouched. After merging the runtime
-PR with this Foundation branch, add only the following production wiring:
+The runtime intentionally leaves `TowerDefensePlugin.java` untouched. In the integration worktree,
+the following production wiring was added in commit `42795d8` after applying the runtime PR:
 
 ```java
 TacticalBuildRuntime tacticalRuntime = new TacticalBuildRuntime(
@@ -96,4 +96,4 @@ Then execute runbook section 9 on Paper 26.2 build 87 / Java 25. Confirm candida
 owner-only confirmation, non-consumptive cancellation, bind-before-consume ordering, automatic
 Tier 1–6 unlocks, terminal cache invalidation, restart rebuild, and no per-attack DB reads.
 
-Paper acceptance was not run in the Foundation worktree.
+Paper acceptance was not run in either the Foundation or integration worktree.
