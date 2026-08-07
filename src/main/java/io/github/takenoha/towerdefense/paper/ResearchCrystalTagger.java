@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.paper;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,15 +34,16 @@ public final class ResearchCrystalTagger {
     }
 
     ResearchCrystalTagger(String namespace) {
-        Objects.requireNonNull(namespace, "namespace");
-        markerKey = new NamespacedKey(namespace, "research_crystal");
-        versionKey = new NamespacedKey(namespace, "research_crystal_version");
-        batchIdKey = new NamespacedKey(namespace, "research_crystal_batch_id");
-        teamIdKey = new NamespacedKey(namespace, "research_crystal_team_id");
-        issuedQuantityKey = new NamespacedKey(namespace, "research_crystal_issued_quantity");
-        segmentOffsetKey = new NamespacedKey(namespace, "research_crystal_segment_offset");
-        segmentQuantityKey = new NamespacedKey(namespace, "research_crystal_segment_quantity");
-        redemptionOperationKey = new NamespacedKey(namespace, "research_crystal_redemption");
+        String normalizedNamespace = Objects.requireNonNull(namespace, "namespace")
+                .toLowerCase(Locale.ROOT);
+        markerKey = new NamespacedKey(normalizedNamespace, "research_crystal");
+        versionKey = new NamespacedKey(normalizedNamespace, "research_crystal_version");
+        batchIdKey = new NamespacedKey(normalizedNamespace, "research_crystal_batch_id");
+        teamIdKey = new NamespacedKey(normalizedNamespace, "research_crystal_team_id");
+        issuedQuantityKey = new NamespacedKey(normalizedNamespace, "research_crystal_issued_quantity");
+        segmentOffsetKey = new NamespacedKey(normalizedNamespace, "research_crystal_segment_offset");
+        segmentQuantityKey = new NamespacedKey(normalizedNamespace, "research_crystal_segment_quantity");
+        redemptionOperationKey = new NamespacedKey(normalizedNamespace, "research_crystal_redemption");
     }
 
     /** Creates one stack unit; the delivery bridge splits the queue quantity safely. */
