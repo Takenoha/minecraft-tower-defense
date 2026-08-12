@@ -30,10 +30,10 @@ class TacticalBuildFoundationTest {
     Path temporaryDirectory;
 
     @Test
-    void defaultsContainSixCompleteBuildsAndCodecKeepsDefinitionSnapshot() {
+    void defaultsContainSevenCompleteBuildsAndCodecKeepsDefinitionSnapshot() {
         TacticalBuildCatalog catalog = TacticalBuildCatalog.defaults();
 
-        assertEquals(6, catalog.definitions().size());
+        assertEquals(7, catalog.definitions().size());
         assertTrue(catalog.definitions().stream().allMatch(definition -> definition.nodes().size() == 6));
         TacticalBuildDefinition original = catalog.require("ice-lightning");
         assertEquals(original, TacticalDefinitionCodec.decode(
