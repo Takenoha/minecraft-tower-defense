@@ -59,6 +59,8 @@ final class DatabaseTest {
         assertTrue(tableExists(reopened, "tactical_build_candidates"));
         assertTrue(tableExists(reopened, "tactical_build_operations"));
         assertTrue(tableExists(reopened, "tactical_build_unlocked_nodes"));
+        assertTrue(tableExists(reopened, "tactical_build_node_unlocks"));
+        assertTrue(columnExists(reopened, "tactical_build_sessions", "selected_branch_id"));
         assertTrue(checkConstraintContains(
                 reopened, "core_repair_receipts", "CLEAR_PENDING"));
         assertTrue(checkConstraintContains(

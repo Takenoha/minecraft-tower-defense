@@ -323,6 +323,12 @@ non-consumptive until the existing defense-start transaction has succeeded.
    candidate IDs and persisted definition snapshots are unchanged, and that a selected build is
    not replaced by a newly generated random set. Record the tactical session ID, start operation
    ID, bind operation ID, and final state in the evidence record.
+6. When `arrow-specialization` is among the candidates, select it and confirm the GUI exposes the
+   `rapid-fire` and `range` route buttons. Choose exactly one route, restart before the defense
+   starts, and confirm the selected route remains persisted. During preparation and wave progress,
+   verify only the selected route's node IDs unlock and its effects reach the runtime cache; the
+   other route must not unlock or affect attacks. Repeat through victory, defeat, abort, and
+   technical recovery on the disposable database.
 
 ## Evidence record
 

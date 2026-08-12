@@ -5,11 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.takenoha.towerdefense.domain.TowerType;
 import io.github.takenoha.towerdefense.persistence.TacticalDefinitionCodec;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
@@ -151,6 +153,32 @@ class TacticalSkillGraphTest {
         assertTrue(node.exclusiveBranchGroup().isEmpty());
         assertTrue(node.branchId().isEmpty());
         assertFalse(node.snapshot().branchId().isPresent());
+    }
+
+    @Test
+    void compilerUsesOnlyTheExplicitlyUnlockedBranchNodes() {
+        TacticalBuildDefinition definition = TacticalBuildCatalog.defaults()
+                .require("arrow-specialization");
+        TacticalEffectSnapshot effects = new TacticalEffectCompiler().compile(
+                definition.selectionView(
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        1,
+                        2,
+                        Optional.of("rapid-fire"),
+                        Set.of(
+                                "arrow-specialization-rapid-fire-tier-1",
+                                "arrow-specialization-rapid-fire-tier-2")));
+
+        assertEquals(
+                0.92d,
+                effects.attackIntervalMultiplier(TowerType.ARROW, TacticalTargetContext.neutral()),
+                0.000001d);
+        assertEquals(
+                1.10d,
+                effects.damageMultiplier(TowerType.ARROW, TacticalTargetContext.neutral()),
+                0.000001d);
+        assertEquals(0.0d, effects.rangeAdd(TowerType.ARROW), 0.000001d);
     }
 
     private static TacticalSkillNodeDefinition node(

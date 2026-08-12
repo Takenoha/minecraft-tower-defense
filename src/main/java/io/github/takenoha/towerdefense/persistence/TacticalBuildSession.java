@@ -18,6 +18,7 @@ public record TacticalBuildSession(
         int generatorVersion,
         TacticalBuildSessionState state,
         Optional<TacticalBuildDefinition> selectedDefinition,
+        Optional<String> selectedBranchId,
         int highestUnlockedTier,
         Optional<TacticalTerminalResult> terminalResult,
         Instant createdAt,
@@ -30,6 +31,8 @@ public record TacticalBuildSession(
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(state, "state");
         selectedDefinition = Objects.requireNonNull(selectedDefinition, "selectedDefinition");
+        selectedBranchId = Objects.requireNonNull(selectedBranchId, "selectedBranchId")
+                .map(value -> requireText(value, "selectedBranchId"));
         terminalResult = Objects.requireNonNull(terminalResult, "terminalResult");
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
@@ -52,5 +55,50 @@ public record TacticalBuildSession(
                 && selectedDefinition.isEmpty()) {
             throw new IllegalArgumentException("selected state requires a definition snapshot");
         }
+        if (selectedBranchId.isPresent() && selectedDefinition.isEmpty()) {
+            throw new IllegalArgumentException("selected branch requires a definition snapshot");
+        }
+    }
+
+    /** Backward-compatible constructor for pre-branch tactical snapshots. */
+    public TacticalBuildSession(
+            UUID tacticalSessionId,
+            UUID startOperationId,
+            Optional<UUID> defenseId,
+            UUID teamId,
+            int stage,
+            long seed,
+            int generatorVersion,
+            TacticalBuildSessionState state,
+            Optional<TacticalBuildDefinition> selectedDefinition,
+            int highestUnlockedTier,
+            Optional<TacticalTerminalResult> terminalResult,
+            Instant createdAt,
+            Instant updatedAt,
+            Optional<Instant> terminalAt) {
+        this(
+                tacticalSessionId,
+                startOperationId,
+                defenseId,
+                teamId,
+                stage,
+                seed,
+                generatorVersion,
+                state,
+                selectedDefinition,
+                Optional.empty(),
+                highestUnlockedTier,
+                terminalResult,
+                createdAt,
+                updatedAt,
+                terminalAt);
+    }
+
+    private static String requireText(String value, String name) {
+        Objects.requireNonNull(value, name);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
     }
 }

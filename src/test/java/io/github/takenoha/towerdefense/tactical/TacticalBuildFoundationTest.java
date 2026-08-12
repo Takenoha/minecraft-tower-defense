@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.tactical;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,6 +20,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -259,5 +261,122 @@ class TacticalBuildFoundationTest {
                 restored.candidates().stream().map(TacticalCandidate::definition).toList(),
                 restartedTactical.findCandidates(candidates.tacticalSessionId()).orElseThrow()
                         .candidates().stream().map(TacticalCandidate::definition).toList());
+    }
+
+    @Test
+    void selectedBranchUnlocksOnlyChosenPathAndPersistsAcrossRestart() {
+        Path databaseFile = temporaryDirectory.resolve("tactical-branch.sqlite");
+        Database database = new Database(databaseFile);
+        DefenseRepository defenses = new DefenseRepository(database);
+        TacticalBuildRepository tactical = new TacticalBuildRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        defenses.createSoloTeam(teamId, ownerId, NOW);
+        CoreRecord core = new CoreRecord(
+                UUID.randomUUID(),
+                teamId,
+                UUID.randomUUID(),
+                0,
+                64,
+                0,
+                100,
+                100,
+                NOW,
+                NOW);
+        defenses.placeCore(core, 0.0d);
+
+        TacticalBuildCatalog catalog = TacticalBuildCatalog.defaults();
+        TacticalBuildDefinition branched = catalog.require("arrow-specialization");
+        TacticalCandidateSet candidates = new TacticalCandidateSet(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                teamId,
+                1,
+                42L,
+                TacticalBuildCatalog.GENERATOR_VERSION,
+                List.of(
+                        new TacticalCandidate(0, branched),
+                        new TacticalCandidate(1, catalog.require("rapid-fire")),
+                        new TacticalCandidate(2, catalog.require("long-range"))),
+                NOW);
+        tactical.createCandidates(candidates);
+
+        TacticalSelectionResult selected = tactical.selectBuild(
+                candidates.tacticalSessionId(),
+                ownerId,
+                branched.id(),
+                "rapid-fire",
+                UUID.randomUUID(),
+                NOW.plusSeconds(1L));
+        assertEquals("rapid-fire", selected.selection().selectedBranchId().orElseThrow());
+        assertTrue(selected.selection().unlockedNodeIds().isEmpty());
+
+        DefenseSession session = new DefenseSession(
+                UUID.randomUUID(),
+                teamId,
+                1,
+                8,
+                CoreState.intact(100));
+        assertEquals(
+                io.github.takenoha.towerdefense.persistence.StartOutcome.STARTED,
+                defenses.tryStart(new StartRequest(
+                        session.snapshot(),
+                        core.id(),
+                        "test-config",
+                        1,
+                        NOW)));
+        assertEquals(
+                OperationOutcome.APPLIED,
+                tactical.bindToDefense(
+                        candidates.tacticalSessionId(),
+                        session.eventId(),
+                        UUID.randomUUID(),
+                        NOW.plusSeconds(2L)));
+
+        TacticalUnlockResult preparation = tactical.activateAtPreparation(
+                session.eventId(), UUID.randomUUID());
+        assertEquals(
+                List.of("arrow-specialization-rapid-fire-tier-1"),
+                preparation.newlyUnlockedNodeIds());
+        TacticalBuildSelectionView afterPreparation = tactical.findActiveByDefense(session.eventId())
+                .orElseThrow();
+        assertEquals(
+                Set.of("arrow-specialization-rapid-fire-tier-1"),
+                afterPreparation.unlockedNodeIds());
+        assertFalse(afterPreparation.unlockedNodeIds().contains(
+                "arrow-specialization-range-tier-1"));
+
+        TacticalUnlockResult waveTwo = tactical.advanceAfterWave(
+                session.eventId(),
+                1,
+                StageWaveSchedule.wavesFor(1),
+                UUID.randomUUID());
+        assertEquals(
+                List.of("arrow-specialization-rapid-fire-tier-2"),
+                waveTwo.newlyUnlockedNodeIds());
+        TacticalUnlockResult finalTier = tactical.activateFinalTier(
+                session.eventId(), UUID.randomUUID());
+        assertEquals(
+                List.of("arrow-specialization-rapid-fire-tier-3"),
+                finalTier.newlyUnlockedNodeIds());
+
+        TacticalBuildSelectionView beforeRestart = tactical.findActiveByDefense(session.eventId())
+                .orElseThrow();
+        assertEquals(6, beforeRestart.highestUnlockedTier());
+        assertEquals(
+                Set.of(
+                        "arrow-specialization-rapid-fire-tier-1",
+                        "arrow-specialization-rapid-fire-tier-2",
+                        "arrow-specialization-rapid-fire-tier-3"),
+                beforeRestart.unlockedNodeIds());
+        assertTrue(beforeRestart.unlockedNodeIds().stream()
+                .noneMatch(nodeId -> nodeId.contains("-range-")));
+
+        TacticalBuildSelectionView afterRestart = new TacticalBuildRepository(
+                new Database(databaseFile))
+                .findActiveByDefense(session.eventId())
+                .orElseThrow();
+        assertEquals("rapid-fire", afterRestart.selectedBranchId().orElseThrow());
+        assertEquals(beforeRestart.unlockedNodeIds(), afterRestart.unlockedNodeIds());
     }
 }

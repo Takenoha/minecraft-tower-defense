@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 /** Immutable, versioned tactical build definition. */
 public record TacticalBuildDefinition(
@@ -47,11 +49,41 @@ public record TacticalBuildDefinition(
         return nodes.stream().map(TacticalSkillNodeDefinition::snapshot).toList();
     }
 
+    /** Returns the stable branch choices exposed by this definition. */
+    public List<String> branchIds() {
+        return nodes.stream()
+                .map(TacticalSkillNodeDefinition::branchId)
+                .flatMap(Optional::stream)
+                .collect(Collectors.collectingAndThen(
+                        Collectors.toCollection(TreeSet::new),
+                        List::copyOf));
+    }
+
+    public boolean isBranched() {
+        return nodes.stream().anyMatch(node -> node.branchId().isPresent());
+    }
+
     public TacticalBuildSelectionView selectionView(
             java.util.UUID tacticalSessionId,
             java.util.UUID teamId,
             int stage,
             int highestUnlockedTier) {
+        return selectionView(
+                tacticalSessionId,
+                teamId,
+                stage,
+                highestUnlockedTier,
+                Optional.empty(),
+                Set.of());
+    }
+
+    public TacticalBuildSelectionView selectionView(
+            java.util.UUID tacticalSessionId,
+            java.util.UUID teamId,
+            int stage,
+            int highestUnlockedTier,
+            Optional<String> selectedBranchId,
+            Set<String> unlockedNodeIds) {
         return new TacticalBuildSelectionView(
                 tacticalSessionId,
                 teamId,
@@ -59,6 +91,8 @@ public record TacticalBuildDefinition(
                 id,
                 version,
                 highestUnlockedTier,
+                selectedBranchId,
+                unlockedNodeIds,
                 nodeSnapshots());
     }
 

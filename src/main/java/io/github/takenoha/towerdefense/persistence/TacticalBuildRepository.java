@@ -15,9 +15,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -145,12 +148,34 @@ public final class TacticalBuildRepository
             String buildId,
             UUID operationId,
             Instant selectedAt) {
+        return selectBuild(
+                tacticalSessionId,
+                actorId,
+                buildId,
+                null,
+                operationId,
+                selectedAt);
+    }
+
+    /** Selects one candidate and optionally pins the branch used by the active defense. */
+    public TacticalSelectionResult selectBuild(
+            UUID tacticalSessionId,
+            UUID actorId,
+            String buildId,
+            String selectedBranchId,
+            UUID operationId,
+            Instant selectedAt) {
         Objects.requireNonNull(tacticalSessionId, "tacticalSessionId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(buildId, "buildId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(selectedAt, "selectedAt");
-        String fingerprint = actorId + "|" + buildId;
+        if (selectedBranchId != null && selectedBranchId.isBlank()) {
+            throw new IllegalArgumentException("selectedBranchId must not be blank");
+        }
+        String fingerprint = selectedBranchId == null
+                ? actorId + "|" + buildId
+                : actorId + "|" + buildId + "|branch=" + selectedBranchId;
         try {
             return database.inImmediateTransaction(connection -> {
                 TacticalBuildSession session = requireSession(connection, tacticalSessionId);
@@ -159,7 +184,7 @@ public final class TacticalBuildRepository
                     requireMatchingOperation(prior.orElseThrow(), tacticalSessionId, SELECT, fingerprint);
                     return new TacticalSelectionResult(
                             OperationOutcome.ALREADY_APPLIED,
-                            selectionView(session));
+                            selectionView(connection, session));
                 }
                 if (session.state() != TacticalBuildSessionState.GENERATED) {
                     throw new PersistenceConflictException(
@@ -170,17 +195,19 @@ public final class TacticalBuildRepository
                         connection, tacticalSessionId, buildId).orElseThrow(
                                 () -> new PersistenceConflictException(
                                         "The selected tactical build is not a candidate"));
+                validateSelectedBranch(selected, selectedBranchId);
                 try (PreparedStatement statement = connection.prepareStatement("""
                         UPDATE tactical_build_sessions
                         SET state = 'SELECTED', selected_build_id = ?, selected_build_version = ?,
-                            selected_snapshot = ?, updated_at = ?
+                            selected_snapshot = ?, selected_branch_id = ?, updated_at = ?
                         WHERE tactical_session_id = ? AND state = 'GENERATED'
                         """)) {
                     statement.setString(1, selected.id());
                     statement.setInt(2, selected.version());
                     statement.setString(3, TacticalDefinitionCodec.encode(selected));
-                    statement.setString(4, selectedAt.toString());
-                    statement.setString(5, tacticalSessionId.toString());
+                    statement.setString(4, selectedBranchId);
+                    statement.setString(5, selectedAt.toString());
+                    statement.setString(6, tacticalSessionId.toString());
                     if (statement.executeUpdate() != 1) {
                         throw new PersistenceConflictException(
                                 "The tactical session changed before selection was applied");
@@ -194,7 +221,9 @@ public final class TacticalBuildRepository
                         fingerprint,
                         selectedAt);
                 TacticalBuildSession updated = requireSession(connection, tacticalSessionId);
-                return new TacticalSelectionResult(OperationOutcome.APPLIED, selectionView(updated));
+                return new TacticalSelectionResult(
+                        OperationOutcome.APPLIED,
+                        selectionView(connection, updated));
             });
         } catch (SQLException exception) {
             throw failure("select a tactical build", exception);
@@ -299,8 +328,9 @@ public final class TacticalBuildRepository
                 statement.setString(1, defenseId.toString());
                 try (ResultSet resultSet = statement.executeQuery()) {
                     return resultSet.next()
-                            ? Optional.of(selectionView(requireSession(
-                                    connection, uuid(resultSet.getString(1)))))
+                            ? Optional.of(selectionView(
+                                    connection,
+                                    requireSession(connection, uuid(resultSet.getString(1)))))
                             : Optional.empty();
                 }
             }
@@ -450,24 +480,38 @@ public final class TacticalBuildRepository
                         UNLOCK,
                         fingerprint,
                         now);
+                Set<String> unlockedNodeIds = new LinkedHashSet<>(
+                        loadUnlockedNodeIds(connection, session.tacticalSessionId()));
                 List<String> newlyUnlocked = new ArrayList<>();
-                for (TacticalSkillNodeDefinition node : definition.nodes()) {
-                    if (node.tier() > currentTier && node.tier() <= nextTier) {
-                        try (PreparedStatement statement = connection.prepareStatement("""
-                                INSERT INTO tactical_build_unlocked_nodes(
-                                    tactical_session_id, tier, node_id, operation_id, unlocked_at)
-                                VALUES (?, ?, ?, ?, ?)
-                                """)) {
-                            statement.setString(1, session.tacticalSessionId().toString());
-                            statement.setInt(2, node.tier());
-                            statement.setString(3, node.id());
-                            statement.setString(4, operationId.toString());
-                            statement.setString(5, now.toString());
-                            statement.executeUpdate();
+                List<TacticalSkillNodeDefinition> eligibleNodes = definition.nodes().stream()
+                        .filter(node -> node.tier() > currentTier && node.tier() <= nextTier)
+                        .filter(node -> belongsToSelectedBranch(session, node))
+                        .sorted(Comparator.comparingInt(TacticalSkillNodeDefinition::tier)
+                                .thenComparing(TacticalSkillNodeDefinition::id))
+                        .toList();
+                boolean progressed;
+                do {
+                    progressed = false;
+                    for (TacticalSkillNodeDefinition node : eligibleNodes) {
+                        if (!unlockedNodeIds.contains(node.id())
+                                && unlockedNodeIds.containsAll(node.prerequisiteNodeIds())) {
+                            try (PreparedStatement statement = connection.prepareStatement("""
+                                    INSERT INTO tactical_build_node_unlocks(
+                                        tactical_session_id, node_id, operation_id, unlocked_at)
+                                    VALUES (?, ?, ?, ?)
+                                    """)) {
+                                statement.setString(1, session.tacticalSessionId().toString());
+                                statement.setString(2, node.id());
+                                statement.setString(3, operationId.toString());
+                                statement.setString(4, now.toString());
+                                statement.executeUpdate();
+                            }
+                            unlockedNodeIds.add(node.id());
+                            newlyUnlocked.add(node.id());
+                            progressed = true;
                         }
-                        newlyUnlocked.add(node.id());
                     }
-                }
+                } while (progressed);
                 if (nextTier != currentTier) {
                     try (PreparedStatement statement = connection.prepareStatement("""
                             UPDATE tactical_build_sessions
@@ -560,7 +604,8 @@ public final class TacticalBuildRepository
             UUID tacticalSessionId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT tactical_session_id, start_operation_id, defense_id, team_id, stage, seed,
-                       generator_version, state, selected_snapshot, highest_unlocked_tier,
+                       generator_version, state, selected_snapshot, selected_branch_id,
+                       highest_unlocked_tier,
                        terminal_result, created_at, updated_at, terminal_at
                 FROM tactical_build_sessions WHERE tactical_session_id = ?
                 """)) {
@@ -572,7 +617,7 @@ public final class TacticalBuildRepository
                 String selectedSnapshot = resultSet.getString("selected_snapshot");
                 String terminalValue = resultSet.getString("terminal_result");
                 String terminalAt = resultSet.getString("terminal_at");
-                return Optional.of(new TacticalBuildSession(
+                TacticalBuildSession loaded = new TacticalBuildSession(
                         uuid(resultSet.getString("tactical_session_id")),
                         uuid(resultSet.getString("start_operation_id")),
                         Optional.ofNullable(resultSet.getString("defense_id")).map(TacticalBuildRepository::uuid),
@@ -582,11 +627,16 @@ public final class TacticalBuildRepository
                         resultSet.getInt("generator_version"),
                         TacticalBuildSessionState.valueOf(resultSet.getString("state")),
                         Optional.ofNullable(selectedSnapshot).map(TacticalDefinitionCodec::decode),
+                        Optional.ofNullable(resultSet.getString("selected_branch_id")),
                         resultSet.getInt("highest_unlocked_tier"),
                         Optional.ofNullable(terminalValue).map(TacticalTerminalResult::valueOf),
                         instant(resultSet.getString("created_at")),
                         instant(resultSet.getString("updated_at")),
-                        Optional.ofNullable(terminalAt).map(TacticalBuildRepository::instant)));
+                        Optional.ofNullable(terminalAt).map(TacticalBuildRepository::instant));
+                loaded.selectedDefinition().ifPresent(definition -> validateSelectedBranch(
+                        definition,
+                        loaded.selectedBranchId().orElse(null)));
+                return Optional.of(loaded);
             }
         }
     }
@@ -741,7 +791,9 @@ public final class TacticalBuildRepository
         }
     }
 
-    private static TacticalBuildSelectionView selectionView(TacticalBuildSession session) {
+    private TacticalBuildSelectionView selectionView(
+            Connection connection,
+            TacticalBuildSession session) throws SQLException {
         TacticalBuildDefinition definition = session.selectedDefinition().orElseThrow(
                 () -> new PersistenceConflictException(
                         "Tactical session does not have a selected definition"));
@@ -749,7 +801,64 @@ public final class TacticalBuildRepository
                 session.tacticalSessionId(),
                 session.teamId(),
                 session.stage(),
-                session.highestUnlockedTier());
+                session.highestUnlockedTier(),
+                session.selectedBranchId(),
+                loadUnlockedNodeIds(connection, session.tacticalSessionId()));
+    }
+
+    private static void validateSelectedBranch(
+            TacticalBuildDefinition definition,
+            String selectedBranchId) {
+        Objects.requireNonNull(definition, "definition");
+        List<String> branchIds = definition.branchIds();
+        if (branchIds.isEmpty()) {
+            if (selectedBranchId != null) {
+                throw new PersistenceConflictException(
+                        "The selected tactical build does not have a branch choice");
+            }
+            return;
+        }
+        if (selectedBranchId == null) {
+            throw new PersistenceConflictException(
+                    "A branch must be selected for this tactical build");
+        }
+        if (!branchIds.contains(selectedBranchId)) {
+            throw new PersistenceConflictException(
+                    "The selected tactical branch is not available in this build");
+        }
+    }
+
+    private static boolean belongsToSelectedBranch(
+            TacticalBuildSession session,
+            TacticalSkillNodeDefinition node) {
+        if (node.branchId().isEmpty()) {
+            return true;
+        }
+        return session.selectedBranchId().isPresent()
+                && session.selectedBranchId().orElseThrow().equals(node.branchId().orElseThrow());
+    }
+
+    private static Set<String> loadUnlockedNodeIds(
+            Connection connection,
+            UUID tacticalSessionId) throws SQLException {
+        Set<String> nodeIds = new LinkedHashSet<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT node_id FROM tactical_build_node_unlocks
+                WHERE tactical_session_id = ?
+                UNION
+                SELECT node_id FROM tactical_build_unlocked_nodes
+                WHERE tactical_session_id = ?
+                ORDER BY node_id
+                """)) {
+            statement.setString(1, tacticalSessionId.toString());
+            statement.setString(2, tacticalSessionId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    nodeIds.add(resultSet.getString(1));
+                }
+            }
+        }
+        return nodeIds;
     }
 
     private static String generationFingerprint(TacticalCandidateSet candidates) {

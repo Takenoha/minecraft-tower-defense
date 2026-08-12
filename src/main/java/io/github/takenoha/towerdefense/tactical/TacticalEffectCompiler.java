@@ -16,7 +16,10 @@ public final class TacticalEffectCompiler {
         Objects.requireNonNull(selection, "selection");
         Builder builder = new Builder(selection.highestUnlockedTier());
         for (TacticalSkillNodeSnapshot node : selection.nodes()) {
-            if (node.tier() <= selection.highestUnlockedTier()) {
+            boolean unlocked = selection.unlockedNodeIds().isEmpty()
+                    ? node.tier() <= selection.highestUnlockedTier()
+                    : selection.unlockedNodeIds().contains(node.id());
+            if (unlocked) {
                 builder.addNode(node);
             }
         }
