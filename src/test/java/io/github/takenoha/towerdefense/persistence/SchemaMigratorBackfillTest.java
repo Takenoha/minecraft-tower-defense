@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.persistence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import java.lang.reflect.InvocationTargetException;
@@ -41,6 +42,41 @@ class SchemaMigratorBackfillTest {
                 0L,
                 new ResourceRepository(database).load(teamId, ownerId).defensePoints());
 
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT MAX(version) FROM schema_migrations");
+                ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            assertEquals(SchemaMigrator.CURRENT_VERSION, resultSet.getInt(1));
+        }
+    }
+
+    @Test
+    void v38TacticalUnlockRowsAreCopiedIntoTheV39NodeUnlockTable() throws Exception {
+        Path databaseFile = temporaryDirectory.resolve("v38-tactical-backfill.sqlite");
+        UUID teamId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID startOperationId = UUID.randomUUID();
+        UUID unlockOperationId = UUID.randomUUID();
+        createV38TacticalDatabase(
+                databaseFile,
+                teamId,
+                sessionId,
+                startOperationId,
+                unlockOperationId);
+
+        Database database = new Database(databaseFile);
+        try (Connection connection = database.openConnection();
+                PreparedStatement statement = connection.prepareStatement("""
+                        SELECT node_id FROM tactical_build_node_unlocks
+                        WHERE tactical_session_id = ?
+                        """)) {
+            statement.setString(1, sessionId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertTrue(resultSet.next());
+                assertEquals("legacy-tier-1", resultSet.getString("node_id"));
+            }
+        }
         try (Connection connection = database.openConnection();
                 PreparedStatement statement = connection.prepareStatement(
                         "SELECT MAX(version) FROM schema_migrations");
@@ -110,6 +146,85 @@ class SchemaMigratorBackfillTest {
         }
     }
 
+    private static void createV38TacticalDatabase(
+            Path databaseFile,
+            UUID teamId,
+            UUID sessionId,
+            UUID startOperationId,
+            UUID unlockOperationId) throws Exception {
+        Class.forName("org.sqlite.JDBC");
+        try (Connection connection = DriverManager.getConnection(
+                "jdbc:sqlite:" + databaseFile.toAbsolutePath().normalize())) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA foreign_keys = ON");
+                statement.execute("BEGIN IMMEDIATE");
+                statement.execute("""
+                        CREATE TABLE schema_migrations (
+                            version INTEGER PRIMARY KEY,
+                            applied_at TEXT NOT NULL
+                        )
+                        """);
+            }
+            for (int version = 1; version <= 38; version++) {
+                invokeMigration(connection, version);
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")) {
+                    statement.setInt(1, version);
+                    statement.setString(2, CREATED_AT.toString());
+                    statement.executeUpdate();
+                }
+            }
+            UUID ownerId = UUID.randomUUID();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO teams(team_id, owner_player_id, created_at, display_name)
+                    VALUES (?, ?, ?, ?)
+                    """)) {
+                statement.setString(1, teamId.toString());
+                statement.setString(2, ownerId.toString());
+                statement.setString(3, CREATED_AT.toString());
+                statement.setString(4, "v38 tactical team");
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO tactical_build_sessions(
+                        tactical_session_id, start_operation_id, team_id, stage, seed,
+                        generator_version, state, highest_unlocked_tier, created_at, updated_at)
+                    VALUES (?, ?, ?, 1, 42, 1, 'ACTIVE', 1, ?, ?)
+                    """)) {
+                statement.setString(1, sessionId.toString());
+                statement.setString(2, startOperationId.toString());
+                statement.setString(3, teamId.toString());
+                statement.setString(4, CREATED_AT.toString());
+                statement.setString(5, CREATED_AT.toString());
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO tactical_build_operations(
+                        operation_id, tactical_session_id, operation_kind,
+                        payload_fingerprint, applied_at)
+                    VALUES (?, ?, 'UNLOCK', 'legacy', ?)
+                    """)) {
+                statement.setString(1, unlockOperationId.toString());
+                statement.setString(2, sessionId.toString());
+                statement.setString(3, CREATED_AT.toString());
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement("""
+                    INSERT INTO tactical_build_unlocked_nodes(
+                        tactical_session_id, tier, node_id, operation_id, unlocked_at)
+                    VALUES (?, 1, 'legacy-tier-1', ?, ?)
+                    """)) {
+                statement.setString(1, sessionId.toString());
+                statement.setString(2, unlockOperationId.toString());
+                statement.setString(3, CREATED_AT.toString());
+                statement.executeUpdate();
+            }
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("COMMIT");
+            }
+        }
+    }
+
     private static void invokeMigration(Connection connection, int version) throws Exception {
         String suffix = switch (version) {
             case 1 -> "One";
@@ -138,6 +253,18 @@ class SchemaMigratorBackfillTest {
             case 24 -> "TwentyFour";
             case 25 -> "TwentyFive";
             case 26 -> "TwentySix";
+            case 27 -> "TwentySeven";
+            case 28 -> "TwentyEight";
+            case 29 -> "TwentyNine";
+            case 30 -> "Thirty";
+            case 31 -> "ThirtyOne";
+            case 32 -> "ThirtyTwo";
+            case 33 -> "ThirtyThree";
+            case 34 -> "ThirtyFour";
+            case 35 -> "ThirtyFive";
+            case 36 -> "ThirtySix";
+            case 37 -> "ThirtySeven";
+            case 38 -> "ThirtyEight";
             default -> throw new IllegalArgumentException("unsupported fixture version");
         };
         Method method = SchemaMigrator.class.getDeclaredMethod(

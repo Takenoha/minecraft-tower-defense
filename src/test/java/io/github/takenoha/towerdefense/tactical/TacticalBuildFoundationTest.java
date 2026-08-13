@@ -173,11 +173,18 @@ class TacticalBuildFoundationTest {
                         "missing-build",
                         UUID.randomUUID(),
                         NOW));
+        TacticalBuildDefinition selectedDefinition =
+                candidates.candidates().getFirst().definition();
+        String selectedBuildId = selectedDefinition.id();
+        String selectedBranchId = selectedDefinition.branchIds().stream()
+                .findFirst()
+                .orElse(null);
         UUID selectionOperationId = UUID.randomUUID();
         TacticalSelectionResult selected = tactical.selectBuild(
                 candidates.tacticalSessionId(),
                 ownerId,
-                candidates.candidates().getFirst().definition().id(),
+                selectedBuildId,
+                selectedBranchId,
                 selectionOperationId,
                 NOW.plusSeconds(1L));
         assertEquals(OperationOutcome.APPLIED, selected.outcome());
@@ -185,7 +192,8 @@ class TacticalBuildFoundationTest {
         TacticalSelectionResult selectionRetry = tactical.selectBuild(
                 candidates.tacticalSessionId(),
                 ownerId,
-                candidates.candidates().getFirst().definition().id(),
+                selectedBuildId,
+                selectedBranchId,
                 selectionOperationId,
                 NOW.plusSeconds(2L));
         assertEquals(OperationOutcome.ALREADY_APPLIED, selectionRetry.outcome());
