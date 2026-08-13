@@ -16,6 +16,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.2.build.87-stable")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
