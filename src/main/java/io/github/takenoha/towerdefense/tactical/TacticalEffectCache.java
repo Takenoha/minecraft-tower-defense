@@ -47,6 +47,12 @@ public final class TacticalEffectCache implements TacticalEffectSnapshotProvider
         snapshots.remove(defenseId);
     }
 
+    /** Returns whether a selected tactical build is currently cached for the defense. */
+    public synchronized boolean hasSelectedBuild(UUID defenseId) {
+        Objects.requireNonNull(defenseId, "defenseId");
+        return snapshots.containsKey(defenseId);
+    }
+
     public synchronized void clear() {
         snapshots.clear();
     }

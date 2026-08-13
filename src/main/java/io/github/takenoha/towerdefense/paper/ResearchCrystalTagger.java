@@ -30,7 +30,7 @@ public final class ResearchCrystalTagger {
     private final NamespacedKey redemptionOperationKey;
 
     public ResearchCrystalTagger(Plugin plugin) {
-        this(Objects.requireNonNull(plugin, "plugin").getName());
+        this(Objects.requireNonNull(plugin, "plugin").getName().toLowerCase(Locale.ROOT));
     }
 
     ResearchCrystalTagger(String namespace) {
