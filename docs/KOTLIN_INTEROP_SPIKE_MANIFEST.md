@@ -13,15 +13,20 @@ unchanged.
 
 ## Baseline
 
-The integration PR is not merged yet (`origin/main` remains `97ac500c10297183ac5db68887d0466368ea7467`),
-so this spike uses the verified integration candidate as a provisional `KOTLIN_BASE`:
+PR #30 has now been merged into `main`. The formal `KOTLIN_BASE` is the merge commit
+`f532f42605d686095244c36b0dd8e18c51623502`:
 
 ```text
-859832a65087c3932ae704fb4177de2e43971613
+f532f42605d686095244c36b0dd8e18c51623502
 ```
+
+The spike branch was rebased from the verified candidate onto this merge commit and now
+ends at `e475396a3562615dc95b153aae2d2de0c0aa0781`. The merge commit has the candidate's
+production tree; the rebase only changes the parent of the test-only spike commit.
 
 | Item | Baseline evidence |
 | --- | --- |
+| formal `KOTLIN_BASE` | `f532f42605d686095244c36b0dd8e18c51623502` (PR #30 merge commit) |
 | Java | OpenJDK 25.0.3 |
 | Gradle | wrapper 9.6.0 |
 | schema | `SchemaMigrator.CURRENT_VERSION = 39` |
@@ -72,7 +77,7 @@ Result:
 
 ```text
 BUILD SUCCESSFUL
-274 tests, 0 failures, 0 errors
+274 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESSFUL on HEAD `e475396a3562615dc95b153aae2d2de0c0aa0781`
 ```
 
 Additional checks:
@@ -97,8 +102,9 @@ remains outside that fully supported range. Keep the wrapper unchanged for this 
 and decide whether to pin 9.5.x before production Kotlin migration if the next PR exposes a
 Gradle compatibility warning.
 
-The formal `KOTLIN_BASE` remains the merge commit produced when the integration PR lands on
-`main`; this branch is intentionally a ready-to-review child of the verified candidate.
+The formal `KOTLIN_BASE` is now the PR #30 merge commit
+`f532f42605d686095244c36b0dd8e18c51623502`. The branch is a ready-to-review child of that
+merge commit, with the same production tree and the Kotlin surface restricted to test code.
 
 ## References
 
