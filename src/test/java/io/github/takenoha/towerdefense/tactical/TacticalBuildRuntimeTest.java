@@ -58,6 +58,28 @@ class TacticalBuildRuntimeTest {
                 == EmptyTacticalEffectSnapshot.INSTANCE);
     }
 
+    @Test
+    void unboundDefenseUsesNeutralLifecycleWithoutCallingPersistence() {
+        UUID defenseId = UUID.randomUUID();
+        RecordingLifecycle lifecycle = new RecordingLifecycle();
+        TacticalBuildRuntime runtime = new TacticalBuildRuntime(
+                lifecycle,
+                ignored -> Optional.empty());
+
+        TacticalUnlockResult unlocked = runtime.activateAtPreparation(
+                defenseId, UUID.randomUUID());
+        runtime.markTerminal(
+                defenseId,
+                TacticalTerminalResult.RECOVERY,
+                UUID.randomUUID());
+
+        assertEquals(OperationOutcome.ALREADY_APPLIED, unlocked.outcome());
+        assertEquals(0, lifecycle.preparationCalls);
+        assertEquals(0, lifecycle.terminalCalls);
+        assertTrue(runtime.currentForDefense(defenseId)
+                == EmptyTacticalEffectSnapshot.INSTANCE);
+    }
+
     private static final class RecordingLifecycle implements TacticalBuildLifecycle {
         private int preparationCalls;
         private int terminalCalls;

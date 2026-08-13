@@ -249,7 +249,7 @@ public final class TowerManager implements Listener, AutoCloseable {
 
     /** Registers the provisional Arrow and Cannon recipes. */
     public void registerRecipe() {
-        NamespacedKey arrowKey = new NamespacedKey(plugin, "tower_arrow");
+        NamespacedKey arrowKey = TowerRecipeCatalog.key(plugin, TowerType.ARROW);
         ShapedRecipe arrowRecipe = new ShapedRecipe(
                 arrowKey, itemTagger.recipeTemplate(TowerType.ARROW));
         arrowRecipe.shape("IRI", "RDR", "IRI");
@@ -258,7 +258,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         arrowRecipe.setIngredient('D', Material.DIAMOND);
         Bukkit.addRecipe(arrowRecipe);
 
-        NamespacedKey cannonKey = new NamespacedKey(plugin, "tower_cannon");
+        NamespacedKey cannonKey = TowerRecipeCatalog.key(plugin, TowerType.CANNON);
         ShapedRecipe cannonRecipe = new ShapedRecipe(
                 cannonKey, itemTagger.recipeTemplate(TowerType.CANNON));
         cannonRecipe.shape("CGC", "GIG", "CGC");
@@ -268,7 +268,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         Bukkit.addRecipe(cannonRecipe);
 
         ShapedRecipe frostRecipe = new ShapedRecipe(
-                new NamespacedKey(plugin, "tower_frost"),
+                TowerRecipeCatalog.key(plugin, TowerType.FROST),
                 itemTagger.recipeTemplate(TowerType.FROST));
         frostRecipe.shape("PIP", "IDI", "PIP");
         frostRecipe.setIngredient('P', Material.PACKED_ICE);
@@ -277,7 +277,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         Bukkit.addRecipe(frostRecipe);
 
         ShapedRecipe lightningRecipe = new ShapedRecipe(
-                new NamespacedKey(plugin, "tower_lightning"),
+                TowerRecipeCatalog.key(plugin, TowerType.LIGHTNING),
                 itemTagger.recipeTemplate(TowerType.LIGHTNING));
         lightningRecipe.shape("RER", "ECE", "RER");
         lightningRecipe.setIngredient('R', Material.REDSTONE);
@@ -286,7 +286,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         Bukkit.addRecipe(lightningRecipe);
 
         ShapedRecipe supportRecipe = new ShapedRecipe(
-                new NamespacedKey(plugin, "tower_support"),
+                TowerRecipeCatalog.key(plugin, TowerType.SUPPORT),
                 itemTagger.recipeTemplate(TowerType.SUPPORT));
         supportRecipe.shape("GAG", "AEA", "GAG");
         supportRecipe.setIngredient('G', Material.GOLD_INGOT);
@@ -295,7 +295,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         Bukkit.addRecipe(supportRecipe);
 
         ShapedRecipe sniperRecipe = new ShapedRecipe(
-                new NamespacedKey(plugin, "tower_sniper"),
+                TowerRecipeCatalog.key(plugin, TowerType.SNIPER),
                 itemTagger.recipeTemplate(TowerType.SNIPER));
         sniperRecipe.shape("FIF", "IEI", "FIF");
         sniperRecipe.setIngredient('F', Material.FEATHER);
@@ -304,7 +304,7 @@ public final class TowerManager implements Listener, AutoCloseable {
         Bukkit.addRecipe(sniperRecipe);
 
         ShapedRecipe flameRecipe = new ShapedRecipe(
-                new NamespacedKey(plugin, "tower_flame"),
+                TowerRecipeCatalog.key(plugin, TowerType.FLAME),
                 itemTagger.recipeTemplate(TowerType.FLAME));
         flameRecipe.shape("BBB", "BFB", "BDB");
         flameRecipe.setIngredient('B', Material.BLAZE_POWDER);
@@ -428,7 +428,12 @@ public final class TowerManager implements Listener, AutoCloseable {
                 });
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    /**
+     * Paper can pre-cancel a right-click when the vanilla item has no block-use action. Tower
+     * items are intentionally non-placeable vanilla materials, so this handler must still see
+     * that event and claim it for the plugin-owned placement flow.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getHand() != EquipmentSlot.HAND
                 || event.getAction() != Action.RIGHT_CLICK_BLOCK) {

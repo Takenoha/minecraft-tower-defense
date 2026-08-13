@@ -58,6 +58,9 @@ public final class TacticalBuildRuntime implements TacticalEffectSnapshotProvide
     }
 
     public TacticalUnlockResult activateAtPreparation(UUID defenseId, UUID operationId) {
+        if (!ensureSelectedBuild(defenseId)) {
+            return TacticalUnlockResult.unchanged(0);
+        }
         TacticalUnlockResult result = lifecycle.activateAtPreparation(defenseId, operationId);
         effects.rebuild(defenseId);
         return result;
@@ -68,6 +71,9 @@ public final class TacticalBuildRuntime implements TacticalEffectSnapshotProvide
             int completedWaveCount,
             int totalWaveCount,
             UUID operationId) {
+        if (!ensureSelectedBuild(defenseId)) {
+            return TacticalUnlockResult.unchanged(0);
+        }
         TacticalUnlockResult result = lifecycle.advanceAfterWave(
                 defenseId,
                 completedWaveCount,
@@ -78,6 +84,9 @@ public final class TacticalBuildRuntime implements TacticalEffectSnapshotProvide
     }
 
     public TacticalUnlockResult activateFinalTier(UUID defenseId, UUID operationId) {
+        if (!ensureSelectedBuild(defenseId)) {
+            return TacticalUnlockResult.unchanged(0);
+        }
         TacticalUnlockResult result = lifecycle.activateFinalTier(defenseId, operationId);
         effects.rebuild(defenseId);
         return result;
@@ -96,6 +105,10 @@ public final class TacticalBuildRuntime implements TacticalEffectSnapshotProvide
             UUID defenseId,
             TacticalTerminalResult result,
             UUID operationId) {
+        if (!ensureSelectedBuild(defenseId)) {
+            effects.invalidate(defenseId);
+            return;
+        }
         try {
             lifecycle.markTerminal(defenseId, result, operationId);
         } finally {
@@ -109,5 +122,13 @@ public final class TacticalBuildRuntime implements TacticalEffectSnapshotProvide
 
     public TacticalEffectCache effects() {
         return effects;
+    }
+
+    private boolean ensureSelectedBuild(UUID defenseId) {
+        if (effects.hasSelectedBuild(defenseId)) {
+            return true;
+        }
+        effects.rebuild(defenseId);
+        return effects.hasSelectedBuild(defenseId);
     }
 }

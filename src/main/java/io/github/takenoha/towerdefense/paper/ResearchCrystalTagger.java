@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.paper;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,7 +30,7 @@ public final class ResearchCrystalTagger {
     private final NamespacedKey redemptionOperationKey;
 
     public ResearchCrystalTagger(Plugin plugin) {
-        this(Objects.requireNonNull(plugin, "plugin").getName());
+        this(Objects.requireNonNull(plugin, "plugin").getName().toLowerCase(Locale.ROOT));
     }
 
     ResearchCrystalTagger(String namespace) {

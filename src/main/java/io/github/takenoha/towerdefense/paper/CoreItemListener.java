@@ -156,6 +156,13 @@ public final class CoreItemListener implements Listener {
                 return;
             }
             event.setCurrentItem(itemTagger.createUnbound(UUID.randomUUID()));
+            if (event.getWhoClicked() instanceof Player player) {
+                int discovered = TowerRecipeCatalog.discoverAll(plugin, player);
+                if (discovered > 0) {
+                    player.sendMessage(Component.text(
+                            "タワー7種のレシピを解放しました。", NamedTextColor.GREEN));
+                }
+            }
         }
     }
 

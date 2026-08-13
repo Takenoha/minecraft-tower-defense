@@ -4,6 +4,7 @@ import io.github.takenoha.towerdefense.domain.TowerType;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
+import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.World;
@@ -57,7 +58,15 @@ public final class TowerAttackEffects {
             if (!budget.claim()) {
                 return;
             }
-            world.spawnParticle(effect.trail(), point, effect.trailCount(), 0.0d, 0.0d, 0.0d, 0.0d);
+            spawnParticle(
+                    world,
+                    effect.trail(),
+                    point,
+                    effect.trailCount(),
+                    0.0d,
+                    0.0d,
+                    0.0d,
+                    0.0d);
         }
     }
 
@@ -68,7 +77,8 @@ public final class TowerAttackEffects {
             return;
         }
         TowerEffectDefinition effect = definition(type);
-        target.getWorld().spawnParticle(
+        spawnParticle(
+                target.getWorld(),
                 effect.hit(),
                 target,
                 effect.hitCount(),
@@ -94,7 +104,8 @@ public final class TowerAttackEffects {
         if (!budget.claim()) {
             return;
         }
-        world.spawnParticle(
+        spawnParticle(
+                world,
                 effect.buff(),
                 target,
                 effect.buffCount(),
@@ -105,7 +116,8 @@ public final class TowerAttackEffects {
         if (!budget.claim()) {
             return;
         }
-        world.spawnParticle(
+        spawnParticle(
+                world,
                 effect.buff(),
                 source,
                 Math.max(1, effect.buffCount() / 2),
@@ -113,6 +125,37 @@ public final class TowerAttackEffects {
                 0.35d,
                 0.2d,
                 0.0d);
+    }
+
+    /** Returns the payload required by Paper for particles that are not data-free. */
+    static Object particleDataFor(Particle particle) {
+        Objects.requireNonNull(particle, "particle");
+        return particle == Particle.FLASH ? Color.WHITE : null;
+    }
+
+    private static void spawnParticle(
+            World world,
+            Particle particle,
+            Location location,
+            int count,
+            double offsetX,
+            double offsetY,
+            double offsetZ,
+            double extra) {
+        Object data = particleDataFor(particle);
+        if (data == null) {
+            world.spawnParticle(particle, location, count, offsetX, offsetY, offsetZ, extra);
+        } else {
+            world.spawnParticle(
+                    particle,
+                    location,
+                    count,
+                    offsetX,
+                    offsetY,
+                    offsetZ,
+                    extra,
+                    data);
+        }
     }
 
     private static boolean sameWorld(Location first, Location second) {
