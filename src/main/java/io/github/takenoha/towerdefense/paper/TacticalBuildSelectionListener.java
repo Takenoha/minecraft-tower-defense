@@ -8,6 +8,7 @@ import io.github.takenoha.towerdefense.persistence.TacticalSelectionResult;
 import io.github.takenoha.towerdefense.persistence.TeamRecord;
 import io.github.takenoha.towerdefense.runtime.DatabaseExecutor;
 import io.github.takenoha.towerdefense.tactical.TacticalBuildCatalog;
+import io.github.takenoha.towerdefense.tactical.TacticalBuildDefinition;
 import io.github.takenoha.towerdefense.tactical.TacticalCandidateGenerator;
 import io.github.takenoha.towerdefense.tactical.TacticalCandidateSet;
 import java.time.Instant;
@@ -129,7 +130,29 @@ public final class TacticalBuildSelectionListener implements Listener {
             TacticalBuildSelectionGui.refresh(
                     event.getView().getTopInventory(),
                     holder.candidates(),
-                    holder.selectedBuildId().orElse(null));
+                    holder.selectedBuildId().orElse(null),
+                    holder.selectedBranchId().orElse(null));
+            return;
+        }
+        int branchIndex = TacticalBuildSelectionGui.branchIndexAt(event.getRawSlot());
+        if (branchIndex >= 0) {
+            String buildId = holder.selectedBuildId().orElse(null);
+            if (buildId == null) {
+                player.sendMessage(Component.text(
+                        "先にビルドを選択してください。",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+            TacticalBuildDefinition definition = holder.candidates().requireBuild(buildId);
+            if (branchIndex >= definition.branchIds().size()) {
+                return;
+            }
+            holder.selectBranch(definition.branchIds().get(branchIndex));
+            TacticalBuildSelectionGui.refresh(
+                    event.getView().getTopInventory(),
+                    holder.candidates(),
+                    buildId,
+                    holder.selectedBranchId().orElse(null));
             return;
         }
         if (event.getRawSlot() == TacticalBuildSelectionGui.CLOSE_SLOT) {
@@ -144,6 +167,12 @@ public final class TacticalBuildSelectionListener implements Listener {
             player.sendMessage(Component.text("先に候補を1つ選択してください。", NamedTextColor.YELLOW));
             return;
         }
+        if (holder.branchRequired() && holder.selectedBranchId().isEmpty()) {
+            player.sendMessage(Component.text(
+                    "このビルドは連射／射程の枝を1つ選択してください。",
+                    NamedTextColor.YELLOW));
+            return;
+        }
         holder.markConfirming();
         player.closeInventory();
         UUID operationId = UUID.randomUUID();
@@ -151,6 +180,7 @@ public final class TacticalBuildSelectionListener implements Listener {
                 holder.tacticalSessionId(),
                 holder.ownerId(),
                 buildId,
+                holder.selectedBranchId().orElse(null),
                 operationId,
                 Instant.now())).whenComplete((result, failure) -> runOnMainThread(() -> {
                     if (failure != null) {
@@ -167,7 +197,11 @@ public final class TacticalBuildSelectionListener implements Listener {
                         return;
                     }
                     player.sendMessage(Component.text(
-                            "戦術ビルド「" + buildId + "」を確定しました。防衛を開始します。",
+                            "戦術ビルド「" + buildId + "」"
+                                    + holder.selectedBranchId()
+                                            .map(branchId -> "（" + branchId + "ルート）")
+                                            .orElse("")
+                                    + "を確定しました。防衛を開始します。",
                             NamedTextColor.GREEN));
                     command.startWithSeal(
                             player,

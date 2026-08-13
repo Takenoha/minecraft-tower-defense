@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -33,7 +34,8 @@ public final class TacticalBuildCatalog {
                 heavyFortress(),
                 flameSuppression(),
                 iceLightning(),
-                finalDefenseLine()));
+                finalDefenseLine(),
+                arrowSpecialization()));
     }
 
     public List<TacticalBuildDefinition> definitions() {
@@ -238,6 +240,91 @@ public final class TacticalBuildCatalog {
                         Set.of(), 0.85d, TacticalTargetCondition.CORE_BELOW_30_PERCENT)));
     }
 
+    private static TacticalBuildDefinition arrowSpecialization() {
+        String buildId = "arrow-specialization";
+        String branchGroup = "arrow-path";
+        return build(
+                buildId,
+                "ARROW特化分岐",
+                "ARROWを連射型または射程型へ特化させる二択の分岐ツリー。",
+                TacticalBuildCategory.OFFENSE,
+                TacticalBuildRarity.RARE,
+                "ARROW",
+                Set.of(TowerType.ARROW),
+                branchNode(
+                        buildId,
+                        "rapid-fire",
+                        branchGroup,
+                        1,
+                        "連射 Tier 1: ARROWの攻撃間隔 ×0.92",
+                        null,
+                        effect(
+                                TacticalEffectType.ATTACK_INTERVAL_MULTIPLIER,
+                                Set.of(TowerType.ARROW),
+                                0.92d,
+                                TacticalTargetCondition.NONE)),
+                branchNode(
+                        buildId,
+                        "rapid-fire",
+                        branchGroup,
+                        2,
+                        "連射 Tier 2: ARROWのダメージ ×1.10",
+                        buildId + "-rapid-fire-tier-1",
+                        effect(
+                                TacticalEffectType.DAMAGE_MULTIPLIER,
+                                Set.of(TowerType.ARROW),
+                                1.10d,
+                                TacticalTargetCondition.NONE)),
+                branchNode(
+                        buildId,
+                        "rapid-fire",
+                        branchGroup,
+                        3,
+                        "連射 Tier 3: 低HP対象へのARROWダメージ ×1.15",
+                        buildId + "-rapid-fire-tier-2",
+                        effect(
+                                TacticalEffectType.DAMAGE_TO_LOW_HP_MULTIPLIER,
+                                Set.of(TowerType.ARROW),
+                                1.15d,
+                                TacticalTargetCondition.LOW_HP)),
+                branchNode(
+                        buildId,
+                        "range",
+                        branchGroup,
+                        1,
+                        "射程 Tier 1: ARROWの射程 +1.0",
+                        null,
+                        effect(
+                                TacticalEffectType.RANGE_ADD,
+                                Set.of(TowerType.ARROW),
+                                1.0d,
+                                TacticalTargetCondition.NONE)),
+                branchNode(
+                        buildId,
+                        "range",
+                        branchGroup,
+                        2,
+                        "射程 Tier 2: ARROWの射程 +1.5",
+                        buildId + "-range-tier-1",
+                        effect(
+                                TacticalEffectType.RANGE_ADD,
+                                Set.of(TowerType.ARROW),
+                                1.5d,
+                                TacticalTargetCondition.NONE)),
+                branchNode(
+                        buildId,
+                        "range",
+                        branchGroup,
+                        3,
+                        "射程 Tier 3: 高HP対象へのARROWダメージ ×1.15",
+                        buildId + "-range-tier-2",
+                        effect(
+                                TacticalEffectType.DAMAGE_TO_HIGH_HP_MULTIPLIER,
+                                Set.of(TowerType.ARROW),
+                                1.15d,
+                                TacticalTargetCondition.HIGH_HP)));
+    }
+
     private static TacticalBuildDefinition build(
             String id,
             String displayName,
@@ -275,6 +362,26 @@ public final class TacticalBuildCatalog {
                 "Tier " + tier,
                 description,
                 List.of(effects));
+    }
+
+    private static TacticalSkillNodeDefinition branchNode(
+            String buildId,
+            String branchId,
+            String exclusiveBranchGroup,
+            int tier,
+            String description,
+            String prerequisiteNodeId,
+            TacticalEffectEntry... effects) {
+        return new TacticalSkillNodeDefinition(
+                buildId + "-" + branchId + "-tier-" + tier,
+                DEFINITION_VERSION,
+                tier,
+                (branchId.equals("rapid-fire") ? "連射" : "射程") + " Tier " + tier,
+                description,
+                List.of(effects),
+                prerequisiteNodeId == null ? List.of() : List.of(prerequisiteNodeId),
+                Optional.of(exclusiveBranchGroup),
+                Optional.of(branchId));
     }
 
     private static TacticalEffectEntry effect(

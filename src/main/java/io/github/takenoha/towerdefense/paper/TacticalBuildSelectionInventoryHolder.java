@@ -17,6 +17,7 @@ public final class TacticalBuildSelectionInventoryHolder implements InventoryHol
     private final TacticalCandidateSet candidates;
     private Inventory inventory;
     private String selectedBuildId;
+    private String selectedBranchId;
     private boolean confirming;
 
     public TacticalBuildSelectionInventoryHolder(
@@ -65,9 +66,35 @@ public final class TacticalBuildSelectionInventoryHolder implements InventoryHol
         return Optional.ofNullable(selectedBuildId);
     }
 
+    public Optional<String> selectedBranchId() {
+        return Optional.ofNullable(selectedBranchId);
+    }
+
+    public boolean branchRequired() {
+        return selectedBuildId != null
+                && !candidates.requireBuild(selectedBuildId).branchIds().isEmpty();
+    }
+
     public void select(String buildId) {
         candidates.requireBuild(buildId);
+        if (!buildId.equals(selectedBuildId)) {
+            selectedBranchId = null;
+        }
         selectedBuildId = buildId;
+    }
+
+    public void selectBranch(String branchId) {
+        Objects.requireNonNull(branchId, "branchId");
+        if (branchId.isBlank()) {
+            throw new IllegalArgumentException("branchId must not be blank");
+        }
+        if (selectedBuildId == null) {
+            throw new IllegalStateException("select a tactical build before selecting a branch");
+        }
+        if (!candidates.requireBuild(selectedBuildId).branchIds().contains(branchId)) {
+            throw new IllegalArgumentException("branch is not available for the selected build");
+        }
+        selectedBranchId = branchId;
     }
 
     public void markConfirming() {
