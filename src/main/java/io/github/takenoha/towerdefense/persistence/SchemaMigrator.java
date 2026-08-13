@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 38;
+    public static final int CURRENT_VERSION = 39;
 
     private SchemaMigrator() {
     }
@@ -175,6 +175,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 38) {
                     applyVersionThirtyEight(connection);
                     recordMigration(connection, 38);
+                }
+                if (installedVersion < 39) {
+                    applyVersionThirtyNine(connection);
+                    recordMigration(connection, 39);
                 }
                 return null;
             });
@@ -2275,6 +2279,37 @@ public final class SchemaMigrator {
                         PRIMARY KEY (tactical_session_id, tier),
                         UNIQUE (tactical_session_id, node_id)
                     )
+                    """);
+        }
+    }
+
+    /** Adds selected branch state and allows multiple unlocked nodes at one tier. */
+    private static void applyVersionThirtyNine(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE tactical_build_sessions
+                    ADD COLUMN selected_branch_id TEXT
+                    """);
+            statement.executeUpdate("""
+                    CREATE TABLE tactical_build_node_unlocks (
+                        tactical_session_id TEXT NOT NULL
+                            REFERENCES tactical_build_sessions(tactical_session_id) ON DELETE CASCADE,
+                        node_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL
+                            REFERENCES tactical_build_operations(operation_id) ON DELETE RESTRICT,
+                        unlocked_at TEXT NOT NULL,
+                        PRIMARY KEY (tactical_session_id, node_id)
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tactical_build_node_unlocks(
+                        tactical_session_id, node_id, operation_id, unlocked_at)
+                    SELECT tactical_session_id, node_id, operation_id, unlocked_at
+                    FROM tactical_build_unlocked_nodes
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX tactical_build_node_unlocks_session_idx
+                    ON tactical_build_node_unlocks(tactical_session_id, unlocked_at)
                     """);
         }
     }

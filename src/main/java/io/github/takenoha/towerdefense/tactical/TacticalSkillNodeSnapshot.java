@@ -2,6 +2,7 @@ package io.github.takenoha.towerdefense.tactical;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Versioned immutable node snapshot used by active defenses and restart recovery. */
 public record TacticalSkillNodeSnapshot(
@@ -10,7 +11,30 @@ public record TacticalSkillNodeSnapshot(
         int tier,
         String displayName,
         String description,
-        List<TacticalEffectEntry> effects) {
+        List<TacticalEffectEntry> effects,
+        List<String> prerequisiteNodeIds,
+        Optional<String> exclusiveBranchGroup,
+        Optional<String> branchId) {
+    /** Source-compatible constructor for snapshots created before branch metadata existed. */
+    public TacticalSkillNodeSnapshot(
+            String id,
+            int version,
+            int tier,
+            String displayName,
+            String description,
+            List<TacticalEffectEntry> effects) {
+        this(
+                id,
+                version,
+                tier,
+                displayName,
+                description,
+                effects,
+                List.of(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
     public TacticalSkillNodeSnapshot {
         id = requireText(id, "id");
         displayName = requireText(displayName, "displayName");
@@ -23,6 +47,17 @@ public record TacticalSkillNodeSnapshot(
         }
         Objects.requireNonNull(effects, "effects");
         effects = List.copyOf(effects);
+        Objects.requireNonNull(prerequisiteNodeIds, "prerequisiteNodeIds");
+        prerequisiteNodeIds = List.copyOf(prerequisiteNodeIds);
+        exclusiveBranchGroup = requireOptionalText(exclusiveBranchGroup, "exclusiveBranchGroup");
+        branchId = requireOptionalText(branchId, "branchId");
+    }
+
+    private static Optional<String> requireOptionalText(
+            Optional<String> value,
+            String name) {
+        Objects.requireNonNull(value, name);
+        return value.map(text -> requireText(text, name));
     }
 
     private static String requireText(String value, String name) {

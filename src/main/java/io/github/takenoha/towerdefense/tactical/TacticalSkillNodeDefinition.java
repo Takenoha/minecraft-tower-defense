@@ -2,6 +2,7 @@ package io.github.takenoha.towerdefense.tactical;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Immutable configured node in a tactical build. */
 public record TacticalSkillNodeDefinition(
@@ -10,7 +11,36 @@ public record TacticalSkillNodeDefinition(
         int tier,
         String displayName,
         String description,
-        List<TacticalEffectEntry> effects) {
+        List<TacticalEffectEntry> effects,
+        List<String> prerequisiteNodeIds,
+        Optional<String> exclusiveBranchGroup,
+        Optional<String> branchId) {
+    /**
+     * Source-compatible constructor for the original linear node shape.
+     *
+     * <p>Old definitions have no graph metadata and therefore decode to this same neutral
+     * shape. Semantic graph validation remains the responsibility of
+     * {@link TacticalBuildDefinitionValidator}.
+     */
+    public TacticalSkillNodeDefinition(
+            String id,
+            int version,
+            int tier,
+            String displayName,
+            String description,
+            List<TacticalEffectEntry> effects) {
+        this(
+                id,
+                version,
+                tier,
+                displayName,
+                description,
+                effects,
+                List.of(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
     public TacticalSkillNodeDefinition {
         id = requireText(id, "id");
         displayName = requireText(displayName, "displayName");
@@ -23,10 +53,30 @@ public record TacticalSkillNodeDefinition(
         }
         Objects.requireNonNull(effects, "effects");
         effects = List.copyOf(effects);
+        Objects.requireNonNull(prerequisiteNodeIds, "prerequisiteNodeIds");
+        prerequisiteNodeIds = List.copyOf(prerequisiteNodeIds);
+        exclusiveBranchGroup = requireOptionalText(exclusiveBranchGroup, "exclusiveBranchGroup");
+        branchId = requireOptionalText(branchId, "branchId");
     }
 
     public TacticalSkillNodeSnapshot snapshot() {
-        return new TacticalSkillNodeSnapshot(id, version, tier, displayName, description, effects);
+        return new TacticalSkillNodeSnapshot(
+                id,
+                version,
+                tier,
+                displayName,
+                description,
+                effects,
+                prerequisiteNodeIds,
+                exclusiveBranchGroup,
+                branchId);
+    }
+
+    private static Optional<String> requireOptionalText(
+            Optional<String> value,
+            String name) {
+        Objects.requireNonNull(value, name);
+        return value.map(text -> requireText(text, name));
     }
 
     private static String requireText(String value, String name) {
