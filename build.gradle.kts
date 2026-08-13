@@ -1,5 +1,6 @@
 plugins {
     java
+    kotlin("jvm") version "2.4.10"
 }
 
 group = "io.github.takenoha"
@@ -19,8 +20,16 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
     testImplementation("io.papermc.paper:paper-api:26.2.build.87-stable")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+kotlin {
+    jvmToolchain(25)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget("25"))
+    }
 }
 
 java {
