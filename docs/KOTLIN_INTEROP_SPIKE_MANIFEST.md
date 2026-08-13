@@ -20,8 +20,8 @@ PR #30 has now been merged into `main`. The formal `KOTLIN_BASE` is the merge co
 f532f42605d686095244c36b0dd8e18c51623502
 ```
 
-The spike branch was rebased from the verified candidate onto this merge commit and now
-ends at `e475396a3562615dc95b153aae2d2de0c0aa0781`. The merge commit has the candidate's
+The test-only spike commit was rebased from the verified candidate onto this merge commit
+as `e475396a3562615dc95b153aae2d2de0c0aa0781`. The merge commit has the candidate's
 production tree; the rebase only changes the parent of the test-only spike commit.
 
 | Item | Baseline evidence |
@@ -77,7 +77,8 @@ Result:
 
 ```text
 BUILD SUCCESSFUL
-274 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESSFUL on HEAD `e475396a3562615dc95b153aae2d2de0c0aa0781`
+274 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESSFUL on documentation commit
+`c5296d851baa9d45b9673995c3d34e96b95abb67` (source change `e475396a3562615dc95b153aae2d2de0c0aa0781`)
 ```
 
 Additional checks:
