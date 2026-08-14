@@ -15,7 +15,7 @@ created: 2026-08-14
 
 ## Preserved boundaries
 
-- Public final utility class, private no-arg constructor, six public static size/slot constants, public candidate/branch slot arrays, `create(TacticalBuildSelectionInventoryHolder): Inventory`, both `refresh` overloads, and both slot-index helpers remain Java-compatible.
+- Public final utility class, private no-arg constructor, three public static scalar size/slot constants, two public static candidate/branch slot arrays, `create(TacticalBuildSelectionInventoryHolder): Inventory`, both `refresh` overloads, and both slot-index helpers remain Java-compatible.
 - The GUI title, holder attachment, candidate and branch slot placement, selected-state prefixes, candidate/branch material and color choices, branch Tier lore ordering, material fallback, confirm/close items, and existing caller boundary remain unchanged.
 - `selection item metadata` failure remains explicit; lore component lists remain unmodifiable as in the old Java `Stream.toList()` contract. Candidate/branch arrays retain the old public static mutable-array shape.
 
