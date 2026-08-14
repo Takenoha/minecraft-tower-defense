@@ -10,9 +10,10 @@ created: 2026-08-14
 ## Scope
 
 - Base: `feat/kotlin-b14-paper-foundation-abo` at `b60d62f1bdcfce66f5e4d06a111dff62f46f9ed1`
-- Implementation commit: `a93b54f`
-- Migrated boundaries: `PlayerRecoveryGuard`, `VoucherEntityPolicy`, `VoucherContainerPolicy`, `RaidSealMaterialPolicy`, and `RaidSealAutomationPolicy`
-- Java sources removed from `src/main/java/io/github/takenoha/towerdefense/paper/`
+- Implementation commit: `a93b54f` (policy migration); follow-up restores `PlayerRecoveryGuard` in Java for its package-private ABI.
+- Migrated boundaries: `VoucherEntityPolicy`, `VoucherContainerPolicy`, `RaidSealMaterialPolicy`, and `RaidSealAutomationPolicy`
+- `PlayerRecoveryGuard` remains in `src/main/java/io/github/takenoha/towerdefense/paper/` because Kotlin cannot express the required package-private constructor and methods without changing the JVM ABI.
+- The four policy Java sources were removed from `src/main/java/io/github/takenoha/towerdefense/paper/`.
 - Kotlin sources added under `src/main/kotlin/io/github/takenoha/towerdefense/paper/`
 - Java ABI test added: `PaperPoliciesKotlinBoundaryAbiTest.java`
 - Paper listeners, managers, GUI wiring, schema, and repository code were not changed.
@@ -20,7 +21,7 @@ created: 2026-08-14
 
 ## Boundary and invariants
 
-- `PlayerRecoveryGuard` retains its public constructor and `begin(UUID)`, `complete(UUID)`, and `isGuarded(UUID)` lifecycle methods with the same state semantics.
+- `PlayerRecoveryGuard` intentionally retains its package-private Java constructor and `begin(UUID)`, `complete(UUID)`, and `isGuarded(UUID)` lifecycle methods, including the legacy null behavior.
 - Voucher entity policy retains the interaction and hanging-break guards; container policy preserves the forbidden-inventory, top-target, cursor, number-key, offhand, shift-click, and clicked-item decision matrix.
 - Raid-seal material policy preserves the `ECHO_SHARD` and legacy `ENDER_EYE` constants and both compatibility predicates with null validation.
 - Raid-seal automation policy preserves the right-click and crafter cancellation predicates, including plugin-recipe, template-result, current-ingredient, and legacy-ingredient checks.
@@ -33,7 +34,7 @@ The clean verification build completed successfully at verified code HEAD `71d7a
 - `BUILD SUCCESSFUL`
 - 84 XML test reports / 305 tests
 - failures 0 / errors 0 / skipped 0
-- Kotlin policy classes present; Java policy duplicates absent
+- Four Kotlin policy classes present; `PlayerRecoveryGuard` remains the single Java implementation
 - JVM class major: 69
 - packaged JAR SHA-256: `A8FF2547FDDF43EC60B690642A1E78E2A801F83670A383ECA24DFE32F5CD7259`
 - packaged `plugin.yml` SHA-256: `F0A932C3FEA5393D48B42858BBD5DCCF92A03E76355BBD0A799C729FFABB043A`
