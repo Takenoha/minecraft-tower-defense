@@ -18,7 +18,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -31,173 +30,158 @@ import java.util.UUID;
  * creation, terminal persistence, recovery, core HP writes, and lock mutation are kept inside
  * immediate SQLite transactions.</p>
  */
-public final class DefenseRepository {
-    private static final String TERMINAL_PHASES_SQL =
-            "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')";
-    private static final int RESEARCH_CRYSTAL_SEGMENT_SIZE = 64;
-    private static final Duration DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L);
-    public static final int MAX_TEAM_MEMBERS = 8;
-    public static final Duration DEFAULT_INVITATION_RETENTION = Duration.ofDays(7L);
+private const val TERMINAL_PHASES_SQL = "('VICTORY', 'DEFEAT', 'ABORTED', 'RECOVERY')"
+private const val RESEARCH_CRYSTAL_SEGMENT_SIZE = 64
+private val DEFAULT_TEAM_QUEUE_RETENTION = Duration.ofDays(7L)
 
-    private final Database database;
-    private final Duration teamQueueRetention;
-    private final RewardSettings rewardSettings;
-
-    public DefenseRepository(Database database) {
-        this(database, DEFAULT_TEAM_QUEUE_RETENTION, RewardSettings.defaults());
+class DefenseRepository(
+    private val database: Database,
+    private val teamQueueRetention: Duration,
+    private val rewardSettings: RewardSettings,
+) {
+    init {
+        Objects.requireNonNull(database, "database")
+        Objects.requireNonNull(teamQueueRetention, "teamQueueRetention")
+        Objects.requireNonNull(rewardSettings, "rewardSettings")
+        if (teamQueueRetention.isZero || teamQueueRetention.isNegative) throw IllegalArgumentException("teamQueueRetention must be positive")
+    }
+    constructor(database: Database) : this(database, DEFAULT_TEAM_QUEUE_RETENTION, RewardSettings.defaults())
+    constructor(database: Database, teamQueueRetention: Duration) : this(database, teamQueueRetention, RewardSettings.defaults())
+    constructor(database: Database, rewardSettings: RewardSettings) : this(database, Objects.requireNonNull(rewardSettings, "rewardSettings").teamQueueRetention(), rewardSettings)
+    companion object {
+        const val MAX_TEAM_MEMBERS: Int = 8
+        @JvmField val DEFAULT_INVITATION_RETENTION: Duration = Duration.ofDays(7L)
     }
 
-    public DefenseRepository(Database database, Duration teamQueueRetention) {
-        this(database, teamQueueRetention, RewardSettings.defaults());
-    }
-
-    /** Uses the configured queue and stage-reward policy. */
-    public DefenseRepository(Database database, RewardSettings rewardSettings) {
-        this(
-                database,
-                Objects.requireNonNull(rewardSettings, "rewardSettings").teamQueueRetention(),
-                rewardSettings);
-    }
-
-    public DefenseRepository(
-            Database database,
-            Duration teamQueueRetention,
-            RewardSettings rewardSettings) {
-        this.database = Objects.requireNonNull(database, "database");
-        this.teamQueueRetention = Objects.requireNonNull(teamQueueRetention, "teamQueueRetention");
-        this.rewardSettings = Objects.requireNonNull(rewardSettings, "rewardSettings");
-        if (teamQueueRetention.isZero() || teamQueueRetention.isNegative()) {
-            throw new IllegalArgumentException("teamQueueRetention must be positive");
-        }
-    }
-
-    /** Creates a one-player team and its mandatory owner membership atomically. */
-    public TeamRecord createSoloTeam(UUID teamId, UUID ownerPlayerId, Instant createdAt) {
+/** Creates a one-player team and its mandatory owner membership atomically. */
+    fun createSoloTeam(teamId: UUID, ownerPlayerId: UUID, createdAt: Instant): TeamRecord {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(ownerPlayerId, "ownerPlayerId");
         Objects.requireNonNull(createdAt, "createdAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                try (PreparedStatement statement = connection.prepareStatement("""
+            return database.inImmediateTransaction({ connection ->
+                connection.prepareStatement("""
                         INSERT INTO teams(team_id, owner_player_id, display_name, created_at)
                         VALUES (?, ?, ?, ?)
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, ownerPlayerId.toString());
                     statement.setString(3, TeamRecord.DEFAULT_DISPLAY_NAME);
                     statement.setString(4, createdAt.toString());
                     statement.executeUpdate();
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         INSERT INTO team_members(team_id, player_id, role, joined_at)
                         VALUES (?, ?, 'OWNER', ?)
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, ownerPlayerId.toString());
                     statement.setString(3, createdAt.toString());
                     statement.executeUpdate();
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         INSERT INTO team_progress(
                             team_id, highest_cleared_level, unlocked_level, research_points, updated_at
                         ) VALUES (?, 0, 1, 0, ?)
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, createdAt.toString());
                     statement.executeUpdate();
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         INSERT INTO tower_research(team_id, tower_type, research_level, updated_at)
                         VALUES (?, ?, 1, ?)
-                        """)) {
-                    for (TowerType towerType : TowerType.values()) {
+                        """.trimIndent()).use { statement ->
+                    for (towerType in TowerType.values()) {
                         statement.setString(1, teamId.toString());
                         statement.setString(2, towerType.id());
                         statement.setString(3, createdAt.toString());
                         statement.addBatch();
                     }
                     statement.executeBatch();
-                }
+                
+}
                 insertEmptyResourceBalances(connection, teamId, createdAt);
-                return new TeamRecord(teamId, ownerPlayerId, Set.of(ownerPlayerId), createdAt);
+                return@inImmediateTransaction TeamRecord(teamId, ownerPlayerId, setOf(ownerPlayerId), createdAt)
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The team or owner already belongs to a persisted team", exception);
             }
             throw failure("create a solo team", exception);
         }
     }
 
-    public Optional<TeamRecord> findTeam(UUID teamId) {
+    fun findTeam(teamId: UUID): Optional<TeamRecord> {
         Objects.requireNonNull(teamId, "teamId");
-        return read("load a team", connection -> loadTeam(connection, teamId));
+        return read("load a team", { connection -> loadTeam(connection, teamId) });
     }
 
     /** Looks up the deterministic solo team owned by a player. */
-    public Optional<TeamRecord> findTeamByOwner(UUID ownerId) {
+    fun findTeamByOwner(ownerId: UUID): Optional<TeamRecord> {
         Objects.requireNonNull(ownerId, "ownerId");
-        return read("load a team by owner", connection -> {
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load a team by owner", { connection ->
+            connection.prepareStatement("""
                     SELECT team_id FROM teams WHERE owner_player_id = ?
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, ownerId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     if (!resultSet.next()) {
-                        return Optional.empty();
+                        return@read Optional.empty();
                     }
-                    return loadTeam(connection, uuid(resultSet.getString("team_id")));
-                }
-            }
+                    return@read loadTeam(connection, uuid(resultSet.getString("team_id")));
+                
+}
+            
+}
         });
     }
 
     /** Looks up the team to which a player currently belongs. */
-    public Optional<TeamRecord> findTeamByMember(UUID playerId) {
+    fun findTeamByMember(playerId: UUID): Optional<TeamRecord> {
         Objects.requireNonNull(playerId, "playerId");
-        return read("load a team by member", connection -> {
-            return findTeamByMember(connection, playerId);
+        return read("load a team by member", { connection ->
+            return@read findTeamByMember(connection, playerId);
         });
     }
 
     /** Renames a team through an owner-authorized, UUID-idempotent profile mutation. */
-    public TeamMutationResult renameTeam(
-            UUID teamId,
-            UUID actorId,
-            String displayName,
-            UUID operationId,
-            Instant renamedAt) {
+    fun renameTeam(teamId: UUID, actorId: UUID, displayName: String, operationId: UUID, renamedAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
-        String normalizedName = TeamRecord.normalizeDisplayName(displayName);
+        var normalizedName = TeamRecord.normalizeDisplayName(displayName);
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(renamedAt, "renamedAt");
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TEAM_RENAME", teamId, actorId, normalizedName);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<TeamProfileOperation> existing = loadTeamProfileOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadTeamProfileOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingTeamProfileOperation(
                             existing.orElseThrow(), teamId, actorId, fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "rename a team");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         UPDATE teams SET display_name = ? WHERE team_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, normalizedName);
                     statement.setString(2, teamId.toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new SQLException("The team rename affected no rows");
+                        throw SQLException("The team rename affected no rows");
                     }
-                }
+                
+}
                 insertTeamProfileOperation(
                         connection,
                         operationId,
@@ -206,68 +190,63 @@ public final class DefenseRepository {
                         "TEAM_RENAME",
                         fingerprint,
                         renamedAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         loadTeam(connection, teamId));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("rename a team", exception);
         }
     }
 
     /** Lists unexpired invitations and durably expires stale pending rows for this recipient. */
-    public List<TeamInvitation> findPendingTeamInvitations(UUID inviteeId, Instant now) {
+    fun findPendingTeamInvitations(inviteeId: UUID, now: Instant): List<TeamInvitation> {
         Objects.requireNonNull(inviteeId, "inviteeId");
         Objects.requireNonNull(now, "now");
         try {
-            return database.inImmediateTransaction(connection -> {
-                List<TeamInvitation> invitations = new ArrayList<>();
-                List<TeamInvitation> loaded = new ArrayList<>();
-                try (PreparedStatement statement = connection.prepareStatement("""
+            return database.inImmediateTransaction({ connection ->
+                var invitations = ArrayList<TeamInvitation>();
+                var loaded = ArrayList<TeamInvitation>();
+                connection.prepareStatement("""
                         SELECT invite_id, team_id, inviter_id, invitee_id, state,
                                created_at, expires_at, resolved_at
                         FROM team_invites
                         WHERE invitee_id = ? AND state = 'PENDING'
                         ORDER BY created_at, invite_id
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, inviteeId.toString());
-                    try (ResultSet resultSet = statement.executeQuery()) {
+                    statement.executeQuery().use { resultSet ->
                         while (resultSet.next()) {
                             loaded.add(teamInvitationFromRow(resultSet));
                         }
-                    }
-                }
-                for (TeamInvitation invitation : loaded) {
+                    
+}
+                
+}
+                for (invitation in loaded) {
                     if (invitation.isPendingAt(now)) {
                         invitations.add(invitation);
                     } else {
                         expireInvitation(connection, invitation.id(), now);
                     }
                 }
-                return List.copyOf(invitations);
+                return@inImmediateTransaction java.util.List.copyOf(invitations);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("load pending team invitations", exception);
         }
     }
 
     /** Loads one invitation for reconnect-aware status checks and recovery tooling. */
-    public Optional<TeamInvitation> findTeamInvitation(UUID invitationId) {
+    fun findTeamInvitation(invitationId: UUID): Optional<TeamInvitation> {
         Objects.requireNonNull(invitationId, "invitationId");
         return read(
                 "load a team invitation",
-                connection -> loadTeamInvitation(connection, invitationId));
+                { connection -> loadTeamInvitation(connection, invitationId) });
     }
 
     /** Creates an owner-authorized invitation that remains valid while both players are offline. */
-    public TeamInvitationMutationResult createTeamInvitation(
-            UUID teamId,
-            UUID actorId,
-            UUID inviteeId,
-            UUID invitationId,
-            UUID operationId,
-            Instant createdAt,
-            Instant expiresAt) {
+    fun createTeamInvitation(teamId: UUID, actorId: UUID, inviteeId: UUID, invitationId: UUID, operationId: UUID, createdAt: Instant, expiresAt: Instant): TeamInvitationMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(inviteeId, "inviteeId");
@@ -276,9 +255,9 @@ public final class DefenseRepository {
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(expiresAt, "expiresAt");
         if (!expiresAt.isAfter(createdAt)) {
-            throw new IllegalArgumentException("Invitation expiration must be after creation");
+            throw IllegalArgumentException("Invitation expiration must be after creation");
         }
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TEAM_INVITE_CREATE",
                 teamId,
                 actorId,
@@ -286,8 +265,8 @@ public final class DefenseRepository {
                 invitationId,
                 expiresAt);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadTeamInviteOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingTeamInviteOperation(
@@ -295,32 +274,32 @@ public final class DefenseRepository {
                             "TEAM_INVITE_CREATE",
                             actorId,
                             fingerprint);
-                    TeamInvitation invitation = requireTeamInvitation(
+                    var invitation = requireTeamInvitation(
                             connection, existing.orElseThrow().inviteId());
-                    return invitationMutation(
+                    return@inImmediateTransaction invitationMutation(
                             ManagementOutcome.ALREADY_APPLIED,
                             connection,
                             invitation);
                 }
                 requireNoActiveEvent(connection, "create a team invitation");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
                 if (actorId.equals(inviteeId)) {
-                    throw new PersistenceConflictException("A team owner cannot invite themselves");
+                    throw PersistenceConflictException("A team owner cannot invite themselves");
                 }
-                if (team.members().size() >= MAX_TEAM_MEMBERS) {
-                    throw new PersistenceConflictException(
+                if (team.members().size >= MAX_TEAM_MEMBERS) {
+                    throw PersistenceConflictException(
                             "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
                 }
                 if (findTeamByMember(connection, inviteeId).isPresent()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The invited player already belongs to a team");
                 }
                 if (hasPendingInvitation(connection, teamId, inviteeId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "This player already has a pending invitation for the team");
                 }
-                TeamInvitation invitation = new TeamInvitation(
+                var invitation = TeamInvitation(
                         invitationId,
                         teamId,
                         actorId,
@@ -338,11 +317,11 @@ public final class DefenseRepository {
                         "TEAM_INVITE_CREATE",
                         fingerprint,
                         createdAt);
-                return invitationMutation(ManagementOutcome.APPLIED, connection, invitation);
+                return@inImmediateTransaction invitationMutation(ManagementOutcome.APPLIED, connection, invitation);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The invitation conflicts with an existing team or invitation", exception);
             }
             throw failure("create a team invitation", exception);
@@ -350,67 +329,58 @@ public final class DefenseRepository {
     }
 
     /** Accepts a pending invitation for the invited player and adds them atomically. */
-    public TeamInvitationMutationResult acceptTeamInvitation(
-            UUID invitationId,
-            UUID inviteeId,
-            UUID operationId,
-            Instant acceptedAt) {
-        TeamInvitationMutationResult result = resolveTeamInvitation(
+    fun acceptTeamInvitation(invitationId: UUID, inviteeId: UUID, operationId: UUID, acceptedAt: Instant): TeamInvitationMutationResult {
+        var result = resolveTeamInvitation(
                 invitationId,
                 inviteeId,
                 operationId,
                 acceptedAt,
                 "TEAM_INVITE_ACCEPT",
                 true);
-        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
-            throw new PersistenceConflictException("This invitation has expired");
+        if (result.invitation.state() == TeamInvitationState.EXPIRED) {
+            throw PersistenceConflictException("This invitation has expired");
         }
         return result;
     }
 
     /** Declines a pending invitation without changing team membership. */
-    public TeamInvitationMutationResult declineTeamInvitation(
-            UUID invitationId,
-            UUID inviteeId,
-            UUID operationId,
-            Instant declinedAt) {
-        TeamInvitationMutationResult result = resolveTeamInvitation(
+    fun declineTeamInvitation(invitationId: UUID, inviteeId: UUID, operationId: UUID, declinedAt: Instant): TeamInvitationMutationResult {
+        var result = resolveTeamInvitation(
                 invitationId,
                 inviteeId,
                 operationId,
                 declinedAt,
                 "TEAM_INVITE_DECLINE",
                 false);
-        if (result.invitation().state() == TeamInvitationState.EXPIRED) {
-            throw new PersistenceConflictException("This invitation has expired");
+        if (result.invitation.state() == TeamInvitationState.EXPIRED) {
+            throw PersistenceConflictException("This invitation has expired");
         }
         return result;
     }
 
     /** Loads the durable team progression snapshot used by repair quotes and future research. */
-    public TeamProgress loadTeamProgress(UUID teamId) {
+    fun loadTeamProgress(teamId: UUID): TeamProgress {
         Objects.requireNonNull(teamId, "teamId");
         return read(
                 "load team progression",
-                connection -> loadTeamProgress(connection, teamId).orElseThrow(
-                        () -> new PersistenceConflictException(
-                                "Team " + teamId + " has no progression row")));
+                { connection -> loadTeamProgress(connection, teamId).orElseThrow { PersistenceConflictException(
+                                "Team " + teamId + " has no progression row") } });
     }
 
     /** Loads one immutable research-crystal issuance batch. */
-    public Optional<ResearchCrystalBatch> findResearchCrystalBatch(UUID batchId) {
+    fun findResearchCrystalBatch(batchId: UUID): Optional<ResearchCrystalBatch> {
         Objects.requireNonNull(batchId, "batchId");
         return read(
                 "load a research crystal batch",
-                connection -> loadResearchCrystalBatch(connection, batchId));
+                { connection -> loadResearchCrystalBatch(connection, batchId) });
     }
 
     /** Loads one redemption receipt so the Paper inventory handoff can recover after a restart. */
-    public Optional<ResearchCrystalRedemption> findResearchCrystalRedemption(UUID operationId) {
+    fun findResearchCrystalRedemption(operationId: UUID): Optional<ResearchCrystalRedemption> {
         Objects.requireNonNull(operationId, "operationId");
         return read(
                 "load a research crystal redemption",
-                connection -> loadResearchCrystalRedemption(connection, operationId));
+                { connection -> loadResearchCrystalRedemption(connection, operationId) });
     }
 
     /**
@@ -419,13 +389,7 @@ public final class DefenseRepository {
      * <p>The returned operation is the durable receipt for the physical handoff. Calling this
      * method again with the same UUID and payload returns the original reservation.</p>
      */
-    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            int quantity,
-            UUID operationId,
-            Instant preparedAt) {
+    fun prepareResearchCrystalRedemption(batchId: UUID, coreId: UUID, actorId: UUID, quantity: Int, operationId: UUID, preparedAt: Instant): ResearchCrystalRedemption {
         return prepareResearchCrystalRedemption(
                 batchId,
                 coreId,
@@ -444,15 +408,7 @@ public final class DefenseRepository {
      * physical item.  The compatibility overload above remains for durable records created by
      * earlier plugin versions.
      */
-    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            UUID itemTeamId,
-            int itemIssuedQuantity,
-            int quantity,
-            UUID operationId,
-            Instant preparedAt) {
+    fun prepareResearchCrystalRedemption(batchId: UUID, coreId: UUID, actorId: UUID, itemTeamId: UUID?, itemIssuedQuantity: Int, quantity: Int, operationId: UUID, preparedAt: Instant): ResearchCrystalRedemption {
         return prepareResearchCrystalRedemption(
                 batchId,
                 coreId,
@@ -467,59 +423,51 @@ public final class DefenseRepository {
     }
 
     /** Reserves a redemption and, for v2 items, binds it to one issued stack segment. */
-    public ResearchCrystalRedemption prepareResearchCrystalRedemption(
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            UUID itemTeamId,
-            int itemIssuedQuantity,
-            Integer itemSegmentOffset,
-            Integer itemSegmentQuantity,
-            int quantity,
-            UUID operationId,
-            Instant preparedAt) {
+    fun prepareResearchCrystalRedemption(batchId: UUID, coreId: UUID, actorId: UUID, itemTeamId: UUID?, itemIssuedQuantity: Int, itemSegmentOffset: Int?, itemSegmentQuantity: Int?, quantity: Int, operationId: UUID, preparedAt: Instant): ResearchCrystalRedemption {
         Objects.requireNonNull(batchId, "batchId");
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(preparedAt, "preparedAt");
         if (quantity <= 0) {
-            throw new IllegalArgumentException("quantity must be positive");
+            throw IllegalArgumentException("quantity must be positive");
         }
         if (itemTeamId != null && itemIssuedQuantity <= 0) {
-            throw new IllegalArgumentException("itemIssuedQuantity must be positive");
+            throw IllegalArgumentException("itemIssuedQuantity must be positive");
         }
         if ((itemSegmentOffset == null) != (itemSegmentQuantity == null)) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "itemSegmentOffset and itemSegmentQuantity must be supplied together");
         }
         if (itemSegmentOffset != null && itemTeamId == null) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "an issued research crystal segment requires team metadata");
         }
         if (itemSegmentOffset != null
                 && (itemSegmentOffset < 0
-                        || itemSegmentQuantity <= 0
+                        || itemSegmentQuantity!! <= 0
                         || itemSegmentQuantity > RESEARCH_CRYSTAL_SEGMENT_SIZE)) {
-            throw new IllegalArgumentException("research crystal item segment is invalid");
+            throw IllegalArgumentException("research crystal item segment is invalid");
         }
-        String fingerprint = itemTeamId == null
-                ? crystalRedemptionFingerprint(batchId, coreId, actorId, quantity)
-                : crystalRedemptionFingerprint(
-                        batchId,
-                        coreId,
-                        actorId,
-                        itemTeamId,
-                        itemIssuedQuantity,
-                        itemSegmentOffset,
-                        itemSegmentQuantity,
-                        quantity);
+        var fingerprint = if (itemTeamId == null) {
+            crystalRedemptionFingerprint(batchId, coreId, actorId, quantity)
+        } else {
+            crystalRedemptionFingerprint(
+                batchId,
+                coreId,
+                actorId,
+                itemTeamId,
+                itemIssuedQuantity,
+                itemSegmentOffset,
+                itemSegmentQuantity,
+                quantity)
+        }
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ResearchCrystalRedemption> existing =
+            return database.inImmediateTransaction({ connection ->
+                var existing = 
                         loadResearchCrystalRedemption(connection, operationId);
                 if (existing.isPresent()) {
-                    ResearchCrystalRedemption redemption = existing.orElseThrow();
+                    var redemption = existing.orElseThrow();
                     requireMatchingCrystalRedemption(
                             redemption,
                             operationId,
@@ -528,47 +476,47 @@ public final class DefenseRepository {
                             actorId,
                             quantity,
                             fingerprint);
-                    return redemption;
+                    return@inImmediateTransaction redemption;
                 }
                 requireNoActiveEvent(connection, "redeem research crystals");
-                CoreRecord core = requireCore(connection, coreId);
+                var core = requireCore(connection, coreId);
                 requireTeamMember(connection, core.teamId(), actorId);
-                ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "Unknown research crystal batch " + batchId));
+                var batch = loadResearchCrystalBatch(connection, batchId)
+                        .orElseThrow { PersistenceConflictException(
+                                "Unknown research crystal batch " + batchId) };
                 if (!batch.teamId().equals(core.teamId())) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Research crystals can only be redeemed at their source team's core");
                 }
                 if (itemTeamId != null && !batch.teamId().equals(itemTeamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The research crystal PDC team does not match its issuance batch");
                 }
                 if (itemIssuedQuantity > 0 && batch.issuedQuantity() != itemIssuedQuantity) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The research crystal PDC issuance quantity is invalid");
                 }
                 if (itemSegmentOffset != null) {
-                    if ((long) itemSegmentOffset + itemSegmentQuantity > batch.issuedQuantity()) {
-                        throw new PersistenceConflictException(
+                    if (itemSegmentOffset.toLong() + itemSegmentQuantity!! > batch.issuedQuantity()) {
+                        throw PersistenceConflictException(
                                 "The research crystal PDC segment is outside its batch");
                     }
-                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                    var segment = loadResearchCrystalSegment(
                                     connection, batchId, itemSegmentOffset)
-                            .orElseThrow(() -> new PersistenceConflictException(
-                                    "The research crystal PDC segment is not issued"));
+                            .orElseThrow { PersistenceConflictException(
+                                    "The research crystal PDC segment is not issued") };
                     if (segment.segmentQuantity() != itemSegmentQuantity
                             || quantity > segment.remainingQuantity()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The research crystal PDC segment has no remaining quantity");
                     }
                 }
                 if (batch.status() == ResearchCrystalBatchStatus.VOIDED
                         || quantity > batch.remainingQuantity()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The research crystal batch has no remaining redeemable quantity");
                 }
-                ResearchCrystalRedemption redemption = new ResearchCrystalRedemption(
+                var redemption = ResearchCrystalRedemption(
                         operationId,
                         batchId,
                         coreId,
@@ -583,11 +531,11 @@ public final class DefenseRepository {
                         null,
                         null);
                 insertResearchCrystalRedemption(connection, redemption);
-                return redemption;
+                return@inImmediateTransaction redemption;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The research crystal redemption conflicts with persisted data", exception);
             }
             throw failure("prepare a research crystal redemption", exception);
@@ -595,137 +543,137 @@ public final class DefenseRepository {
     }
 
     /** Applies a prepared crystal redemption and credits the team's research points atomically. */
-    public ResearchCrystalRedemptionResult applyResearchCrystalRedemption(
-            UUID operationId,
-            Instant appliedAt) {
+    fun applyResearchCrystalRedemption(operationId: UUID, appliedAt: Instant): ResearchCrystalRedemptionResult {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                ResearchCrystalRedemption redemption = loadResearchCrystalRedemption(
+            return database.inImmediateTransaction({ connection ->
+                var redemption = loadResearchCrystalRedemption(
                                 connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "Unknown research crystal redemption " + operationId));
+                        .orElseThrow { PersistenceConflictException(
+                                "Unknown research crystal redemption " + operationId) };
                 if (redemption.state() == ResearchCrystalRedemptionState.APPLIED) {
-                    return crystalRedemptionResult(
+                    return@inImmediateTransaction crystalRedemptionResult(
                             connection, OperationOutcome.ALREADY_APPLIED, redemption.batchId());
                 }
                 if (redemption.state() == ResearchCrystalRedemptionState.ROLLED_BACK) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The research crystal redemption was already rolled back");
                 }
                 requireNoActiveEvent(connection, "apply a research crystal redemption");
-                CoreRecord core = requireCore(connection, redemption.coreId());
+                var core = requireCore(connection, redemption.coreId());
                 requireTeamMember(connection, core.teamId(), redemption.actorId());
                 if (!core.teamId().equals(redemption.teamId())) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The redemption team no longer matches the core");
                 }
-                ResearchCrystalBatch batch = loadResearchCrystalBatch(
+                var batch = loadResearchCrystalBatch(
                                 connection, redemption.batchId())
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The research crystal batch disappeared"));
+                        .orElseThrow { PersistenceConflictException(
+                                "The research crystal batch disappeared") };
                 if (batch.status() == ResearchCrystalBatchStatus.VOIDED
                         || redemption.quantity() > batch.remainingQuantity()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The research crystal batch was already exhausted or voided");
                 }
                 if (redemption.segmentOffset() != null) {
-                    ResearchCrystalSegment segment = loadResearchCrystalSegment(
+                    var segment = loadResearchCrystalSegment(
                                     connection,
                                     redemption.batchId(),
                                     redemption.segmentOffset())
-                            .orElseThrow(() -> new PersistenceConflictException(
-                                    "The research crystal redemption segment disappeared"));
+                            .orElseThrow { PersistenceConflictException(
+                                    "The research crystal redemption segment disappeared") };
                     if (!Objects.equals(
                                 segment.segmentQuantity(), redemption.segmentQuantity())
                             || redemption.quantity() > segment.remainingQuantity()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The research crystal redemption segment was already consumed");
                     }
-                    try (PreparedStatement statement = connection.prepareStatement("""
+                    connection.prepareStatement("""
                             UPDATE research_crystal_segments
                             SET redeemed_quantity = redeemed_quantity + ?
                             WHERE batch_id = ? AND segment_offset = ?
                               AND redeemed_quantity + ? <= segment_quantity
-                            """)) {
+                            """.trimIndent()).use { statement ->
                         statement.setInt(1, redemption.quantity());
                         statement.setString(2, redemption.batchId().toString());
                         statement.setInt(3, redemption.segmentOffset());
                         statement.setInt(4, redemption.quantity());
                         if (statement.executeUpdate() != 1) {
-                            throw new PersistenceConflictException(
+                            throw PersistenceConflictException(
                                     "The research crystal redemption segment was concurrently resolved");
                         }
-                    }
+                    
+}
                 }
-                TeamProgress progress = loadTeamProgress(connection, redemption.teamId())
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The redemption team has no progression row"));
-                long creditedPoints;
+                var progress = loadTeamProgress(connection, redemption.teamId())
+                        .orElseThrow { PersistenceConflictException(
+                                "The redemption team has no progression row") };
+                var creditedPoints = 0L
                 try {
                     creditedPoints = Math.addExact(
-                            progress.researchPoints(), redemption.quantity());
-                } catch (ArithmeticException overflow) {
-                    throw new PersistenceConflictException(
+                            progress.researchPoints(), redemption.quantity().toLong());
+                } catch (overflow: ArithmeticException) {
+                    throw PersistenceConflictException(
                             "The team's research point balance cannot increase further", overflow);
                 }
-                TeamProgress updatedProgress = new TeamProgress(
+                var updatedProgress = TeamProgress(
                         progress.teamId(),
                         progress.highestClearedLevel(),
                         progress.unlockedLevel(),
                         creditedPoints);
-                int redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
-                ResearchCrystalBatchStatus nextStatus = redeemedQuantity == batch.issuedQuantity()
-                        ? ResearchCrystalBatchStatus.EXHAUSTED
-                        : ResearchCrystalBatchStatus.ISSUED;
-                try (PreparedStatement statement = connection.prepareStatement("""
+                var redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
+                var nextStatus = if (redeemedQuantity == batch.issuedQuantity()) ResearchCrystalBatchStatus.EXHAUSTED else ResearchCrystalBatchStatus.ISSUED
+                connection.prepareStatement("""
                         UPDATE research_crystal_batches
                         SET redeemed_quantity = ?, state = ?, updated_at = ?
                         WHERE batch_id = ? AND state = 'ISSUED'
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setInt(1, redeemedQuantity);
-                    statement.setString(2, nextStatus.name());
+                    statement.setString(2, nextStatus.name);
                     statement.setString(3, appliedAt.toString());
                     statement.setString(4, batch.batchId().toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The research crystal batch was concurrently resolved");
                     }
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         UPDATE team_progress
                         SET research_points = ?, updated_at = ?
                         WHERE team_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setLong(1, updatedProgress.researchPoints());
                     statement.setString(2, appliedAt.toString());
                     statement.setString(3, updatedProgress.teamId().toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new SQLException("The research point update affected no rows");
+                        throw SQLException("The research point update affected no rows");
                     }
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         UPDATE research_crystal_redemptions
                         SET state = 'APPLIED', applied_at = ?
                         WHERE operation_id = ? AND state = 'PREPARED'
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, appliedAt.toString());
                     statement.setString(2, operationId.toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new SQLException("The crystal redemption apply affected no rows");
+                        throw SQLException("The crystal redemption apply affected no rows");
                     }
-                }
-                ResearchCrystalBatch updatedBatch = loadResearchCrystalBatch(
+                
+}
+                var updatedBatch = loadResearchCrystalBatch(
                                 connection, batch.batchId())
-                        .orElseThrow(() -> new SQLException(
-                                "The crystal batch disappeared after apply"));
-                return new ResearchCrystalRedemptionResult(
+                        .orElseThrow { SQLException(
+                                "The crystal batch disappeared after apply") };
+                return@inImmediateTransaction ResearchCrystalRedemptionResult(
                         OperationOutcome.APPLIED, updatedProgress, updatedBatch);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The research crystal redemption conflicts with persisted data", exception);
             }
             throw failure("apply a research crystal redemption", exception);
@@ -733,32 +681,31 @@ public final class DefenseRepository {
     }
 
     /** Rolls back a reservation when the Paper-side physical handoff did not complete. */
-    public Optional<ResearchCrystalRedemption> rollbackResearchCrystalRedemption(
-            UUID operationId,
-            Instant rolledBackAt) {
+    fun rollbackResearchCrystalRedemption(operationId: UUID, rolledBackAt: Instant): Optional<ResearchCrystalRedemption> {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(rolledBackAt, "rolledBackAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ResearchCrystalRedemption> loaded =
+            return database.inImmediateTransaction({ connection ->
+                var loaded = 
                         loadResearchCrystalRedemption(connection, operationId);
                 if (loaded.isEmpty()
                         || loaded.orElseThrow().state() != ResearchCrystalRedemptionState.PREPARED) {
-                    return loaded;
+                    return@inImmediateTransaction loaded;
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         UPDATE research_crystal_redemptions
                         SET state = 'ROLLED_BACK', rolled_back_at = ?
                         WHERE operation_id = ? AND state = 'PREPARED'
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, rolledBackAt.toString());
                     statement.setString(2, operationId.toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new SQLException("The crystal redemption rollback affected no rows");
+                        throw SQLException("The crystal redemption rollback affected no rows");
                     }
-                }
-                ResearchCrystalRedemption redemption = loaded.orElseThrow();
-                return Optional.of(new ResearchCrystalRedemption(
+                
+}
+                var redemption = loaded.orElseThrow();
+                return@inImmediateTransaction Optional.of(ResearchCrystalRedemption(
                         redemption.operationId(),
                         redemption.batchId(),
                         redemption.coreId(),
@@ -773,38 +720,33 @@ public final class DefenseRepository {
                         null,
                         rolledBackAt));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("roll back a research crystal redemption", exception);
         }
     }
 
     /** Adds a member when the actor is the owner and no event is active. */
-    public TeamMutationResult addTeamMember(
-            UUID teamId,
-            UUID actorId,
-            UUID memberId,
-            UUID operationId,
-            Instant joinedAt) {
+    fun addTeamMember(teamId: UUID, actorId: UUID, memberId: UUID, operationId: UUID, joinedAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(memberId, "memberId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(joinedAt, "joinedAt");
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TEAM_ADD_MEMBER", teamId, actorId, memberId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
                             existing.orElseThrow(), "TEAM", teamId, "TEAM_ADD_MEMBER", fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "change team membership");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
                 if (team.members().contains(memberId)) {
                     insertManagementOperation(
@@ -815,23 +757,24 @@ public final class DefenseRepository {
                             "TEAM_ADD_MEMBER",
                             fingerprint,
                             joinedAt);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.APPLIED,
                             loadTeam(connection, teamId));
                 }
-                if (team.members().size() >= MAX_TEAM_MEMBERS) {
-                    throw new PersistenceConflictException(
+                if (team.members().size >= MAX_TEAM_MEMBERS) {
+                    throw PersistenceConflictException(
                             "The team has reached the maximum of " + MAX_TEAM_MEMBERS + " members");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         INSERT INTO team_members(team_id, player_id, role, joined_at)
                         VALUES (?, ?, 'MEMBER', ?)
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, memberId.toString());
                     statement.setString(3, joinedAt.toString());
                     statement.executeUpdate();
-                }
+                
+}
                 insertManagementOperation(
                         connection,
                         operationId,
@@ -840,13 +783,13 @@ public final class DefenseRepository {
                         "TEAM_ADD_MEMBER",
                         fingerprint,
                         joinedAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         loadTeam(connection, teamId));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The player already belongs to another team", exception);
             }
             throw failure("add a team member", exception);
@@ -854,22 +797,17 @@ public final class DefenseRepository {
     }
 
     /** Removes a non-owner member when the actor is the owner and no event is active. */
-    public TeamMutationResult removeTeamMember(
-            UUID teamId,
-            UUID actorId,
-            UUID memberId,
-            UUID operationId,
-            Instant removedAt) {
+    fun removeTeamMember(teamId: UUID, actorId: UUID, memberId: UUID, operationId: UUID, removedAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(memberId, "memberId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(removedAt, "removedAt");
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TEAM_REMOVE_MEMBER", teamId, actorId, memberId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -878,27 +816,28 @@ public final class DefenseRepository {
                             teamId,
                             "TEAM_REMOVE_MEMBER",
                             fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "change team membership");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
                 if (!team.members().contains(memberId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Player " + memberId + " is not a member of team " + teamId);
                 }
                 if (team.ownerId().equals(memberId)) {
-                    throw new PersistenceConflictException("The team owner cannot be removed");
+                    throw PersistenceConflictException("The team owner cannot be removed");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         DELETE FROM team_members WHERE team_id = ? AND player_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, memberId.toString());
                     statement.executeUpdate();
-                }
+                
+}
                 insertManagementOperation(
                         connection,
                         operationId,
@@ -907,32 +846,27 @@ public final class DefenseRepository {
                         "TEAM_REMOVE_MEMBER",
                         fingerprint,
                         removedAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         loadTeam(connection, teamId));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("remove a team member", exception);
         }
     }
 
     /** Transfers ownership to an existing member while the team is idle. */
-    public TeamMutationResult transferTeamOwnership(
-            UUID teamId,
-            UUID actorId,
-            UUID newOwnerId,
-            UUID operationId,
-            Instant transferredAt) {
+    fun transferTeamOwnership(teamId: UUID, actorId: UUID, newOwnerId: UUID, operationId: UUID, transferredAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(newOwnerId, "newOwnerId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(transferredAt, "transferredAt");
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TEAM_TRANSFER_OWNER", teamId, actorId, newOwnerId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -941,40 +875,43 @@ public final class DefenseRepository {
                             teamId,
                             "TEAM_TRANSFER_OWNER",
                             fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "transfer team ownership");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
                 if (!team.members().contains(newOwnerId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Ownership can only be transferred to an existing team member");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         UPDATE team_members SET role = 'MEMBER'
                         WHERE team_id = ? AND player_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, actorId.toString());
                     statement.executeUpdate();
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         UPDATE team_members SET role = 'OWNER'
                         WHERE team_id = ? AND player_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, teamId.toString());
                     statement.setString(2, newOwnerId.toString());
                     statement.executeUpdate();
-                }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                
+}
+                connection.prepareStatement("""
                         UPDATE teams SET owner_player_id = ? WHERE team_id = ?
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, newOwnerId.toString());
                     statement.setString(2, teamId.toString());
                     statement.executeUpdate();
-                }
+                
+}
                 insertManagementOperation(
                         connection,
                         operationId,
@@ -983,58 +920,55 @@ public final class DefenseRepository {
                         "TEAM_TRANSFER_OWNER",
                         fingerprint,
                         transferredAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         loadTeam(connection, teamId));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("transfer team ownership", exception);
         }
     }
 
     /** Leaves a team; a sole owner may leave only by removing an empty team. */
-    public TeamMutationResult leaveTeam(
-            UUID teamId,
-            UUID playerId,
-            UUID operationId,
-            Instant leftAt) {
+    fun leaveTeam(teamId: UUID, playerId: UUID, operationId: UUID, leftAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(leftAt, "leftAt");
-        String fingerprint = managementFingerprint("TEAM_LEAVE", teamId, playerId);
+        var fingerprint = managementFingerprint("TEAM_LEAVE", teamId, playerId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
                             existing.orElseThrow(), "TEAM", teamId, "TEAM_LEAVE", fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "leave a team");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 if (!team.members().contains(playerId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Player " + playerId + " is not a member of team " + teamId);
                 }
                 if (team.ownerId().equals(playerId)) {
-                    if (team.members().size() > 1) {
-                        throw new PersistenceConflictException(
+                    if (team.members().size > 1) {
+                        throw PersistenceConflictException(
                                 "The owner must transfer ownership before leaving");
                     }
                     requireTeamCanBeDeleted(connection, teamId);
                     deleteTeam(connection, teamId);
                 } else {
-                    try (PreparedStatement statement = connection.prepareStatement("""
+                    connection.prepareStatement("""
                             DELETE FROM team_members WHERE team_id = ? AND player_id = ?
-                            """)) {
+                            """.trimIndent()).use { statement ->
                         statement.setString(1, teamId.toString());
                         statement.setString(2, playerId.toString());
                         statement.executeUpdate();
-                    }
+                    
+}
                 }
                 insertManagementOperation(
                         connection,
@@ -1044,13 +978,13 @@ public final class DefenseRepository {
                         "TEAM_LEAVE",
                         fingerprint,
                         leftAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         loadTeam(connection, teamId));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The team still has persisted references", exception);
             }
             throw failure("leave a team", exception);
@@ -1058,19 +992,15 @@ public final class DefenseRepository {
     }
 
     /** Disbands an idle, empty team after verifying owner authority. */
-    public TeamMutationResult disbandTeam(
-            UUID teamId,
-            UUID actorId,
-            UUID operationId,
-            Instant disbandedAt) {
+    fun disbandTeam(teamId: UUID, actorId: UUID, operationId: UUID, disbandedAt: Instant): TeamMutationResult {
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(disbandedAt, "disbandedAt");
-        String fingerprint = managementFingerprint("TEAM_DISBAND", teamId, actorId);
+        var fingerprint = managementFingerprint("TEAM_DISBAND", teamId, actorId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -1079,12 +1009,12 @@ public final class DefenseRepository {
                             teamId,
                             "TEAM_DISBAND",
                             fingerprint);
-                    return new TeamMutationResult(
+                    return@inImmediateTransaction TeamMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadTeam(connection, teamId));
                 }
                 requireNoActiveEvent(connection, "disband a team");
-                TeamRecord team = requireTeam(connection, teamId);
+                var team = requireTeam(connection, teamId);
                 requireTeamOwner(team, actorId);
                 requireTeamCanBeDeleted(connection, teamId);
                 deleteTeam(connection, teamId);
@@ -1096,13 +1026,13 @@ public final class DefenseRepository {
                         "TEAM_DISBAND",
                         fingerprint,
                         disbandedAt);
-                return new TeamMutationResult(
+                return@inImmediateTransaction TeamMutationResult(
                         ManagementOutcome.APPLIED,
                         Optional.empty());
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The team still has persisted references", exception);
             }
             throw failure("disband a team", exception);
@@ -1113,16 +1043,16 @@ public final class DefenseRepository {
      * Places a core after checking the one-core-per-team and horizontal-distance invariants under
      * the same write lock as the insert.
      */
-    public CoreRecord placeCore(CoreRecord core, double minimumCoreDistance) {
+    fun placeCore(core: CoreRecord, minimumCoreDistance: Double): CoreRecord {
         Objects.requireNonNull(core, "core");
         requireDistance(minimumCoreDistance);
         try {
-            return database.inImmediateTransaction(connection -> {
-                return placeCore(connection, core, minimumCoreDistance);
+            return database.inImmediateTransaction({ connection ->
+                return@inImmediateTransaction placeCore(connection, core, minimumCoreDistance);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core conflicts with persisted ownership or position data", exception);
             }
             throw failure("place a core", exception);
@@ -1130,19 +1060,18 @@ public final class DefenseRepository {
     }
 
     /** Places a core after verifying that the actor belongs to its team. */
-    public CoreRecord placeCore(
-            UUID actorId, CoreRecord core, double minimumCoreDistance) {
+    fun placeCore(actorId: UUID, core: CoreRecord, minimumCoreDistance: Double): CoreRecord {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(core, "core");
         requireDistance(minimumCoreDistance);
         try {
-            return database.inImmediateTransaction(connection -> {
+            return database.inImmediateTransaction({ connection ->
                 requireTeamMember(connection, core.teamId(), actorId);
-                return placeCore(connection, core, minimumCoreDistance);
+                return@inImmediateTransaction placeCore(connection, core, minimumCoreDistance);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core conflicts with persisted ownership or position data", exception);
             }
             throw failure("place a core for a team member", exception);
@@ -1150,18 +1079,13 @@ public final class DefenseRepository {
     }
 
     /** Places a core with an operation UUID so a Paper retry cannot create a second core. */
-    public CoreMutationResult placeCore(
-            UUID actorId,
-            CoreRecord core,
-            double minimumCoreDistance,
-            UUID operationId,
-            Instant placedAt) {
+    fun placeCore(actorId: UUID, core: CoreRecord, minimumCoreDistance: Double, operationId: UUID, placedAt: Instant): CoreMutationResult {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(core, "core");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(placedAt, "placedAt");
         requireDistance(minimumCoreDistance);
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "CORE_PLACE",
                 core.id(),
                 actorId,
@@ -1173,8 +1097,8 @@ public final class DefenseRepository {
                 core.maximumHitPoints(),
                 minimumCoreDistance);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -1183,7 +1107,7 @@ public final class DefenseRepository {
                             core.id(),
                             "CORE_PLACE",
                             fingerprint);
-                    return new CoreMutationResult(
+                    return@inImmediateTransaction CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, core.id()));
                 }
@@ -1197,45 +1121,46 @@ public final class DefenseRepository {
                         "CORE_PLACE",
                         fingerprint,
                         placedAt);
-                return new CoreMutationResult(
+                return@inImmediateTransaction CoreMutationResult(
                         ManagementOutcome.APPLIED,
                         Optional.of(core));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core conflicts with persisted ownership or position data", exception);
             }
             throw failure("place a core with an operation", exception);
         }
     }
 
-    public Optional<CoreRecord> findCore(UUID coreId) {
+    fun findCore(coreId: UUID): Optional<CoreRecord> {
         Objects.requireNonNull(coreId, "coreId");
-        return read("load a core", connection -> loadCore(connection, coreId));
+        return read("load a core", { connection -> loadCore(connection, coreId) });
     }
 
-    public Optional<CoreRecord> findCoreByTeam(UUID teamId) {
+    fun findCoreByTeam(teamId: UUID): Optional<CoreRecord> {
         Objects.requireNonNull(teamId, "teamId");
-        return read("load a team's core", connection -> loadCoreByTeam(connection, teamId));
+        return read("load a team's core", { connection -> loadCoreByTeam(connection, teamId) });
     }
 
     /** Loads the complete durable core registry in stable UUID order. */
-    public List<CoreRecord> loadAllCores() {
-        return read("load all cores", connection -> {
-            List<CoreRecord> cores = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+    fun loadAllCores(): List<CoreRecord> {
+        return read("load all cores", { connection ->
+            var cores = ArrayList<CoreRecord>();
+            connection.prepareStatement("""
                     SELECT core_id, team_id, world_id, block_x, block_y, block_z,
                            current_hp, max_hp, created_at, updated_at
                     FROM cores
                     ORDER BY core_id
-                    """);
-                    ResultSet resultSet = statement.executeQuery()) {
+                    """.trimIndent()).use { statement ->
+statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     cores.add(coreFromRow(resultSet));
                 }
-            }
-            return List.copyOf(cores);
+            
+}}
+            return@read java.util.List.copyOf(cores);
         });
     }
 
@@ -1245,65 +1170,63 @@ public final class DefenseRepository {
      * <p>No core row is created here. The caller must restore the captured block if this
      * operation remains prepared during startup recovery.</p>
      */
-    public CorePlacement prepareCorePlacement(CorePlacement placement) {
+    fun prepareCorePlacement(placement: CorePlacement): CorePlacement {
         Objects.requireNonNull(placement, "placement");
         if (placement.state() != CorePlacementState.PREPARED) {
-            throw new IllegalArgumentException("A placement request must be PREPARED");
+            throw IllegalArgumentException("A placement request must be PREPARED");
         }
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<CorePlacement> existing = loadCorePlacement(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadCorePlacement(
                         connection, placement.operationId());
                 if (existing.isPresent()) {
                     requireMatchingCorePlacement(existing.orElseThrow(), placement);
-                    return existing.orElseThrow();
+                    return@inImmediateTransaction existing.orElseThrow();
                 }
                 requireNoActiveEvent(connection, "prepare a core placement");
-                TeamRecord team = requireTeam(connection, placement.teamId());
+                var team = requireTeam(connection, placement.teamId());
                 if (placement.relocatingExistingCore()) {
                     requireTeamMember(connection, placement.teamId(), placement.actorId());
                 } else {
                     requireTeamOwner(team, placement.actorId());
                 }
-                Optional<CoreRecord> current = loadCoreByTeam(connection, placement.teamId());
+                var current = loadCoreByTeam(connection, placement.teamId());
                 if (placement.relocatingExistingCore()) {
-                    CoreRecord existingCore = current.orElseThrow(
-                            () -> new PersistenceConflictException(
-                                    "The core to relocate does not exist"));
+                    var existingCore = current.orElseThrow { PersistenceConflictException(
+                                    "The core to relocate does not exist") };
                     if (!existingCore.id().equals(placement.coreId())
                             || existingCore.currentHitPoints() != existingCore.maximumHitPoints()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "Only the team's full-health core can be relocated");
                     }
                     if (loadCore(connection, placement.coreId()).isEmpty()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The core to relocate has no durable row");
                     }
                 } else if (placement.rebuildingDestroyedCore()) {
-                    CoreRecord existingCore = current.orElseThrow(
-                            () -> new PersistenceConflictException(
-                                    "The destroyed core to rebuild does not exist"));
+                    var existingCore = current.orElseThrow { PersistenceConflictException(
+                                    "The destroyed core to rebuild does not exist") };
                     if (!existingCore.id().equals(placement.coreId())
                             || existingCore.currentHitPoints() != 0L) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "Only the team's destroyed core can be rebuilt");
                     }
                 } else {
                     if (current.isPresent() && current.orElseThrow().currentHitPoints() > 0L) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The team already owns a live core");
                     }
                     if (loadCore(connection, placement.coreId()).isPresent()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The core item identity has already been used");
                     }
                 }
                 insertCorePlacement(connection, placement);
-                return placement;
+                return@inImmediateTransaction placement;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core placement conflicts with another pending operation", exception);
             }
             throw failure("prepare a core placement", exception);
@@ -1311,41 +1234,39 @@ public final class DefenseRepository {
     }
 
     /** Applies the database side after the Paper block has been replaced and tagged. */
-    public CorePlacementResult applyCorePlacement(UUID operationId, Instant appliedAt) {
+    fun applyCorePlacement(operationId: UUID, appliedAt: Instant): CorePlacementResult {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CorePlacement placement = loadCorePlacement(connection, operationId).orElseThrow(
-                        () -> new PersistenceConflictException(
-                                "The prepared core placement does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var placement = loadCorePlacement(connection, operationId).orElseThrow { PersistenceConflictException(
+                                "The prepared core placement does not exist") };
                 if (placement.state() == CorePlacementState.APPLIED) {
-                    return new CorePlacementResult(
+                    return@inImmediateTransaction CorePlacementResult(
                             placement,
-                            loadCore(connection, placement.coreId()).orElseThrow(
-                                    () -> new PersistenceConflictException(
-                                            "An applied core placement has no core row")));
+                            loadCore(connection, placement.coreId()).orElseThrow { PersistenceConflictException(
+                                            "An applied core placement has no core row") });
                 }
                 if (placement.state() == CorePlacementState.ROLLED_BACK) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The prepared core placement was already rolled back");
                 }
                 requireNoActiveEvent(connection, "apply a core placement");
-                TeamRecord team = requireTeam(connection, placement.teamId());
+                var team = requireTeam(connection, placement.teamId());
                 if (placement.relocatingExistingCore()) {
                     requireTeamMember(connection, placement.teamId(), placement.actorId());
                 } else {
                     requireTeamOwner(team, placement.actorId());
                 }
-                CoreRecord core;
+                lateinit var core: CoreRecord
                 if (placement.relocatingExistingCore()) {
-                    CoreRecord existing = requireCore(connection, placement.coreId());
+                    var existing = requireCore(connection, placement.coreId());
                     if (existing.currentHitPoints() != existing.maximumHitPoints()
                             || !existing.teamId().equals(placement.teamId())) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The team's core is no longer relocatable");
                     }
-                    Optional<CoreRecord> nearby = findDistanceConflict(
+                    var nearby = findDistanceConflict(
                             connection,
                             placement.worldId(),
                             placement.blockX(),
@@ -1353,10 +1274,10 @@ public final class DefenseRepository {
                             placement.minimumCoreDistance(),
                             existing.id());
                     if (nearby.isPresent()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "Core position is too close to core " + nearby.orElseThrow().id());
                     }
-                    core = new CoreRecord(
+                    core = CoreRecord(
                             existing.id(),
                             existing.teamId(),
                             placement.worldId(),
@@ -1369,13 +1290,13 @@ public final class DefenseRepository {
                             appliedAt);
                     updateCorePosition(connection, core);
                 } else if (placement.rebuildingDestroyedCore()) {
-                    CoreRecord existing = requireCore(connection, placement.coreId());
+                    var existing = requireCore(connection, placement.coreId());
                     if (existing.currentHitPoints() != 0L
                             || !existing.teamId().equals(placement.teamId())) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The team's core is no longer rebuildable");
                     }
-                    core = new CoreRecord(
+                    core = CoreRecord(
                             existing.id(),
                             existing.teamId(),
                             placement.worldId(),
@@ -1386,7 +1307,7 @@ public final class DefenseRepository {
                             placement.maximumHitPoints(),
                             existing.createdAt(),
                             appliedAt);
-                    Optional<CoreRecord> nearby = findDistanceConflict(
+                    var nearby = findDistanceConflict(
                             connection,
                             placement.worldId(),
                             placement.blockX(),
@@ -1394,12 +1315,12 @@ public final class DefenseRepository {
                             placement.minimumCoreDistance(),
                             existing.id());
                     if (nearby.isPresent()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "Core position is too close to core " + nearby.orElseThrow().id());
                     }
                     updateCore(connection, core);
                 } else {
-                    core = new CoreRecord(
+                    core = CoreRecord(
                             placement.coreId(),
                             placement.teamId(),
                             placement.worldId(),
@@ -1412,7 +1333,7 @@ public final class DefenseRepository {
                             appliedAt);
                     placeCore(connection, core, placement.minimumCoreDistance());
                 }
-                CorePlacement applied = new CorePlacement(
+                var applied = CorePlacement(
                         placement.operationId(),
                         placement.itemId(),
                         placement.coreId(),
@@ -1432,11 +1353,11 @@ public final class DefenseRepository {
                         appliedAt,
                         null);
                 updateCorePlacementState(connection, applied);
-                return new CorePlacementResult(applied, core);
+                return@inImmediateTransaction CorePlacementResult(applied, core);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core placement conflicts with persisted core data", exception);
             }
             throw failure("apply a core placement", exception);
@@ -1444,17 +1365,16 @@ public final class DefenseRepository {
     }
 
     /** Marks a still-prepared placement as rolled back after its physical block is restored. */
-    public Optional<CorePlacement> rollbackCorePlacement(
-            UUID operationId, Instant rolledBackAt) {
+    fun rollbackCorePlacement(operationId: UUID, rolledBackAt: Instant): Optional<CorePlacement> {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(rolledBackAt, "rolledBackAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<CorePlacement> loaded = loadCorePlacement(connection, operationId);
+            return database.inImmediateTransaction({ connection ->
+                var loaded = loadCorePlacement(connection, operationId);
                 if (loaded.isEmpty() || loaded.orElseThrow().state() != CorePlacementState.PREPARED) {
-                    return loaded;
+                    return@inImmediateTransaction loaded;
                 }
-                CorePlacement rolledBack = new CorePlacement(
+                var rolledBack = CorePlacement(
                         loaded.orElseThrow().operationId(),
                         loaded.orElseThrow().itemId(),
                         loaded.orElseThrow().coreId(),
@@ -1474,41 +1394,42 @@ public final class DefenseRepository {
                         null,
                         rolledBackAt);
                 updateCorePlacementState(connection, rolledBack);
-                return Optional.of(rolledBack);
+                return@inImmediateTransaction Optional.of(rolledBack);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("roll back a prepared core placement", exception);
         }
     }
 
     /** Loads prepared operations for startup physical recovery. */
-    public List<CorePlacement> loadPendingCorePlacements() {
+    fun loadPendingCorePlacements(): List<CorePlacement> {
         return loadCorePlacementsByState(CorePlacementState.PREPARED);
     }
 
     /** Loads item identities which were applied before their inventory handoff completed. */
-    public List<UUID> loadAppliedCorePlacementItemIds() {
-        return read("load applied core placement item identities", connection -> {
-            List<UUID> itemIds = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+    fun loadAppliedCorePlacementItemIds(): List<UUID> {
+        return read("load applied core placement item identities", { connection ->
+            var itemIds = ArrayList<UUID>();
+            connection.prepareStatement("""
                     SELECT item_id FROM core_placement_operations
                     WHERE state = 'APPLIED'
                     ORDER BY applied_at, operation_id
-                    """);
-                    ResultSet resultSet = statement.executeQuery()) {
+                    """.trimIndent()).use { statement ->
+statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     itemIds.add(uuid(resultSet.getString("item_id")));
                 }
-            }
-            return List.copyOf(itemIds);
+            
+}}
+            return@read java.util.List.copyOf(itemIds);
         });
     }
 
     /** Loads the last applied placement ledger for a core's physical source block. */
-    public Optional<CorePlacement> findAppliedCorePlacementByCore(UUID coreId) {
+    fun findAppliedCorePlacementByCore(coreId: UUID): Optional<CorePlacement> {
         Objects.requireNonNull(coreId, "coreId");
-        return read("load a core's applied placement", connection -> {
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load a core's applied placement", { connection ->
+            connection.prepareStatement("""
                     SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                            block_x, block_y, block_z, max_hp, minimum_core_distance,
                            rebuilding_destroyed_core, relocating_existing_core,
@@ -1517,35 +1438,29 @@ public final class DefenseRepository {
                     WHERE core_id = ? AND state = 'APPLIED'
                     ORDER BY applied_at DESC, operation_id DESC
                     LIMIT 1
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, coreId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
-                    return resultSet.next()
-                            ? Optional.of(corePlacementFromRow(resultSet))
-                            : Optional.empty();
-                }
-            }
+                statement.executeQuery().use { resultSet ->
+                    return@read if (resultSet.next()) Optional.of(corePlacementFromRow(resultSet)) else Optional.empty()
+                
+}
+            
+}
         });
     }
 
     /** Returns the first same-world core strictly nearer than the configured distance. */
-    public Optional<CoreRecord> findDistanceConflict(
-            UUID worldId, int blockX, int blockZ, double minimumCoreDistance) {
+    fun findDistanceConflict(worldId: UUID, blockX: Int, blockZ: Int, minimumCoreDistance: Double): Optional<CoreRecord> {
         Objects.requireNonNull(worldId, "worldId");
         requireDistance(minimumCoreDistance);
         return read(
                 "check core distance",
-                connection -> findDistanceConflict(
-                        connection, worldId, blockX, blockZ, minimumCoreDistance));
+                { connection -> findDistanceConflict(
+                        connection, worldId, blockX, blockZ, minimumCoreDistance) });
     }
 
     /** Repairs a present core outside an active defense event. */
-    public CoreMutationResult repairCore(
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            UUID operationId,
-            Instant repairedAt) {
+    fun repairCore(coreId: UUID, actorId: UUID, amount: Long, operationId: UUID, repairedAt: Instant): CoreMutationResult {
         return repairCore(
                 coreId,
                 actorId,
@@ -1557,52 +1472,39 @@ public final class DefenseRepository {
     }
 
     /** Repairs a core and debits the team point wallet in the same SQLite transaction. */
-    public CoreMutationResult repairCore(
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            long defensePointCost,
-            UUID operationId,
-            Instant repairedAt) {
+    fun repairCore(coreId: UUID, actorId: UUID, amount: Long, defensePointCost: Long, operationId: UUID, repairedAt: Instant): CoreMutationResult {
         return repairCore(
                 coreId,
                 actorId,
                 amount,
                 defensePointCost,
-                defensePointCost > 0L ? PaymentMode.POINT_WALLET : PaymentMode.LEGACY_ITEMS,
+                if (defensePointCost > 0L) PaymentMode.POINT_WALLET else PaymentMode.LEGACY_ITEMS,
                 operationId,
                 repairedAt);
     }
 
     /** Repairs a core using an explicitly persisted payment mode. */
-    public CoreMutationResult repairCore(
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            long defensePointCost,
-            PaymentMode paymentMode,
-            UUID operationId,
-            Instant repairedAt) {
+    fun repairCore(coreId: UUID, actorId: UUID, amount: Long, defensePointCost: Long, paymentMode: PaymentMode, operationId: UUID, repairedAt: Instant): CoreMutationResult {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(paymentMode, "paymentMode");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(repairedAt, "repairedAt");
         if (amount <= 0L) {
-            throw new IllegalArgumentException("repair amount must be positive");
+            throw IllegalArgumentException("repair amount must be positive");
         }
         if (defensePointCost < 0L) {
-            throw new IllegalArgumentException("defensePointCost must not be negative");
+            throw IllegalArgumentException("defensePointCost must not be negative");
         }
         if (paymentMode == PaymentMode.LEGACY_ITEMS && defensePointCost != 0L) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "legacy item repairs cannot include a wallet payment");
         }
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "CORE_REPAIR", coreId, actorId, amount, defensePointCost, paymentMode);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -1612,20 +1514,19 @@ public final class DefenseRepository {
                             "CORE_REPAIR",
                             fingerprint,
                             paymentMode);
-                    return new CoreMutationResult(
+                    return@inImmediateTransaction CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, coreId));
                 }
                 requireNoActiveEvent(connection, "repair a core");
-                CoreRecord core = requireCore(connection, coreId);
+                var core = requireCore(connection, coreId);
                 requireTeamMember(connection, core.teamId(), actorId);
                 if (core.currentHitPoints() == 0L) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A destroyed core must be rebuilt before it can be repaired");
                 }
-                long missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
-                long repairedHitPoints = core.currentHitPoints()
-                        + Math.min(amount, missingHitPoints);
+                var missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
+                var repairedHitPoints = core.currentHitPoints() + Math.min(amount, missingHitPoints);
                 if (paymentMode == PaymentMode.POINT_WALLET && defensePointCost > 0L) {
                     ResourceRepository.debitInTransaction(
                             connection,
@@ -1633,13 +1534,13 @@ public final class DefenseRepository {
                             actorId,
                             ResourceType.DEFENSE_POINTS,
                             defensePointCost,
-                            UUID.nameUUIDFromBytes((operationId + "|DEFENSE_POINTS")
-                                    .getBytes(StandardCharsets.UTF_8)),
+                            UUID.nameUUIDFromBytes((operationId.toString() + "|DEFENSE_POINTS")
+                                    .toByteArray(StandardCharsets.UTF_8)),
                             operationId.toString(),
                             fingerprint,
                             repairedAt);
                 }
-                CoreRecord updated = new CoreRecord(
+                var updated = CoreRecord(
                         core.id(),
                         core.teamId(),
                         core.worldId(),
@@ -1660,11 +1561,11 @@ public final class DefenseRepository {
                         fingerprint,
                         paymentMode,
                         repairedAt);
-                return new CoreMutationResult(
+                return@inImmediateTransaction CoreMutationResult(
                         ManagementOutcome.APPLIED,
                         Optional.of(updated));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("repair a core", exception);
         }
     }
@@ -1674,16 +1575,7 @@ public final class DefenseRepository {
      * The prepared row fixes the core HP, wallet cost, legacy material and operation fingerprint
      * so a restart cannot silently apply a different repair payload.
      */
-    public CoreRepairOperation prepareCoreRepair(
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            long defensePointCost,
-            PaymentMode paymentMode,
-            String vanillaMaterial,
-            long vanillaMaterialAmount,
-            UUID operationId,
-            Instant preparedAt) {
+    fun prepareCoreRepair(coreId: UUID, actorId: UUID, amount: Long, defensePointCost: Long, paymentMode: PaymentMode, vanillaMaterial: String, vanillaMaterialAmount: Long, operationId: UUID, preparedAt: Instant): CoreRepairOperation {
         return prepareCoreRepair(
                 coreId,
                 actorId,
@@ -1702,17 +1594,7 @@ public final class DefenseRepository {
      * quantity at zero; legacy repairs persist it so a restart can distinguish a physical shard
      * payment from a wallet debit without reconstructing the quote from current settings.
      */
-    public CoreRepairOperation prepareCoreRepair(
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            long defensePointCost,
-            PaymentMode paymentMode,
-            String vanillaMaterial,
-            long vanillaMaterialAmount,
-            long legacyDefenseShardAmount,
-            UUID operationId,
-            Instant preparedAt) {
+    fun prepareCoreRepair(coreId: UUID, actorId: UUID, amount: Long, defensePointCost: Long, paymentMode: PaymentMode, vanillaMaterial: String, vanillaMaterialAmount: Long, legacyDefenseShardAmount: Long, operationId: UUID, preparedAt: Instant): CoreRepairOperation {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(paymentMode, "paymentMode");
@@ -1721,13 +1603,13 @@ public final class DefenseRepository {
         Objects.requireNonNull(preparedAt, "preparedAt");
         if (amount <= 0L || defensePointCost < 0L || vanillaMaterialAmount < 0L
                 || legacyDefenseShardAmount < 0L) {
-            throw new IllegalArgumentException("core repair quantities are invalid");
+            throw IllegalArgumentException("core repair quantities are invalid");
         }
         if (paymentMode == PaymentMode.LEGACY_ITEMS && defensePointCost != 0L) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "legacy item repairs cannot include a wallet payment");
         }
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "CORE_REPAIR_RECEIPT",
                 coreId,
                 actorId,
@@ -1738,8 +1620,8 @@ public final class DefenseRepository {
                 vanillaMaterialAmount,
                 legacyDefenseShardAmount);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<CoreRepairOperation> existing = loadCoreRepairOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadCoreRepairOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingCoreRepairOperation(
@@ -1753,19 +1635,19 @@ public final class DefenseRepository {
                             vanillaMaterialAmount,
                             legacyDefenseShardAmount,
                             fingerprint);
-                    return existing.orElseThrow();
+                    return@inImmediateTransaction existing.orElseThrow();
                 }
                 requireNoActiveEvent(connection, "prepare a core repair");
-                CoreRecord core = requireCore(connection, coreId);
+                var core = requireCore(connection, coreId);
                 requireTeamMember(connection, core.teamId(), actorId);
                 if (core.currentHitPoints() == 0L) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A destroyed core must be rebuilt before it can be repaired");
                 }
                 if (core.currentHitPoints() >= core.maximumHitPoints()) {
-                    throw new PersistenceConflictException("The core is already at full health");
+                    throw PersistenceConflictException("The core is already at full health");
                 }
-                CoreRepairOperation prepared = new CoreRepairOperation(
+                var prepared = CoreRepairOperation(
                         operationId,
                         core.id(),
                         core.teamId(),
@@ -1783,11 +1665,11 @@ public final class DefenseRepository {
                         null,
                         null);
                 insertCoreRepairOperation(connection, prepared);
-                return prepared;
+                return@inImmediateTransaction prepared;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The prepared core repair conflicts with persisted data", exception);
             }
             throw failure("prepare a core repair", exception);
@@ -1795,47 +1677,42 @@ public final class DefenseRepository {
     }
 
     /** Persists the inventory receipt after the prepared operation has been created. */
-    public CoreRepairReceipt reserveCoreRepairReceipt(
-            UUID operationId,
-            UUID playerId,
-            String material,
-            long quantity,
-            Instant reservedAt) {
+    fun reserveCoreRepairReceipt(operationId: UUID, playerId: UUID, material: String, quantity: Long, reservedAt: Instant): CoreRepairReceipt {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(material, "material");
         Objects.requireNonNull(reservedAt, "reservedAt");
         if (quantity <= 0L) {
-            throw new IllegalArgumentException("receipt quantity must be positive");
+            throw IllegalArgumentException("receipt quantity must be positive");
         }
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The prepared core repair does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The prepared core repair does not exist") };
                 if (operation.state() != CoreRepairOperationState.PREPARED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The core repair is no longer reservable");
                 }
                 if (!operation.actorId().equals(playerId)
                         || !expectedReceiptMaterial(operation).equals(material)
                         || expectedReceiptQuantity(operation) != quantity) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The core repair receipt does not match its prepared payload");
                 }
-                Optional<CoreRepairReceipt> existing = loadCoreRepairReceipt(
+                var existing = loadCoreRepairReceipt(
                         connection, operationId);
                 if (existing.isPresent()) {
-                    CoreRepairReceipt receipt = existing.orElseThrow();
+                    var receipt = existing.orElseThrow();
                     if (!receipt.playerId().equals(playerId)
                             || !receipt.material().equals(material)
                             || receipt.quantity() != quantity) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The core repair receipt UUID is already assigned to another payload");
                     }
-                    return receipt;
+                    return@inImmediateTransaction receipt;
                 }
-                CoreRepairReceipt receipt = new CoreRepairReceipt(
+                var receipt = CoreRepairReceipt(
                         operationId,
                         playerId,
                         material,
@@ -1844,11 +1721,11 @@ public final class DefenseRepository {
                         reservedAt,
                         null);
                 insertCoreRepairReceipt(connection, receipt);
-                return receipt;
+                return@inImmediateTransaction receipt;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core repair receipt conflicts with persisted data", exception);
             }
             throw failure("reserve a core repair receipt", exception);
@@ -1856,44 +1733,41 @@ public final class DefenseRepository {
     }
 
     /** Applies a prepared repair and wallet debit atomically after its receipt is secured. */
-    public CoreMutationResult applyPreparedCoreRepair(
-            UUID operationId,
-            Instant appliedAt) {
+    fun applyPreparedCoreRepair(operationId: UUID, appliedAt: Instant): CoreMutationResult {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The prepared core repair does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The prepared core repair does not exist") };
                 if (operation.state() == CoreRepairOperationState.APPLIED) {
-                    return new CoreMutationResult(
+                    return@inImmediateTransaction CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, operation.coreId()));
                 }
                 if (operation.state() == CoreRepairOperationState.ROLLED_BACK) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The prepared core repair was already rolled back");
                 }
                 if (expectedReceiptQuantity(operation) > 0L) {
-                    CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
-                            .orElseThrow(() -> new PersistenceConflictException(
-                                    "The core repair receipt was not secured"));
+                    var receipt = loadCoreRepairReceipt(connection, operationId)
+                            .orElseThrow { PersistenceConflictException(
+                                    "The core repair receipt was not secured") };
                     if (receipt.state() != CoreRepairReceiptState.SECURED) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The core repair receipt has not reached the secured handoff");
                     }
                 }
                 requireNoActiveEvent(connection, "apply a core repair");
-                CoreRecord core = requireCore(connection, operation.coreId());
+                var core = requireCore(connection, operation.coreId());
                 requireTeamMember(connection, core.teamId(), operation.actorId());
                 if (core.currentHitPoints() != operation.expectedCurrentHitPoints()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The core HP changed before the prepared repair was applied");
                 }
-                long missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
-                long repairedHitPoints = core.currentHitPoints()
-                        + Math.min(operation.repairAmount(), missingHitPoints);
+                var missingHitPoints = core.maximumHitPoints() - core.currentHitPoints();
+                var repairedHitPoints = core.currentHitPoints() + Math.min(operation.repairAmount(), missingHitPoints);
                 if (operation.paymentMode() == PaymentMode.POINT_WALLET
                         && operation.defensePointCost() > 0L) {
                     ResourceRepository.debitInTransaction(
@@ -1902,13 +1776,13 @@ public final class DefenseRepository {
                             operation.actorId(),
                             ResourceType.DEFENSE_POINTS,
                             operation.defensePointCost(),
-                            UUID.nameUUIDFromBytes((operationId + "|DEFENSE_POINTS")
-                                    .getBytes(StandardCharsets.UTF_8)),
+                            UUID.nameUUIDFromBytes((operationId.toString() + "|DEFENSE_POINTS")
+                                    .toByteArray(StandardCharsets.UTF_8)),
                             operationId.toString(),
                             operation.payloadFingerprint(),
                             appliedAt);
                 }
-                CoreRecord updated = new CoreRecord(
+                var updated = CoreRecord(
                         core.id(),
                         core.teamId(),
                         core.worldId(),
@@ -1940,11 +1814,11 @@ public final class DefenseRepository {
                         operationId,
                         CoreRepairOperationState.APPLIED,
                         appliedAt);
-                return new CoreMutationResult(ManagementOutcome.APPLIED, Optional.of(updated));
+                return@inImmediateTransaction CoreMutationResult(ManagementOutcome.APPLIED, Optional.of(updated));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The prepared core repair conflicts with persisted data", exception);
             }
             throw failure("apply a prepared core repair", exception);
@@ -1952,63 +1826,62 @@ public final class DefenseRepository {
     }
 
     /** Durably records that the exact material stacks were replaced with tagged receipt stacks. */
-    public OperationOutcome secureCoreRepairReceipt(UUID operationId, Instant securedAt) {
+    fun secureCoreRepairReceipt(operationId: UUID, securedAt: Instant): OperationOutcome {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(securedAt, "securedAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The core repair receipt does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var receipt = loadCoreRepairReceipt(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The core repair receipt does not exist") };
                 if (receipt.state() == CoreRepairReceiptState.SECURED) {
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
                 if (receipt.state() != CoreRepairReceiptState.RESERVED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The core repair receipt is no longer reservable");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         UPDATE core_repair_receipts
                         SET state = 'SECURED'
                         WHERE operation_id = ? AND state = 'RESERVED'
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, operationId.toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The core repair receipt changed concurrently");
                     }
-                }
-                return OperationOutcome.APPLIED;
+                
+}
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("secure a core repair receipt", exception);
         }
     }
 
     /** Marks the physical receipt clear as the next durable step after the applied mutation. */
-    public OperationOutcome markCoreRepairReceiptClearPending(
-            UUID operationId,
-            Instant pendingAt) {
+    fun markCoreRepairReceiptClearPending(operationId: UUID, pendingAt: Instant): OperationOutcome {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(pendingAt, "pendingAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The core repair operation does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The core repair operation does not exist") };
                 if (operation.state() != CoreRepairOperationState.APPLIED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Only an applied core repair can clear its receipt");
                 }
-                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                var receipt = loadCoreRepairReceipt(connection, operationId)
                         .orElse(null);
                 if (receipt == null
                         || receipt.state() == CoreRepairReceiptState.CLEARED
                         || receipt.state() == CoreRepairReceiptState.CLEAR_PENDING) {
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
                 if (receipt.state() != CoreRepairReceiptState.SECURED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Only a secured core repair receipt can enter physical clear");
                 }
                 updateCoreRepairReceiptState(
@@ -2016,34 +1889,34 @@ public final class DefenseRepository {
                         operationId,
                         CoreRepairReceiptState.CLEAR_PENDING,
                         pendingAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("mark a core repair receipt clear-pending", exception);
         }
     }
 
     /** Marks the physical receipt clear after the applied core mutation is confirmed. */
-    public OperationOutcome clearCoreRepairReceipt(UUID operationId, Instant clearedAt) {
+    fun clearCoreRepairReceipt(operationId: UUID, clearedAt: Instant): OperationOutcome {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(clearedAt, "clearedAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The core repair operation does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The core repair operation does not exist") };
                 if (operation.state() != CoreRepairOperationState.APPLIED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Only an applied core repair can clear its receipt");
                 }
-                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+                var receipt = loadCoreRepairReceipt(connection, operationId)
                         .orElse(null);
                 if (receipt == null || receipt.state() == CoreRepairReceiptState.CLEARED) {
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
                 if (receipt.state() != CoreRepairReceiptState.SECURED
                         && receipt.state() != CoreRepairReceiptState.CLEAR_PENDING) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Only a secured core repair receipt can be cleared");
                 }
                 updateCoreRepairReceiptState(
@@ -2051,29 +1924,27 @@ public final class DefenseRepository {
                         operationId,
                         CoreRepairReceiptState.CLEARED,
                         clearedAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("clear a core repair receipt", exception);
         }
     }
 
     /** Rolls back a prepared operation and releases its receipt after a failed physical step. */
-    public OperationOutcome rollbackPreparedCoreRepair(
-            UUID operationId,
-            Instant rolledBackAt) {
+    fun rollbackPreparedCoreRepair(operationId: UUID, rolledBackAt: Instant): OperationOutcome {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(rolledBackAt, "rolledBackAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairOperation operation = loadCoreRepairOperation(connection, operationId)
-                        .orElseThrow(() -> new PersistenceConflictException(
-                                "The core repair operation does not exist"));
+            return database.inImmediateTransaction({ connection ->
+                var operation = loadCoreRepairOperation(connection, operationId)
+                        .orElseThrow { PersistenceConflictException(
+                                "The core repair operation does not exist") };
                 if (operation.state() == CoreRepairOperationState.ROLLED_BACK) {
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
                 if (operation.state() == CoreRepairOperationState.APPLIED) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "An applied core repair cannot be rolled back");
                 }
                 updateCoreRepairOperationState(
@@ -2086,59 +1957,59 @@ public final class DefenseRepository {
                         operationId,
                         CoreRepairReceiptState.RETURN_PENDING,
                         rolledBackAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("roll back a prepared core repair", exception);
         }
     }
 
     /** Completes a physical refund after the player inventory has been durably saved. */
-    public OperationOutcome restoreCoreRepairReceipt(UUID operationId, Instant restoredAt) {
+    fun restoreCoreRepairReceipt(operationId: UUID, restoredAt: Instant): OperationOutcome {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(restoredAt, "restoredAt");
         try {
-            return database.inImmediateTransaction(connection -> {
-                CoreRepairReceipt receipt = loadCoreRepairReceipt(connection, operationId)
+            return database.inImmediateTransaction({ connection ->
+                var receipt = loadCoreRepairReceipt(connection, operationId)
                         .orElse(null);
                 if (receipt == null || receipt.state() == CoreRepairReceiptState.RESTORED) {
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
                 if (receipt.state() != CoreRepairReceiptState.RETURN_PENDING) {
-                    throw new PersistenceConflictException(
-                            "Only a return-pending core receipt can be restored");
+                    throw PersistenceConflictException(
+                            "Only a return@inImmediateTransaction-pending core receipt can be restored");
                 }
                 updateCoreRepairReceiptState(
                         connection,
                         operationId,
                         CoreRepairReceiptState.RESTORED,
                         restoredAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("restore a core repair receipt", exception);
         }
     }
 
-    public Optional<CoreRepairOperation> findCoreRepairOperation(UUID operationId) {
+    fun findCoreRepairOperation(operationId: UUID): Optional<CoreRepairOperation> {
         Objects.requireNonNull(operationId, "operationId");
         return read(
                 "load a core repair operation",
-                connection -> loadCoreRepairOperation(connection, operationId));
+                { connection -> loadCoreRepairOperation(connection, operationId) });
     }
 
-    public Optional<CoreRepairReceipt> findCoreRepairReceipt(UUID operationId) {
+    fun findCoreRepairReceipt(operationId: UUID): Optional<CoreRepairReceipt> {
         Objects.requireNonNull(operationId, "operationId");
         return read(
                 "load a core repair receipt",
-                connection -> loadCoreRepairReceipt(connection, operationId));
+                { connection -> loadCoreRepairReceipt(connection, operationId) });
     }
 
-    public List<CoreRepairOperation> loadPreparedCoreRepairs(UUID playerId) {
+    fun loadPreparedCoreRepairs(playerId: UUID): List<CoreRepairOperation> {
         Objects.requireNonNull(playerId, "playerId");
-        return read("load prepared core repairs", connection -> {
-            List<CoreRepairOperation> operations = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load prepared core repairs", { connection ->
+            var operations = ArrayList<CoreRepairOperation>();
+            connection.prepareStatement("""
                     SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
                            repair_amount, defense_point_cost, payment_mode, vanilla_material,
                            vanilla_material_amount, legacy_defense_shard_amount,
@@ -2160,15 +2031,17 @@ public final class DefenseRepository {
                                  AND r.state = 'RETURN_PENDING'
                            )))
                     ORDER BY prepared_at, operation_id
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, playerId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         operations.add(coreRepairOperationFromRow(resultSet));
                     }
-                }
-            }
-            return List.copyOf(operations);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(operations);
         });
     }
 
@@ -2179,11 +2052,11 @@ public final class DefenseRepository {
      * terminal operation visible to the next join lets the Paper bridge strip a resurrected
      * tagged stack without minting or charging anything again.</p>
      */
-    public List<CoreRepairOperation> loadTerminalCoreRepairReceipts(UUID playerId) {
+    fun loadTerminalCoreRepairReceipts(playerId: UUID): List<CoreRepairOperation> {
         Objects.requireNonNull(playerId, "playerId");
-        return read("load terminal core repair receipt tombstones", connection -> {
-            List<CoreRepairOperation> operations = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load terminal core repair receipt tombstones", { connection ->
+            var operations = ArrayList<CoreRepairOperation>();
+            connection.prepareStatement("""
                     SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
                            repair_amount, defense_point_cost, payment_mode, vanilla_material,
                            vanilla_material_amount, legacy_defense_shard_amount,
@@ -2202,36 +2075,29 @@ public final class DefenseRepository {
                                  AND r.state = 'RESTORED'
                            )))
                     ORDER BY prepared_at, operation_id
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, playerId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         operations.add(coreRepairOperationFromRow(resultSet));
                     }
-                }
-            }
-            return List.copyOf(operations);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(operations);
         });
     }
 
     /** Moves an intact core after checking ownership, idle state, and world separation. */
-    public CoreMutationResult relocateCore(
-            UUID coreId,
-            UUID actorId,
-            UUID worldId,
-            int blockX,
-            int blockY,
-            int blockZ,
-            double minimumCoreDistance,
-            UUID operationId,
-            Instant relocatedAt) {
+    fun relocateCore(coreId: UUID, actorId: UUID, worldId: UUID, blockX: Int, blockY: Int, blockZ: Int, minimumCoreDistance: Double, operationId: UUID, relocatedAt: Instant): CoreMutationResult {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(relocatedAt, "relocatedAt");
         requireDistance(minimumCoreDistance);
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "CORE_RELOCATE",
                 coreId,
                 actorId,
@@ -2241,8 +2107,8 @@ public final class DefenseRepository {
                 blockZ,
                 minimumCoreDistance);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -2251,18 +2117,18 @@ public final class DefenseRepository {
                             coreId,
                             "CORE_RELOCATE",
                             fingerprint);
-                    return new CoreMutationResult(
+                    return@inImmediateTransaction CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, coreId));
                 }
                 requireNoActiveEvent(connection, "relocate a core");
-                CoreRecord core = requireCore(connection, coreId);
+                var core = requireCore(connection, coreId);
                 requireTeamMember(connection, core.teamId(), actorId);
                 if (core.currentHitPoints() != core.maximumHitPoints()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A core can only be relocated at full HP");
                 }
-                Optional<CoreRecord> nearby = findDistanceConflict(
+                var nearby = findDistanceConflict(
                         connection,
                         worldId,
                         blockX,
@@ -2270,10 +2136,10 @@ public final class DefenseRepository {
                         minimumCoreDistance,
                         coreId);
                 if (nearby.isPresent()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Core position is too close to core " + nearby.orElseThrow().id());
                 }
-                CoreRecord updated = new CoreRecord(
+                var updated = CoreRecord(
                         core.id(),
                         core.teamId(),
                         worldId,
@@ -2293,41 +2159,31 @@ public final class DefenseRepository {
                         "CORE_RELOCATE",
                         fingerprint,
                         relocatedAt);
-                return new CoreMutationResult(
+                return@inImmediateTransaction CoreMutationResult(
                         ManagementOutcome.APPLIED,
                         Optional.of(updated));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core position conflicts with persisted data", exception);
             }
             throw failure("relocate a core", exception);
         }
     }
 
-    /** Rebuilds a destroyed core in place as a new full-health placement. */
-    public CoreMutationResult rebuildCore(
-            UUID coreId,
-            UUID actorId,
-            UUID worldId,
-            int blockX,
-            int blockY,
-            int blockZ,
-            long maximumHitPoints,
-            double minimumCoreDistance,
-            UUID operationId,
-            Instant rebuiltAt) {
+    /** Rebuilds a destroyed core in place as a full-health placement. */
+    fun rebuildCore(coreId: UUID, actorId: UUID, worldId: UUID, blockX: Int, blockY: Int, blockZ: Int, maximumHitPoints: Long, minimumCoreDistance: Double, operationId: UUID, rebuiltAt: Instant): CoreMutationResult {
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(rebuiltAt, "rebuiltAt");
         if (maximumHitPoints <= 0L) {
-            throw new IllegalArgumentException("maximumHitPoints must be positive");
+            throw IllegalArgumentException("maximumHitPoints must be positive");
         }
         requireDistance(minimumCoreDistance);
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "CORE_REBUILD",
                 coreId,
                 actorId,
@@ -2338,8 +2194,8 @@ public final class DefenseRepository {
                 maximumHitPoints,
                 minimumCoreDistance);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<ManagementOperation> existing = loadManagementOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadManagementOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingManagementOperation(
@@ -2348,18 +2204,18 @@ public final class DefenseRepository {
                             coreId,
                             "CORE_REBUILD",
                             fingerprint);
-                    return new CoreMutationResult(
+                    return@inImmediateTransaction CoreMutationResult(
                             ManagementOutcome.ALREADY_APPLIED,
                             loadCore(connection, coreId));
                 }
                 requireNoActiveEvent(connection, "rebuild a core");
-                CoreRecord core = requireCore(connection, coreId);
+                var core = requireCore(connection, coreId);
                 requireTeamMember(connection, core.teamId(), actorId);
                 if (core.currentHitPoints() != 0L) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Only a destroyed core can be rebuilt");
                 }
-                Optional<CoreRecord> nearby = findDistanceConflict(
+                var nearby = findDistanceConflict(
                         connection,
                         worldId,
                         blockX,
@@ -2367,10 +2223,10 @@ public final class DefenseRepository {
                         minimumCoreDistance,
                         coreId);
                 if (nearby.isPresent()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Core position is too close to core " + nearby.orElseThrow().id());
                 }
-                CoreRecord updated = new CoreRecord(
+                var updated = CoreRecord(
                         core.id(),
                         core.teamId(),
                         worldId,
@@ -2390,13 +2246,13 @@ public final class DefenseRepository {
                         "CORE_REBUILD",
                         fingerprint,
                         rebuiltAt);
-                return new CoreMutationResult(
+                return@inImmediateTransaction CoreMutationResult(
                         ManagementOutcome.APPLIED,
                         Optional.of(updated));
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The rebuilt core conflicts with persisted data", exception);
             }
             throw failure("rebuild a core", exception);
@@ -2407,7 +2263,7 @@ public final class DefenseRepository {
      * Atomically inserts the complete start snapshot and acquires the global DB lock. Nothing is
      * inserted when another event owns the lock.
      */
-    public StartOutcome tryStart(StartRequest request) {
+    fun tryStart(request: StartRequest): StartOutcome {
         return tryStart(request, true);
     }
 
@@ -2417,102 +2273,91 @@ public final class DefenseRepository {
      * {@link #consumeReservedStartSeal(UUID, UUID, Instant)}. A failed or interrupted event is
      * eligible for the normal technical-refund transaction.
      */
-    public StartOutcome tryStartReserved(StartRequest request) {
+    fun tryStartReserved(request: StartRequest): StartOutcome {
         Objects.requireNonNull(request, "request");
         if (request.raidSealId().isEmpty()) {
-            throw new IllegalArgumentException("A reserved start requires a raid seal");
+            throw IllegalArgumentException("A reserved start requires a raid seal");
         }
         return tryStart(request, false);
     }
 
     /** Consumes the reservation after the corresponding physical token has been removed. */
-    public OperationOutcome consumeReservedStartSeal(
-            UUID eventId,
-            UUID sealId,
-            Instant consumedAt) {
+    fun consumeReservedStartSeal(eventId: UUID, sealId: UUID, consumedAt: Instant): OperationOutcome {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(sealId, "sealId");
         Objects.requireNonNull(consumedAt, "consumedAt");
         try {
-            return database.inImmediateTransaction(connection ->
-                    RaidSealRepository.consumeReservedForStart(
-                            connection, eventId, sealId, consumedAt));
-        } catch (SQLException exception) {
+            return database.inImmediateTransaction({ connection -> RaidSealRepository.consumeReservedForStart(
+                            connection, eventId, sealId, consumedAt) });
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The reserved raid seal conflicts with persisted data", exception);
             }
             throw failure("consume the reserved raid seal", exception);
         }
     }
 
-    private StartOutcome tryStart(StartRequest request, boolean consumeSeal) {
+    private fun tryStart(request: StartRequest, consumeSeal: Boolean): StartOutcome {
         Objects.requireNonNull(request, "request");
         try {
-            return database.inImmediateTransaction(connection -> {
+            return database.inImmediateTransaction({ connection ->
                 if (loadActiveEventId(connection).isPresent()) {
-                    return StartOutcome.LOCKED;
+                    return@inImmediateTransaction StartOutcome.LOCKED;
                 }
 
-                DefenseSessionSnapshot snapshot = request.session();
+                var snapshot = request.session();
                 if (eventExists(connection, snapshot.eventId())) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Event " + snapshot.eventId() + " already exists");
                 }
-                CoreRecord core = loadCore(connection, request.coreId()).orElseThrow(
-                        () -> new PersistenceConflictException(
-                                "Core " + request.coreId() + " does not exist"));
+                var core = loadCore(connection, request.coreId()).orElseThrow { PersistenceConflictException(
+                                "Core " + request.coreId() + " does not exist") };
                 validateStartCore(snapshot, core);
 
                 insertEvent(connection, request, core);
                 insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt());
                 replaceParticipants(connection, snapshot, request.startedAt());
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         INSERT INTO event_lock(singleton, event_id, acquired_at)
                         VALUES (1, ?, ?)
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, snapshot.eventId().toString());
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
-                }
+                
+}
                 if (consumeSeal) {
                     RaidSealRepository.consumeForStart(connection, request);
                 } else {
                     RaidSealRepository.reserveForStart(connection, request);
                 }
-                return StartOutcome.STARTED;
+                return@inImmediateTransaction StartOutcome.STARTED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The event start conflicts with persisted data", exception);
             }
             throw failure("start a defense event", exception);
         }
     }
 
-    public Optional<UUID> activeEventId() {
-        return read("load the active event lock", DefenseRepository::loadActiveEventId);
+    fun activeEventId(): Optional<UUID> {
+        return read("load the active event lock", { connection -> loadActiveEventId(connection) });
     }
 
     /** Loads the event-scoped battle-funds account. */
-    public BattleFunds loadBattleFunds(UUID eventId) {
+    fun loadBattleFunds(eventId: UUID): BattleFunds {
         Objects.requireNonNull(eventId, "eventId");
         return read(
                 "load event battle funds",
-                connection -> loadBattleFunds(connection, eventId).orElseThrow(
-                        () -> new PersistenceConflictException(
-                                "Defense event " + eventId + " has no battle-funds account")));
+                { connection -> loadBattleFunds(connection, eventId).orElseThrow { PersistenceConflictException(
+                                "Defense event " + eventId + " has no battle-funds account") } });
     }
 
     /** Credits event funds for a deterministic enemy or wave reward operation. */
-    public BattleFundsMutationResult creditBattleFunds(
-            UUID eventId,
-            UUID teamId,
-            UUID operationId,
-            String operationKind,
-            long amount,
-            Instant appliedAt) {
+    fun creditBattleFunds(eventId: UUID, teamId: UUID, operationId: UUID, operationKind: String, amount: Long, appliedAt: Instant): BattleFundsMutationResult {
         return mutateBattleFunds(
                 eventId,
                 teamId,
@@ -2525,14 +2370,7 @@ public final class DefenseRepository {
     }
 
     /** Spends event funds for a team-member operation during preparation or intermission. */
-    public BattleFundsMutationResult spendBattleFunds(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID operationId,
-            String operationKind,
-            long amount,
-            Instant appliedAt) {
+    fun spendBattleFunds(eventId: UUID, teamId: UUID, actorId: UUID, operationId: UUID, operationKind: String, amount: Long, appliedAt: Instant): BattleFundsMutationResult {
         return mutateBattleFunds(
                 eventId,
                 teamId,
@@ -2545,38 +2383,31 @@ public final class DefenseRepository {
     }
 
     /** Loads the temporary boosts that survived a restart while an event was still active. */
-    public List<BattleBoost> loadBattleBoosts(UUID eventId) {
+    fun loadBattleBoosts(eventId: UUID): List<BattleBoost> {
         Objects.requireNonNull(eventId, "eventId");
-        return read("load event tower boosts", connection -> {
-            List<BattleBoost> boosts = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load event tower boosts", { connection ->
+            var boosts = ArrayList<BattleBoost>();
+            connection.prepareStatement("""
                     SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
                     FROM event_tower_boosts
                     WHERE event_id = ?
                     ORDER BY tower_id, boost_kind
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, eventId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         boosts.add(battleBoostFromRow(resultSet));
                     }
-                }
-            }
-            return List.copyOf(boosts);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(boosts);
         });
     }
 
     /** Purchases one cumulative temporary boost and spends its funds in the same transaction. */
-    public BattleBoostMutationResult purchaseBattleBoost(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            BattleBoostKind kind,
-            long cost,
-            double boostMultiplier,
-            UUID operationId,
-            Instant appliedAt) {
+    fun purchaseBattleBoost(eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, kind: BattleBoostKind, cost: Long, boostMultiplier: Double, operationId: UUID, appliedAt: Instant): BattleBoostMutationResult {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
@@ -2585,13 +2416,13 @@ public final class DefenseRepository {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         if (cost <= 0L) {
-            throw new IllegalArgumentException("cost must be positive");
+            throw IllegalArgumentException("cost must be positive");
         }
-        if (!Double.isFinite(boostMultiplier) || boostMultiplier <= 0.0d) {
-            throw new IllegalArgumentException("boostMultiplier must be finite and positive");
+        if (!java.lang.Double.isFinite(boostMultiplier) || boostMultiplier <= 0.0) {
+            throw IllegalArgumentException("boostMultiplier must be finite and positive");
         }
-        String operationKind = "BOOST_" + kind.id();
-        String fingerprint = managementFingerprint(
+        var operationKind = "BOOST_" + kind.id();
+        var fingerprint = managementFingerprint(
                 "BATTLE_BOOST",
                 eventId,
                 teamId,
@@ -2601,8 +2432,8 @@ public final class DefenseRepository {
                 cost,
                 boostMultiplier);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<BattleBoostOperation> existing = loadBattleBoostOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadBattleBoostOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingBattleBoostOperation(
@@ -2615,7 +2446,7 @@ public final class DefenseRepository {
                             cost,
                             boostMultiplier,
                             fingerprint);
-                    return new BattleBoostMutationResult(
+                    return@inImmediateTransaction BattleBoostMutationResult(
                             OperationOutcome.ALREADY_APPLIED,
                             requireBattleBoost(connection, eventId, towerId, kind),
                             requireBattleFunds(connection, eventId));
@@ -2624,27 +2455,25 @@ public final class DefenseRepository {
                 requireActiveBattleFundsEvent(connection, eventId, true);
                 requireTeamMember(connection, teamId, actorId);
                 requireTowerBelongsToTeam(connection, towerId, teamId);
-                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                var currentFunds = requireBattleFunds(connection, eventId);
                 if (!currentFunds.teamId().equals(teamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The battle-boost operation belongs to another team");
                 }
                 if (currentFunds.balance() < cost) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The team does not have enough battle funds for this boost");
                 }
-                Optional<BattleBoost> current = loadBattleBoost(
+                var current = loadBattleBoost(
                         connection, eventId, towerId, kind);
-                int nextLevel = current.isPresent()
-                        ? Math.addExact(current.orElseThrow().level(), 1)
-                        : 1;
-                double previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0d);
-                double nextMultiplier = previousMultiplier * boostMultiplier;
-                if (!Double.isFinite(nextMultiplier)) {
-                    throw new PersistenceConflictException(
+                var nextLevel = if (current.isPresent()) Math.addExact(current.orElseThrow().level(), 1) else 1
+                var previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0);
+                var nextMultiplier = previousMultiplier * boostMultiplier;
+                if (!java.lang.Double.isFinite(nextMultiplier)) {
+                    throw PersistenceConflictException(
                             "The battle boost multiplier is outside the supported range");
                 }
-                BattleFunds updatedFunds = new BattleFunds(
+                var updatedFunds = BattleFunds(
                         currentFunds.eventId(),
                         currentFunds.teamId(),
                         currentFunds.balance() - cost,
@@ -2652,7 +2481,7 @@ public final class DefenseRepository {
                         Math.addExact(currentFunds.totalSpent(), cost),
                         BattleFundsState.ACTIVE,
                         appliedAt);
-                BattleBoost updatedBoost = new BattleBoost(
+                var updatedBoost = BattleBoost(
                         eventId,
                         teamId,
                         towerId,
@@ -2684,31 +2513,23 @@ public final class DefenseRepository {
                         boostMultiplier,
                         fingerprint,
                         appliedAt);
-                return new BattleBoostMutationResult(
+                return@inImmediateTransaction BattleBoostMutationResult(
                         OperationOutcome.APPLIED, updatedBoost, updatedFunds);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The battle-boost operation conflicts with persisted data", exception);
             }
             throw failure("purchase a battle boost", exception);
-        } catch (ArithmeticException overflow) {
-            throw new PersistenceConflictException(
+        } catch (overflow: ArithmeticException) {
+            throw PersistenceConflictException(
                     "The battle-boost account cannot represent this purchase", overflow);
         }
     }
 
     /** Repairs a tower's durable HP and spends battle funds atomically. */
-    public TowerRepairMutationResult repairTowerWithBattleFunds(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            long repairedHitPoints,
-            long cost,
-            UUID operationId,
-            Instant appliedAt) {
+    fun repairTowerWithBattleFunds(eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, repairedHitPoints: Long, cost: Long, operationId: UUID, appliedAt: Instant): TowerRepairMutationResult {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(actorId, "actorId");
@@ -2716,10 +2537,10 @@ public final class DefenseRepository {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         if (repairedHitPoints <= 0L || cost <= 0L) {
-            throw new IllegalArgumentException("tower repair amount and cost must be positive");
+            throw IllegalArgumentException("tower repair amount and cost must be positive");
         }
-        String operationKind = "REPAIR_TOWER";
-        String fingerprint = managementFingerprint(
+        var operationKind = "REPAIR_TOWER";
+        var fingerprint = managementFingerprint(
                 "TOWER_REPAIR",
                 eventId,
                 teamId,
@@ -2728,8 +2549,8 @@ public final class DefenseRepository {
                 repairedHitPoints,
                 cost);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<TowerRepairOperation> existing = loadTowerRepairOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadTowerRepairOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingTowerRepairOperation(
@@ -2741,7 +2562,7 @@ public final class DefenseRepository {
                             repairedHitPoints,
                             cost,
                             fingerprint);
-                    return new TowerRepairMutationResult(
+                    return@inImmediateTransaction TowerRepairMutationResult(
                             OperationOutcome.ALREADY_APPLIED,
                             requireTowerDurability(connection, towerId),
                             requireBattleFunds(connection, eventId));
@@ -2749,30 +2570,30 @@ public final class DefenseRepository {
 
                 requireActiveBattleFundsEvent(connection, eventId, true);
                 requireTeamMember(connection, teamId, actorId);
-                TowerDurability current = requireTowerDurability(connection, towerId);
+                var current = requireTowerDurability(connection, towerId);
                 if (!current.teamId().equals(teamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The tower repair belongs to another team");
                 }
                 if (repairedHitPoints > current.maximumHitPoints() - current.currentHitPoints()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The tower repair exceeds the missing HP");
                 }
-                BattleFunds currentFunds = requireBattleFunds(connection, eventId);
+                var currentFunds = requireBattleFunds(connection, eventId);
                 if (!currentFunds.teamId().equals(teamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The tower repair belongs to another event team");
                 }
                 if (currentFunds.balance() < cost) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The team does not have enough battle funds for tower repair");
                 }
-                TowerDurability updatedDurability = new TowerDurability(
+                var updatedDurability = TowerDurability(
                         towerId,
                         teamId,
                         current.currentHitPoints() + repairedHitPoints,
                         current.maximumHitPoints());
-                BattleFunds updatedFunds = new BattleFunds(
+                var updatedFunds = BattleFunds(
                         currentFunds.eventId(),
                         currentFunds.teamId(),
                         currentFunds.balance() - cost,
@@ -2803,30 +2624,23 @@ public final class DefenseRepository {
                         cost,
                         fingerprint,
                         appliedAt);
-                return new TowerRepairMutationResult(
+                return@inImmediateTransaction TowerRepairMutationResult(
                         OperationOutcome.APPLIED, updatedDurability, updatedFunds);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The tower repair operation conflicts with persisted data", exception);
             }
             throw failure("repair a tower with battle funds", exception);
-        } catch (ArithmeticException overflow) {
-            throw new PersistenceConflictException(
+        } catch (overflow: ArithmeticException) {
+            throw PersistenceConflictException(
                     "The tower repair account cannot represent this purchase", overflow);
         }
     }
 
     /** Applies one destroyer attack to a tower and deletes the tower atomically at zero HP. */
-    public TowerDamageMutationResult damageTowerByEnemy(
-            UUID eventId,
-            UUID teamId,
-            UUID attackerLogicalEnemyId,
-            UUID towerId,
-            long damage,
-            UUID operationId,
-            Instant appliedAt) {
+    fun damageTowerByEnemy(eventId: UUID, teamId: UUID, attackerLogicalEnemyId: UUID, towerId: UUID, damage: Long, operationId: UUID, appliedAt: Instant): TowerDamageMutationResult {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(attackerLogicalEnemyId, "attackerLogicalEnemyId");
@@ -2834,9 +2648,9 @@ public final class DefenseRepository {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(appliedAt, "appliedAt");
         if (damage <= 0L) {
-            throw new IllegalArgumentException("tower damage must be positive");
+            throw IllegalArgumentException("tower damage must be positive");
         }
-        String fingerprint = managementFingerprint(
+        var fingerprint = managementFingerprint(
                 "TOWER_DAMAGE",
                 eventId,
                 teamId,
@@ -2844,11 +2658,11 @@ public final class DefenseRepository {
                 towerId,
                 damage);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<TowerDamageOperation> existing = loadTowerDamageOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadTowerDamageOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
-                    TowerDamageOperation operation = existing.orElseThrow();
+                    var operation = existing.orElseThrow();
                     requireMatchingTowerDamageOperation(
                             operation,
                             eventId,
@@ -2857,32 +2671,30 @@ public final class DefenseRepository {
                             towerId,
                             damage,
                             fingerprint);
-                    return damageResult(operation, OperationOutcome.ALREADY_APPLIED);
+                    return@inImmediateTransaction damageResult(operation, OperationOutcome.ALREADY_APPLIED);
                 }
 
                 requireActiveTowerDamageEvent(connection, eventId, teamId);
-                TowerDurability current = requireTowerDurability(connection, towerId);
+                var current = requireTowerDurability(connection, towerId);
                 if (!current.teamId().equals(teamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The tower damage belongs to another team");
                 }
-                boolean destroyed = current.currentHitPoints() <= damage;
-                long remainingHitPoints = destroyed
-                        ? 0L
-                        : current.currentHitPoints() - damage;
+                var destroyed = current.currentHitPoints() <= damage;
+                var remainingHitPoints = if (destroyed) 0L else current.currentHitPoints() - damage
                 if (destroyed) {
                     deleteTower(connection, towerId, teamId);
                 } else {
                     updateTowerDurability(
                             connection,
-                            new TowerDurability(
+                            TowerDurability(
                                     towerId,
                                     teamId,
                                     remainingHitPoints,
                                     current.maximumHitPoints()),
                             appliedAt);
                 }
-                TowerDamageOperation operation = new TowerDamageOperation(
+                var operation = TowerDamageOperation(
                         eventId,
                         teamId,
                         attackerLogicalEnemyId,
@@ -2892,48 +2704,47 @@ public final class DefenseRepository {
                         destroyed,
                         fingerprint);
                 insertTowerDamageOperation(connection, operation, operationId, appliedAt);
-                return damageResult(operation, OperationOutcome.APPLIED);
+                return@inImmediateTransaction damageResult(operation, OperationOutcome.APPLIED);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The tower damage operation conflicts with persisted data", exception);
             }
             throw failure("damage a tower by an event enemy", exception);
         }
     }
 
-    public Optional<StoredDefenseEvent> findEvent(UUID eventId) {
+    fun findEvent(eventId: UUID): Optional<StoredDefenseEvent> {
         Objects.requireNonNull(eventId, "eventId");
-        return read("load a defense event", connection -> loadEvent(connection, eventId));
+        return read("load a defense event", { connection -> loadEvent(connection, eventId) });
     }
 
     /** Loads every non-terminal event which requires runtime resume or technical recovery. */
-    public List<StoredDefenseEvent> loadUnfinishedEvents() {
-        return read("load unfinished defense events", connection -> {
-            List<UUID> ids = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement(
+    fun loadUnfinishedEvents(): List<StoredDefenseEvent> {
+        return read("load unfinished defense events", { connection ->
+            var ids = ArrayList<UUID>();
+            connection.prepareStatement(
                     "SELECT event_id FROM defense_events WHERE state NOT IN "
-                            + TERMINAL_PHASES_SQL + " ORDER BY started_at, event_id");
-                    ResultSet resultSet = statement.executeQuery()) {
+                            + TERMINAL_PHASES_SQL + " ORDER BY started_at, event_id").use { statement ->
+statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     ids.add(uuid(resultSet.getString("event_id")));
                 }
-            }
+            
+}}
 
-            List<StoredDefenseEvent> events = new ArrayList<>(ids.size());
-            for (UUID id : ids) {
-                events.add(loadEvent(connection, id).orElseThrow(
-                        () -> new PersistenceException(
-                                "An unfinished event disappeared while loading", null)));
+            var events = ArrayList<StoredDefenseEvent>(ids.size);
+            for (id in ids) {
+                events.add(loadEvent(connection, id).orElseThrow { PersistenceException(
+                                "An unfinished event disappeared while loading", null) });
             }
-            return List.copyOf(events);
+            return@read java.util.List.copyOf(events);
         });
     }
 
     /** Persists an in-phase aggregate snapshot without appending a lifecycle transition. */
-    public OperationOutcome saveSnapshot(
-            DefenseSessionSnapshot snapshot, Instant updatedAt) {
+    fun saveSnapshot(snapshot: DefenseSessionSnapshot, updatedAt: Instant): OperationOutcome {
         Objects.requireNonNull(snapshot, "snapshot");
         return saveSnapshot(snapshot, currentRevision(snapshot.eventId()), updatedAt);
     }
@@ -2942,31 +2753,30 @@ public final class DefenseRepository {
      * Persists an in-phase snapshot only when {@code expectedRevision} still names the durable
      * event revision read by the caller.
      */
-    public OperationOutcome saveSnapshot(
-            DefenseSessionSnapshot snapshot, long expectedRevision, Instant updatedAt) {
+    fun saveSnapshot(snapshot: DefenseSessionSnapshot, expectedRevision: Long, updatedAt: Instant): OperationOutcome {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(updatedAt, "updatedAt");
         requireRevision(expectedRevision);
         if (snapshot.phase().isTerminal()) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "Terminal snapshots must be persisted with finishEvent or recoverUnfinishedEvent");
         }
 
         try {
-            return database.inImmediateTransaction(connection -> {
-                StoredDefenseEvent current = requireEvent(connection, snapshot.eventId());
+            return database.inImmediateTransaction({ connection ->
+                var current = requireEvent(connection, snapshot.eventId());
                 if (current.session().phase().isTerminal()) {
-                    return OperationOutcome.ALREADY_TERMINAL;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_TERMINAL;
                 }
                 if (current.revision() != expectedRevision) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 ensureSameSession(current.session(), snapshot);
                 if (current.session().phase() != snapshot.phase()) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 if (!isPermittedInPhaseUpdate(current.session(), snapshot)) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 if (!persistSnapshot(
                         connection,
@@ -2974,47 +2784,42 @@ public final class DefenseRepository {
                         snapshot,
                         expectedRevision,
                         updatedAt)) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 replaceParticipants(connection, snapshot, updatedAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("save a defense snapshot", exception);
         }
     }
 
     /** Appends and applies one non-terminal lifecycle transition exactly once. */
-    public OperationOutcome saveTransition(
-            DefenseSessionSnapshot snapshot, UUID operationId, Instant occurredAt) {
+    fun saveTransition(snapshot: DefenseSessionSnapshot, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(operationId, "operationId");
-        long expectedRevision = operationExpectedRevisionOrCurrent(
+        var expectedRevision = operationExpectedRevisionOrCurrent(
                 snapshot.eventId(), operationId);
         return saveTransition(snapshot, expectedRevision, operationId, occurredAt);
     }
 
     /** Appends one lifecycle transition using an operation-bound revision CAS. */
-    public OperationOutcome saveTransition(
-            DefenseSessionSnapshot snapshot,
-            long expectedRevision,
-            UUID operationId,
-            Instant occurredAt) {
+    fun saveTransition(snapshot: DefenseSessionSnapshot, expectedRevision: Long, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(occurredAt, "occurredAt");
         requireRevision(expectedRevision);
         if (snapshot.phase().isTerminal()) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "Terminal transitions must be persisted with finishEvent or recoverUnfinishedEvent");
         }
 
-        long targetRevision = nextRevision(expectedRevision);
-        String payloadFingerprint = payloadFingerprint(snapshot);
+        var targetRevision = nextRevision(expectedRevision);
+        var payloadFingerprint = payloadFingerprint(snapshot);
 
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<OperationRow> existingOperation = loadOperation(connection, operationId);
+            return database.inImmediateTransaction({ connection ->
+                var existingOperation = loadOperation(connection, operationId);
                 if (existingOperation.isPresent()) {
                     requireMatchingOperation(
                             existingOperation.orElseThrow(),
@@ -3022,20 +2827,20 @@ public final class DefenseRepository {
                             OperationKind.TRANSITION,
                             targetRevision,
                             payloadFingerprint);
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
 
-                StoredDefenseEvent current = requireEvent(connection, snapshot.eventId());
-                DefensePhase from = current.session().phase();
+                var current = requireEvent(connection, snapshot.eventId());
+                var from = current.session().phase();
                 if (from.isTerminal()) {
-                    return OperationOutcome.ALREADY_TERMINAL;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_TERMINAL;
                 }
                 if (current.revision() != expectedRevision) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 ensureSameSession(current.session(), snapshot);
                 if (!from.canTransitionTo(snapshot.phase())) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
 
                 if (!persistSnapshot(
@@ -3044,7 +2849,7 @@ public final class DefenseRepository {
                         snapshot,
                         expectedRevision,
                         occurredAt)) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 replaceParticipants(connection, snapshot, occurredAt);
                 insertOperation(
@@ -3056,11 +2861,11 @@ public final class DefenseRepository {
                         payloadFingerprint,
                         occurredAt);
                 insertTransition(connection, operationId, from, snapshot, occurredAt);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The transition operation UUID conflicts with persisted data", exception);
             }
             throw failure("save a defense transition", exception);
@@ -3070,30 +2875,23 @@ public final class DefenseRepository {
     /**
      * Persists a normal terminal aggregate, final core HP, and global-lock release exactly once.
      */
-    public OperationOutcome finishEvent(
-            DefenseSessionSnapshot terminalSnapshot,
-            UUID operationId,
-            Instant occurredAt) {
+    fun finishEvent(terminalSnapshot: DefenseSessionSnapshot, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(terminalSnapshot, "terminalSnapshot");
         Objects.requireNonNull(operationId, "operationId");
-        long expectedRevision = operationExpectedRevisionOrCurrent(
+        var expectedRevision = operationExpectedRevisionOrCurrent(
                 terminalSnapshot.eventId(), operationId);
         return finishEvent(terminalSnapshot, expectedRevision, operationId, occurredAt);
     }
 
     /** Persists a normal terminal aggregate using an operation-bound revision CAS. */
-    public OperationOutcome finishEvent(
-            DefenseSessionSnapshot terminalSnapshot,
-            long expectedRevision,
-            UUID operationId,
-            Instant occurredAt) {
+    fun finishEvent(terminalSnapshot: DefenseSessionSnapshot, expectedRevision: Long, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(terminalSnapshot, "terminalSnapshot");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(occurredAt, "occurredAt");
         requireRevision(expectedRevision);
         if (!terminalSnapshot.phase().isTerminal()
                 || terminalSnapshot.phase() == DefensePhase.RECOVERY) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "finishEvent requires VICTORY, DEFEAT, or ABORTED");
         }
         return finish(
@@ -3109,32 +2907,27 @@ public final class DefenseRepository {
      * core's start HP snapshot, records the operation, and releases the global lock. Replaying the
      * same operation UUID is harmless.
      */
-    public OperationOutcome recoverUnfinishedEvent(
-            UUID eventId, UUID operationId, Instant occurredAt) {
+    fun recoverUnfinishedEvent(eventId: UUID, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(operationId, "operationId");
-        long expectedRevision = operationExpectedRevisionOrCurrent(eventId, operationId);
+        var expectedRevision = operationExpectedRevisionOrCurrent(eventId, operationId);
         return recoverUnfinishedEvent(eventId, expectedRevision, operationId, occurredAt);
     }
 
     /** Completes technical recovery using an operation-bound revision CAS. */
-    public OperationOutcome recoverUnfinishedEvent(
-            UUID eventId,
-            long expectedRevision,
-            UUID operationId,
-            Instant occurredAt) {
+    fun recoverUnfinishedEvent(eventId: UUID, expectedRevision: Long, operationId: UUID, occurredAt: Instant): OperationOutcome {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(occurredAt, "occurredAt");
         requireRevision(expectedRevision);
-        long targetRevision = nextRevision(expectedRevision);
+        var targetRevision = nextRevision(expectedRevision);
 
         try {
-            return database.inImmediateTransaction(connection -> {
-                StoredDefenseEvent current = requireEvent(connection, eventId);
-                DefenseSessionSnapshot recovery = recoverySnapshot(current);
-                String payloadFingerprint = payloadFingerprint(recovery);
-                Optional<OperationRow> existingOperation = loadOperation(connection, operationId);
+            return database.inImmediateTransaction({ connection ->
+                var current = requireEvent(connection, eventId);
+                var recovery = recoverySnapshot(current);
+                var payloadFingerprint = payloadFingerprint(recovery);
+                var existingOperation = loadOperation(connection, operationId);
                 if (existingOperation.isPresent()) {
                     requireMatchingOperation(
                             existingOperation.orElseThrow(),
@@ -3142,23 +2935,23 @@ public final class DefenseRepository {
                             OperationKind.RECOVER,
                             targetRevision,
                             payloadFingerprint);
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
 
                 if (current.session().phase().isTerminal()) {
-                    return OperationOutcome.ALREADY_TERMINAL;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_TERMINAL;
                 }
                 if (current.revision() != expectedRevision) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
-                Optional<UUID> lockOwner = loadActiveEventId(connection);
+                var lockOwner = loadActiveEventId(connection);
                 if (lockOwner.isPresent() && !lockOwner.orElseThrow().equals(eventId)) {
-                    throw new PersistenceException(
+                    throw PersistenceException(
                             "Cannot recover an event while another event owns the global lock",
                             null);
                 }
                 if (BlockChangeRepository.hasUnresolved(connection, eventId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Block changes must be rolled back or marked as conflicts before event recovery");
                 }
 
@@ -3168,7 +2961,7 @@ public final class DefenseRepository {
                         recovery,
                         expectedRevision,
                         occurredAt)) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 replaceParticipants(connection, recovery, occurredAt);
                 markEnemiesRecoveryRemoved(connection, eventId, occurredAt);
@@ -3194,11 +2987,11 @@ public final class DefenseRepository {
                         recovery,
                         occurredAt);
                 releaseEventLock(connection, eventId);
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The recovery operation UUID conflicts with persisted data", exception);
             }
             throw failure("recover an unfinished defense event", exception);
@@ -3206,15 +2999,15 @@ public final class DefenseRepository {
     }
 
     /** Inserts or updates one logical enemy ledger entry. */
-    public void upsertEnemy(EnemyLedgerEntry enemy) {
+    fun upsertEnemy(enemy: EnemyLedgerEntry): Unit {
         Objects.requireNonNull(enemy, "enemy");
         try {
-            database.inImmediateTransaction(connection -> {
-                StoredDefenseEvent event = requireEvent(connection, enemy.eventId());
+            database.inImmediateTransaction({ connection ->
+                var event = requireEvent(connection, enemy.eventId());
                 if (event.session().phase().isTerminal()) {
-                    throw new IllegalStateException("Cannot mutate enemies of a terminal event");
+                    throw IllegalStateException("Cannot mutate enemies of a terminal event");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         INSERT INTO event_enemies(
                             event_id, enemy_id, entity_id, enemy_type, wave_index, status,
                             snapshot, snapshot_version, updated_at
@@ -3227,23 +3020,24 @@ public final class DefenseRepository {
                             snapshot = excluded.snapshot,
                             snapshot_version = excluded.snapshot_version,
                             updated_at = excluded.updated_at
-                        """)) {
+                        """.trimIndent()).use { statement ->
                     statement.setString(1, enemy.eventId().toString());
                     statement.setString(2, enemy.enemyId().toString());
                     statement.setString(3, enemy.entityId().toString());
                     statement.setString(4, enemy.enemyType());
                     statement.setInt(5, enemy.waveIndex());
-                    statement.setString(6, enemy.status().name());
+                    statement.setString(6, enemy.status().name);
                     statement.setString(7, enemy.snapshot());
                     statement.setInt(8, enemy.snapshotVersion());
                     statement.setString(9, enemy.updatedAt().toString());
                     statement.executeUpdate();
-                }
-                return null;
+                
+}
+                return@inImmediateTransaction null;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The enemy ledger entry conflicts with persisted identity data", exception);
             }
             throw failure("save an enemy ledger entry", exception);
@@ -3254,60 +3048,56 @@ public final class DefenseRepository {
      * Updates only the lifecycle status of an existing logical enemy. The physical entity UUID is
      * part of the compare key so a stale entity callback cannot mutate a respawned ledger row.
      */
-    public void updateEnemyStatus(
-            UUID eventId,
-            UUID enemyId,
-            UUID entityId,
-            EnemyStatus status,
-            Instant updatedAt) {
+    fun updateEnemyStatus(eventId: UUID, enemyId: UUID, entityId: UUID, status: EnemyStatus, updatedAt: Instant): Unit {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(enemyId, "enemyId");
         Objects.requireNonNull(entityId, "entityId");
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(updatedAt, "updatedAt");
         try {
-            database.inImmediateTransaction(connection -> {
-                StoredDefenseEvent event = requireEvent(connection, eventId);
+            database.inImmediateTransaction({ connection ->
+                var event = requireEvent(connection, eventId);
                 if (event.session().phase().isTerminal()) {
-                    throw new IllegalStateException("Cannot mutate enemies of a terminal event");
+                    throw IllegalStateException("Cannot mutate enemies of a terminal event");
                 }
-                try (PreparedStatement statement = connection.prepareStatement("""
+                connection.prepareStatement("""
                         UPDATE event_enemies
                         SET status = ?, updated_at = ?
                         WHERE event_id = ? AND enemy_id = ? AND entity_id = ?
-                        """)) {
-                    statement.setString(1, status.name());
+                        """.trimIndent()).use { statement ->
+                    statement.setString(1, status.name);
                     statement.setString(2, updatedAt.toString());
                     statement.setString(3, eventId.toString());
                     statement.setString(4, enemyId.toString());
                     statement.setString(5, entityId.toString());
                     if (statement.executeUpdate() != 1) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "Enemy identity does not match an existing ledger row");
                     }
-                }
-                return null;
+                
+}
+                return@inImmediateTransaction null;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             throw failure("update an enemy ledger status", exception);
         }
     }
 
-    public List<EnemyLedgerEntry> loadEnemyLedger(UUID eventId) {
+    fun loadEnemyLedger(eventId: UUID): List<EnemyLedgerEntry> {
         Objects.requireNonNull(eventId, "eventId");
-        return read("load an enemy ledger", connection -> {
-            List<EnemyLedgerEntry> entries = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load an enemy ledger", { connection ->
+            var entries = ArrayList<EnemyLedgerEntry>();
+            connection.prepareStatement("""
                     SELECT event_id, enemy_id, entity_id, enemy_type, wave_index, status,
                            snapshot, snapshot_version, updated_at
                     FROM event_enemies
                     WHERE event_id = ?
                     ORDER BY wave_index, enemy_id
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, eventId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
-                        entries.add(new EnemyLedgerEntry(
+                        entries.add(EnemyLedgerEntry(
                                 uuid(resultSet.getString("event_id")),
                                 uuid(resultSet.getString("enemy_id")),
                                 uuid(resultSet.getString("entity_id")),
@@ -3318,27 +3108,29 @@ public final class DefenseRepository {
                                 resultSet.getInt("snapshot_version"),
                                 instant(resultSet.getString("updated_at"))));
                     }
-                }
-            }
-            return List.copyOf(entries);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(entries);
         });
     }
 
-    public List<EventTransitionRecord> loadTransitions(UUID eventId) {
+    fun loadTransitions(eventId: UUID): List<EventTransitionRecord> {
         Objects.requireNonNull(eventId, "eventId");
-        return read("load event transitions", connection -> {
-            List<EventTransitionRecord> transitions = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load event transitions", { connection ->
+            var transitions = ArrayList<EventTransitionRecord>();
+            connection.prepareStatement("""
                     SELECT sequence, event_id, operation_id, from_state, to_state,
                            wave_index, pending_enemies, alive_enemies, occurred_at
                     FROM event_transitions
                     WHERE event_id = ?
                     ORDER BY sequence
-                    """)) {
+                    """.trimIndent()).use { statement ->
                 statement.setString(1, eventId.toString());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
-                        transitions.add(new EventTransitionRecord(
+                        transitions.add(EventTransitionRecord(
                                 resultSet.getLong("sequence"),
                                 uuid(resultSet.getString("event_id")),
                                 uuid(resultSet.getString("operation_id")),
@@ -3349,23 +3141,20 @@ public final class DefenseRepository {
                                 resultSet.getLong("alive_enemies"),
                                 instant(resultSet.getString("occurred_at"))));
                     }
-                }
-            }
-            return List.copyOf(transitions);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(transitions);
         });
     }
 
-    private OperationOutcome finish(
-            DefenseSessionSnapshot terminalSnapshot,
-            long expectedRevision,
-            UUID operationId,
-            Instant occurredAt,
-            OperationKind operationKind) {
-        long targetRevision = nextRevision(expectedRevision);
-        String payloadFingerprint = payloadFingerprint(terminalSnapshot);
+    private fun finish(terminalSnapshot: DefenseSessionSnapshot, expectedRevision: Long, operationId: UUID, occurredAt: Instant, operationKind: OperationKind): OperationOutcome {
+        var targetRevision = nextRevision(expectedRevision);
+        var payloadFingerprint = payloadFingerprint(terminalSnapshot);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<OperationRow> existingOperation = loadOperation(connection, operationId);
+            return database.inImmediateTransaction({ connection ->
+                var existingOperation = loadOperation(connection, operationId);
                 if (existingOperation.isPresent()) {
                     requireMatchingOperation(
                             existingOperation.orElseThrow(),
@@ -3373,21 +3162,21 @@ public final class DefenseRepository {
                             operationKind,
                             targetRevision,
                             payloadFingerprint);
-                    return OperationOutcome.ALREADY_APPLIED;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED;
                 }
 
-                StoredDefenseEvent current = requireEvent(
+                var current = requireEvent(
                         connection, terminalSnapshot.eventId());
-                DefensePhase from = current.session().phase();
+                var from = current.session().phase();
                 if (from.isTerminal()) {
-                    return OperationOutcome.ALREADY_TERMINAL;
+                    return@inImmediateTransaction OperationOutcome.ALREADY_TERMINAL;
                 }
                 if (current.revision() != expectedRevision) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 ensureSameSession(current.session(), terminalSnapshot);
                 if (!from.canTransitionTo(terminalSnapshot.phase())) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
 
                 if (terminalSnapshot.phase() == DefensePhase.VICTORY) {
@@ -3411,7 +3200,7 @@ public final class DefenseRepository {
                         terminalSnapshot,
                         expectedRevision,
                         occurredAt)) {
-                    return OperationOutcome.STATE_MISMATCH;
+                    return@inImmediateTransaction OperationOutcome.STATE_MISMATCH;
                 }
                 replaceParticipants(connection, terminalSnapshot, occurredAt);
                 EscrowRepository.settleForTerminal(
@@ -3438,11 +3227,11 @@ public final class DefenseRepository {
                 insertTransition(
                         connection, operationId, from, terminalSnapshot, occurredAt);
                 releaseEventLock(connection, terminalSnapshot.eventId());
-                return OperationOutcome.APPLIED;
+                return@inImmediateTransaction OperationOutcome.APPLIED;
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The terminal operation UUID conflicts with persisted data", exception);
             }
             throw failure("finish a defense event", exception);
@@ -3457,36 +3246,28 @@ public final class DefenseRepository {
      * turns it into exactly one TEAM row. The separate batch ledger supplies the source-team and
      * redeemed-quantity authority used by the core deposit path.</p>
      */
-    private BattleFundsMutationResult mutateBattleFunds(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID operationId,
-            String operationKind,
-            long amount,
-            Instant appliedAt,
-            boolean spend) {
+    private fun mutateBattleFunds(eventId: UUID, teamId: UUID, actorId: UUID?, operationId: UUID, operationKind: String, amount: Long, appliedAt: Instant, spend: Boolean): BattleFundsMutationResult {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(teamId, "teamId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(operationKind, "operationKind");
         Objects.requireNonNull(appliedAt, "appliedAt");
         if (operationKind.isBlank()) {
-            throw new IllegalArgumentException("operationKind must not be blank");
+            throw IllegalArgumentException("operationKind must not be blank");
         }
         if (amount <= 0L) {
-            throw new IllegalArgumentException("amount must be positive");
+            throw IllegalArgumentException("amount must be positive");
         }
-        String fingerprint = managementFingerprint(
-                spend ? "BATTLE_FUNDS_SPEND" : "BATTLE_FUNDS_CREDIT",
+        var fingerprint = managementFingerprint(
+                if (spend) "BATTLE_FUNDS_SPEND" else "BATTLE_FUNDS_CREDIT",
                 eventId,
                 teamId,
-                actorId == null ? "SYSTEM" : actorId,
+                if (actorId == null) "SYSTEM" else actorId,
                 operationKind,
                 amount);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<BattleFundsOperation> existing = loadBattleFundsOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadBattleFundsOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingBattleFundsOperation(
@@ -3497,27 +3278,27 @@ public final class DefenseRepository {
                             operationKind,
                             amount,
                             fingerprint);
-                    return new BattleFundsMutationResult(
+                    return@inImmediateTransaction BattleFundsMutationResult(
                             OperationOutcome.ALREADY_APPLIED,
                             requireBattleFunds(connection, eventId));
                 }
 
                 requireActiveBattleFundsEvent(connection, eventId, spend);
-                BattleFunds current = requireBattleFunds(connection, eventId);
+                var current = requireBattleFunds(connection, eventId);
                 if (!current.teamId().equals(teamId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The battle-funds operation belongs to another team");
                 }
                 if (spend) {
-                    requireTeamMember(connection, teamId, Objects.requireNonNull(actorId, "actorId"));
+                    requireTeamMember(connection, teamId, actorId!!);
                     if (current.balance() < amount) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The team does not have enough battle funds");
                     }
                 }
-                long nextBalance;
-                long nextEarned = current.totalEarned();
-                long nextSpent = current.totalSpent();
+                var nextBalance = 0L
+                var nextEarned = current.totalEarned();
+                var nextSpent = current.totalSpent();
                 try {
                     if (spend) {
                         nextBalance = Math.subtractExact(current.balance(), amount);
@@ -3526,11 +3307,11 @@ public final class DefenseRepository {
                         nextBalance = Math.addExact(current.balance(), amount);
                         nextEarned = Math.addExact(current.totalEarned(), amount);
                     }
-                } catch (ArithmeticException overflow) {
-                    throw new PersistenceConflictException(
+                } catch (overflow: ArithmeticException) {
+                    throw PersistenceConflictException(
                             "The battle-funds account cannot represent this mutation", overflow);
                 }
-                BattleFunds updated = new BattleFunds(
+                var updated = BattleFunds(
                         current.eventId(),
                         current.teamId(),
                         nextBalance,
@@ -3549,139 +3330,128 @@ public final class DefenseRepository {
                         amount,
                         fingerprint,
                         appliedAt);
-                return new BattleFundsMutationResult(OperationOutcome.APPLIED, updated);
+                return@inImmediateTransaction BattleFundsMutationResult(OperationOutcome.APPLIED, updated);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The battle-funds operation conflicts with persisted data", exception);
             }
             throw failure("mutate event battle funds", exception);
         }
     }
 
-    private static void requireActiveBattleFundsEvent(
-            Connection connection,
-            UUID eventId,
-            boolean spend) throws SQLException {
-        Optional<UUID> activeEvent = loadActiveEventId(connection);
+    private fun requireActiveBattleFundsEvent(connection: Connection, eventId: UUID, spend: Boolean): Unit {
+        var activeEvent = loadActiveEventId(connection);
         if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Battle funds are available only for the active defense event");
         }
-        StoredDefenseEvent event = requireEvent(connection, eventId);
+        var event = requireEvent(connection, eventId);
         if (event.session().phase().isTerminal()
                 || (spend && (event.session().phase() == DefensePhase.WAVE_ACTIVE
                         || event.session().phase() == DefensePhase.COUNTDOWN))) {
-            throw new PersistenceConflictException(
-                    spend
-                            ? "Battle funds may only be spent during preparation or intermission"
-                            : "The defense event is already terminal");
+            throw PersistenceConflictException(
+                    if (spend) {
+                        "Battle funds may only be spent during preparation or intermission"
+                    } else {
+                        "The defense event is already terminal"
+                    });
         }
     }
 
-    private static void requireActiveTowerDamageEvent(
-            Connection connection,
-            UUID eventId,
-            UUID teamId) throws SQLException {
-        Optional<UUID> activeEvent = loadActiveEventId(connection);
+    private fun requireActiveTowerDamageEvent(connection: Connection, eventId: UUID, teamId: UUID): Unit {
+        var activeEvent = loadActiveEventId(connection);
         if (activeEvent.isEmpty() || !activeEvent.orElseThrow().equals(eventId)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Tower damage is available only for the active defense event");
         }
-        StoredDefenseEvent event = requireEvent(connection, eventId);
+        var event = requireEvent(connection, eventId);
         if (!event.session().teamId().equals(teamId)
                 || event.session().phase() != DefensePhase.WAVE_ACTIVE) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Tower damage is available only during the owning team's active wave");
         }
     }
 
-    private static void insertBattleFunds(
-            Connection connection,
-            UUID eventId,
-            UUID teamId,
-            Instant createdAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertBattleFunds(connection: Connection, eventId: UUID, teamId: UUID, createdAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_battle_funds(
                     event_id, team_id, balance, total_earned, total_spent, state, updated_at
                 ) VALUES (?, ?, 0, 0, 0, 'ACTIVE', ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
             statement.setString(2, teamId.toString());
             statement.setString(3, createdAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void settleBattleFunds(
-            Connection connection,
-            UUID eventId,
-            Instant settledAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun settleBattleFunds(connection: Connection, eventId: UUID, settledAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE event_battle_funds
                 SET balance = 0, state = 'SETTLED', updated_at = ?
                 WHERE event_id = ? AND state = 'ACTIVE'
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, settledAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void clearBattleBoosts(Connection connection, UUID eventId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun clearBattleBoosts(connection: Connection, eventId: UUID): Unit {
+        connection.prepareStatement("""
                 DELETE FROM event_tower_boosts WHERE event_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void updateBattleFunds(Connection connection, BattleFunds funds)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateBattleFunds(connection: Connection, funds: BattleFunds): Unit {
+        connection.prepareStatement("""
                 UPDATE event_battle_funds
                 SET balance = ?, total_earned = ?, total_spent = ?, state = ?, updated_at = ?
                 WHERE event_id = ? AND state = 'ACTIVE'
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setLong(1, funds.balance());
             statement.setLong(2, funds.totalEarned());
             statement.setLong(3, funds.totalSpent());
-            statement.setString(4, funds.state().name());
+            statement.setString(4, funds.state().name);
             statement.setString(5, funds.updatedAt().toString());
             statement.setString(6, funds.eventId().toString());
             if (statement.executeUpdate() != 1) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The battle-funds account was concurrently settled");
             }
-        }
+        
+}
     }
 
-    private static Optional<BattleFunds> loadBattleFunds(
-            Connection connection,
-            UUID eventId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadBattleFunds(connection: Connection, eventId: UUID): Optional<BattleFunds> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, balance, total_earned, total_spent, state, updated_at
                 FROM event_battle_funds WHERE event_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next() ? Optional.of(battleFundsFromRow(resultSet)) : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(battleFundsFromRow(resultSet)) else Optional.empty();
+            
+}
+        
+}
     }
 
-    private static BattleFunds requireBattleFunds(Connection connection, UUID eventId)
-            throws SQLException {
-        return loadBattleFunds(connection, eventId).orElseThrow(
-                () -> new PersistenceConflictException(
-                        "Defense event " + eventId + " has no battle-funds account"));
+    private fun requireBattleFunds(connection: Connection, eventId: UUID): BattleFunds {
+        return loadBattleFunds(connection, eventId).orElseThrow { PersistenceConflictException(
+                        "Defense event " + eventId + " has no battle-funds account") };
     }
 
-    private static BattleFunds battleFundsFromRow(ResultSet resultSet) throws SQLException {
-        return new BattleFunds(
+    private fun battleFundsFromRow(resultSet: ResultSet): BattleFunds {
+        return BattleFunds(
                 uuid(resultSet.getString("event_id")),
                 uuid(resultSet.getString("team_id")),
                 resultSet.getLong("balance"),
@@ -3691,8 +3461,8 @@ public final class DefenseRepository {
                 instant(resultSet.getString("updated_at")));
     }
 
-    private static BattleBoost battleBoostFromRow(ResultSet resultSet) throws SQLException {
-        return new BattleBoost(
+    private fun battleBoostFromRow(resultSet: ResultSet): BattleBoost {
+        return BattleBoost(
                 uuid(resultSet.getString("event_id")),
                 uuid(resultSet.getString("team_id")),
                 uuid(resultSet.getString("tower_id")),
@@ -3702,47 +3472,39 @@ public final class DefenseRepository {
                 instant(resultSet.getString("updated_at")));
     }
 
-    private static BattleBoostKind battleBoostKind(String id) {
-        for (BattleBoostKind kind : BattleBoostKind.values()) {
+    private fun battleBoostKind(id: String): BattleBoostKind {
+        for (kind in BattleBoostKind.values()) {
             if (kind.id().equals(id)) {
                 return kind;
             }
         }
-        throw new PersistenceException("Unknown persisted battle boost kind: " + id, null);
+        throw PersistenceException("Unknown persisted battle boost kind: " + id, null);
     }
 
-    private static Optional<BattleBoost> loadBattleBoost(
-            Connection connection,
-            UUID eventId,
-            UUID towerId,
-            BattleBoostKind kind) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadBattleBoost(connection: Connection, eventId: UUID, towerId: UUID, kind: BattleBoostKind): Optional<BattleBoost> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
                 FROM event_tower_boosts
                 WHERE event_id = ? AND tower_id = ? AND boost_kind = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
             statement.setString(2, towerId.toString());
             statement.setString(3, kind.id());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next() ? Optional.of(battleBoostFromRow(resultSet)) : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(battleBoostFromRow(resultSet)) else Optional.empty();
+            
+}
+        
+}
     }
 
-    private static BattleBoost requireBattleBoost(
-            Connection connection,
-            UUID eventId,
-            UUID towerId,
-            BattleBoostKind kind) throws SQLException {
-        return loadBattleBoost(connection, eventId, towerId, kind).orElseThrow(
-                () -> new PersistenceConflictException(
-                        "The battle boost was not stored for tower " + towerId));
+    private fun requireBattleBoost(connection: Connection, eventId: UUID, towerId: UUID, kind: BattleBoostKind): BattleBoost {
+        return loadBattleBoost(connection, eventId, towerId, kind).orElseThrow { PersistenceConflictException(
+                        "The battle boost was not stored for tower " + towerId) };
     }
 
-    private static void upsertBattleBoost(Connection connection, BattleBoost boost)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun upsertBattleBoost(connection: Connection, boost: BattleBoost): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_tower_boosts(
                     event_id, team_id, tower_id, boost_kind, level, multiplier, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -3751,7 +3513,7 @@ public final class DefenseRepository {
                     level = excluded.level,
                     multiplier = excluded.multiplier,
                     updated_at = excluded.updated_at
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, boost.eventId().toString());
             statement.setString(2, boost.teamId().toString());
             statement.setString(3, boost.towerId().toString());
@@ -3760,27 +3522,17 @@ public final class DefenseRepository {
             statement.setDouble(6, boost.multiplier());
             statement.setString(7, boost.updatedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void insertBattleBoostOperation(
-            Connection connection,
-            UUID operationId,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            BattleBoostKind kind,
-            long cost,
-            double boostMultiplier,
-            String fingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertBattleBoostOperation(connection: Connection, operationId: UUID, eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, kind: BattleBoostKind, cost: Long, boostMultiplier: Double, fingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_tower_boost_operations(
                     operation_id, event_id, team_id, actor_id, tower_id, boost_kind,
                     cost, boost_multiplier, payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, eventId.toString());
             statement.setString(3, teamId.toString());
@@ -3792,23 +3544,22 @@ public final class DefenseRepository {
             statement.setString(9, fingerprint);
             statement.setString(10, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<BattleBoostOperation> loadBattleBoostOperation(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadBattleBoostOperation(connection: Connection, operationId: UUID): Optional<BattleBoostOperation> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, actor_id, tower_id, boost_kind,
                        cost, boost_multiplier, payload_fingerprint
                 FROM event_tower_boost_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new BattleBoostOperation(
+                return Optional.of(BattleBoostOperation(
                         uuid(resultSet.getString("event_id")),
                         uuid(resultSet.getString("team_id")),
                         uuid(resultSet.getString("actor_id")),
@@ -3817,104 +3568,84 @@ public final class DefenseRepository {
                         resultSet.getLong("cost"),
                         resultSet.getDouble("boost_multiplier"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingBattleBoostOperation(
-            BattleBoostOperation existing,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            BattleBoostKind kind,
-            long cost,
-            double boostMultiplier,
-            String fingerprint) {
+    private fun requireMatchingBattleBoostOperation(existing: BattleBoostOperation, eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, kind: BattleBoostKind, cost: Long, boostMultiplier: Double, fingerprint: String): Unit {
         if (!existing.eventId().equals(eventId)
                 || !existing.teamId().equals(teamId)
                 || !existing.actorId().equals(actorId)
                 || !existing.towerId().equals(towerId)
                 || existing.kind() != kind
                 || existing.cost() != cost
-                || Double.compare(existing.boostMultiplier(), boostMultiplier) != 0
+                || java.lang.Double.compare(existing.boostMultiplier(), boostMultiplier) != 0
                 || !existing.payloadFingerprint().equals(fingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The battle-boost operation UUID is already assigned to another payload");
         }
     }
 
-    private static Optional<TowerDurability> loadTowerDurability(
-            Connection connection,
-            UUID towerId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTowerDurability(connection: Connection, towerId: UUID): Optional<TowerDurability> {
+        connection.prepareStatement("""
                 SELECT tower_id, team_id, current_hp, max_hp
                 FROM towers WHERE tower_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, towerId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(new TowerDurability(
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(TowerDurability(
                                 uuid(resultSet.getString("tower_id")),
                                 uuid(resultSet.getString("team_id")),
                                 resultSet.getLong("current_hp"),
-                                resultSet.getLong("max_hp")))
-                        : Optional.empty();
-            }
-        }
+                                resultSet.getLong("max_hp"))) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static TowerDurability requireTowerDurability(
-            Connection connection,
-            UUID towerId) throws SQLException {
-        return loadTowerDurability(connection, towerId).orElseThrow(
-                () -> new PersistenceConflictException(
-                        "The tower to repair does not exist"));
+    private fun requireTowerDurability(connection: Connection, towerId: UUID): TowerDurability {
+        return loadTowerDurability(connection, towerId).orElseThrow { PersistenceConflictException(
+                        "The tower to repair does not exist") };
     }
 
-    private static void updateTowerDurability(
-            Connection connection,
-            TowerDurability durability,
-            Instant updatedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateTowerDurability(connection: Connection, durability: TowerDurability, updatedAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE towers
                 SET current_hp = ?, updated_at = ?
                 WHERE tower_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setLong(1, durability.currentHitPoints());
             statement.setString(2, updatedAt.toString());
             statement.setString(3, durability.towerId().toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The tower durability update affected no rows");
+                throw SQLException("The tower durability update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void deleteTower(
-            Connection connection,
-            UUID towerId,
-            UUID teamId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM towers WHERE tower_id = ? AND team_id = ?")) {
+    private fun deleteTower(connection: Connection, towerId: UUID, teamId: UUID): Unit {
+        connection.prepareStatement(
+                "DELETE FROM towers WHERE tower_id = ? AND team_id = ?").use { statement ->
             statement.setString(1, towerId.toString());
             statement.setString(2, teamId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The destroyed tower delete affected no rows");
+                throw SQLException("The destroyed tower delete affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void insertTowerDamageOperation(
-            Connection connection,
-            TowerDamageOperation operation,
-            UUID operationId,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTowerDamageOperation(connection: Connection, operation: TowerDamageOperation, operationId: UUID, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_tower_damage_operations(
                     operation_id, event_id, team_id, attacker_enemy_id, tower_id,
                     damage, remaining_hp, destroyed, payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, operation.eventId().toString());
             statement.setString(3, operation.teamId().toString());
@@ -3922,27 +3653,26 @@ public final class DefenseRepository {
             statement.setString(5, operation.towerId().toString());
             statement.setLong(6, operation.damage());
             statement.setLong(7, operation.remainingHitPoints());
-            statement.setInt(8, operation.destroyed() ? 1 : 0);
+            statement.setInt(8, if (operation.destroyed()) 1 else 0);
             statement.setString(9, operation.payloadFingerprint());
             statement.setString(10, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<TowerDamageOperation> loadTowerDamageOperation(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTowerDamageOperation(connection: Connection, operationId: UUID): Optional<TowerDamageOperation> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, attacker_enemy_id, tower_id,
                        damage, remaining_hp, destroyed, payload_fingerprint
                 FROM event_tower_damage_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new TowerDamageOperation(
+                return Optional.of(TowerDamageOperation(
                         uuid(resultSet.getString("event_id")),
                         uuid(resultSet.getString("team_id")),
                         uuid(resultSet.getString("attacker_enemy_id")),
@@ -3951,33 +3681,26 @@ public final class DefenseRepository {
                         resultSet.getLong("remaining_hp"),
                         resultSet.getInt("destroyed") == 1,
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingTowerDamageOperation(
-            TowerDamageOperation existing,
-            UUID eventId,
-            UUID teamId,
-            UUID attackerLogicalEnemyId,
-            UUID towerId,
-            long damage,
-            String fingerprint) {
+    private fun requireMatchingTowerDamageOperation(existing: TowerDamageOperation, eventId: UUID, teamId: UUID, attackerLogicalEnemyId: UUID, towerId: UUID, damage: Long, fingerprint: String): Unit {
         if (!existing.eventId().equals(eventId)
                 || !existing.teamId().equals(teamId)
                 || !existing.attackerLogicalEnemyId().equals(attackerLogicalEnemyId)
                 || !existing.towerId().equals(towerId)
                 || existing.damage() != damage
                 || !existing.payloadFingerprint().equals(fingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The tower-damage operation UUID is already assigned to another payload");
         }
     }
 
-    private static TowerDamageMutationResult damageResult(
-            TowerDamageOperation operation,
-            OperationOutcome outcome) {
-        return new TowerDamageMutationResult(
+    private fun damageResult(operation: TowerDamageOperation, outcome: OperationOutcome): TowerDamageMutationResult {
+        return TowerDamageMutationResult(
                 outcome,
                 operation.eventId(),
                 operation.teamId(),
@@ -3988,23 +3711,13 @@ public final class DefenseRepository {
                 operation.destroyed());
     }
 
-    private static void insertTowerRepairOperation(
-            Connection connection,
-            UUID operationId,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            long repairedHitPoints,
-            long cost,
-            String fingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTowerRepairOperation(connection: Connection, operationId: UUID, eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, repairedHitPoints: Long, cost: Long, fingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_tower_repair_operations(
                     operation_id, event_id, team_id, actor_id, tower_id,
                     repaired_hit_points, cost, payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, eventId.toString());
             statement.setString(3, teamId.toString());
@@ -4015,23 +3728,22 @@ public final class DefenseRepository {
             statement.setString(8, fingerprint);
             statement.setString(9, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<TowerRepairOperation> loadTowerRepairOperation(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTowerRepairOperation(connection: Connection, operationId: UUID): Optional<TowerRepairOperation> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, actor_id, tower_id,
                        repaired_hit_points, cost, payload_fingerprint
                 FROM event_tower_repair_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new TowerRepairOperation(
+                return Optional.of(TowerRepairOperation(
                         uuid(resultSet.getString("event_id")),
                         uuid(resultSet.getString("team_id")),
                         uuid(resultSet.getString("actor_id")),
@@ -4039,19 +3751,13 @@ public final class DefenseRepository {
                         resultSet.getLong("repaired_hit_points"),
                         resultSet.getLong("cost"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingTowerRepairOperation(
-            TowerRepairOperation existing,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            long repairedHitPoints,
-            long cost,
-            String fingerprint) {
+    private fun requireMatchingTowerRepairOperation(existing: TowerRepairOperation, eventId: UUID, teamId: UUID, actorId: UUID, towerId: UUID, repairedHitPoints: Long, cost: Long, fingerprint: String): Unit {
         if (!existing.eventId().equals(eventId)
                 || !existing.teamId().equals(teamId)
                 || !existing.actorId().equals(actorId)
@@ -4059,132 +3765,112 @@ public final class DefenseRepository {
                 || existing.repairedHitPoints() != repairedHitPoints
                 || existing.cost() != cost
                 || !existing.payloadFingerprint().equals(fingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The tower-repair operation UUID is already assigned to another payload");
         }
     }
 
-    private static void requireTowerBelongsToTeam(
-            Connection connection,
-            UUID towerId,
-            UUID teamId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun requireTowerBelongsToTeam(connection: Connection, towerId: UUID, teamId: UUID): Unit {
+        connection.prepareStatement("""
                 SELECT team_id FROM towers WHERE tower_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, towerId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()
                         || !teamId.toString().equals(resultSet.getString("team_id"))) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "The tower is missing or belongs to another team");
                 }
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void insertBattleFundsOperation(
-            Connection connection,
-            UUID operationId,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            String operationKind,
-            long amount,
-            String fingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertBattleFundsOperation(connection: Connection, operationId: UUID, eventId: UUID, teamId: UUID, actorId: UUID?, operationKind: String, amount: Long, fingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_battle_fund_operations(
                     operation_id, event_id, team_id, actor_id, operation_kind,
                     amount, payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, eventId.toString());
             statement.setString(3, teamId.toString());
-            statement.setString(4, actorId == null ? null : actorId.toString());
+            statement.setString(4, if (actorId == null) null else actorId.toString());
             statement.setString(5, operationKind);
             statement.setLong(6, amount);
             statement.setString(7, fingerprint);
             statement.setString(8, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<BattleFundsOperation> loadBattleFundsOperation(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadBattleFundsOperation(connection: Connection, operationId: UUID): Optional<BattleFundsOperation> {
+        connection.prepareStatement("""
                 SELECT event_id, team_id, actor_id, operation_kind, amount, payload_fingerprint
                 FROM event_battle_fund_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                String actor = resultSet.getString("actor_id");
-                return Optional.of(new BattleFundsOperation(
+                var actor = resultSet.getString("actor_id");
+                return Optional.of(BattleFundsOperation(
                         uuid(resultSet.getString("event_id")),
                         uuid(resultSet.getString("team_id")),
-                        actor == null ? null : uuid(actor),
+                        if (actor == null) null else uuid(actor),
                         resultSet.getString("operation_kind"),
                         resultSet.getLong("amount"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingBattleFundsOperation(
-            BattleFundsOperation existing,
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            String operationKind,
-            long amount,
-            String fingerprint) {
+    private fun requireMatchingBattleFundsOperation(existing: BattleFundsOperation, eventId: UUID, teamId: UUID, actorId: UUID?, operationKind: String, amount: Long, fingerprint: String): Unit {
         if (!existing.eventId().equals(eventId)
                 || !existing.teamId().equals(teamId)
                 || !Objects.equals(existing.actorId(), actorId)
                 || !existing.operationKind().equals(operationKind)
                 || existing.amount() != amount
                 || !existing.payloadFingerprint().equals(fingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The battle-funds operation UUID is already assigned to another payload");
         }
     }
 
-    private void issueVictoryResearchCrystals(
-            Connection connection,
-            DefenseSessionSnapshot terminalSnapshot,
-            UUID terminalOperationId,
-            Instant issuedAt) throws SQLException {
-        TeamProgress beforeVictory = loadTeamProgress(connection, terminalSnapshot.teamId())
-                .orElseThrow(() -> new PersistenceConflictException(
-                        "Team " + terminalSnapshot.teamId() + " has no progression row"));
-        int quantity = rewardSettings.researchCrystalQuantity(
+    private fun issueVictoryResearchCrystals(connection: Connection, terminalSnapshot: DefenseSessionSnapshot, terminalOperationId: UUID, issuedAt: Instant): Unit {
+        var beforeVictory = loadTeamProgress(connection, terminalSnapshot.teamId())
+                .orElseThrow { PersistenceConflictException(
+                        "Team " + terminalSnapshot.teamId() + " has no progression row") };
+        var quantity = rewardSettings.researchCrystalQuantity(
                 terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel());
         if (quantity <= 0) {
             return;
         }
-        UUID batchId = deterministicUuid(
+        var batchId = deterministicUuid(
                 terminalOperationId,
                 "RESEARCH_CRYSTAL_BATCH",
                 terminalSnapshot.eventId().toString());
-        UUID createOperationId = deterministicUuid(
+        var createOperationId = deterministicUuid(
                 terminalOperationId,
                 "RESEARCH_CRYSTAL_DROP",
                 batchId.toString());
-        String payload = researchCrystalPayload(
+        var payload = researchCrystalPayload(
                 batchId,
                 terminalSnapshot.teamId(),
                 quantity);
-        try (PreparedStatement statement = connection.prepareStatement("""
+        connection.prepareStatement("""
                 INSERT INTO research_crystal_batches(
                     batch_id, event_id, team_id, stage_level, issued_quantity,
                     redeemed_quantity, state, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, 0, 'ISSUED', ?, ?)
                 ON CONFLICT(batch_id) DO NOTHING
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, batchId.toString());
             statement.setString(2, terminalSnapshot.eventId().toString());
             statement.setString(3, terminalSnapshot.teamId().toString());
@@ -4193,26 +3879,27 @@ public final class DefenseRepository {
             statement.setString(6, issuedAt.toString());
             statement.setString(7, issuedAt.toString());
             statement.executeUpdate();
-        }
-        ResearchCrystalBatch existing = loadResearchCrystalBatch(connection, batchId)
-                .orElseThrow(() -> new SQLException(
-                        "The research crystal batch was not persisted"));
+        
+}
+        var existing = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow { SQLException(
+                        "The research crystal batch was not persisted") };
         if (!existing.eventId().equals(terminalSnapshot.eventId())
                 || !existing.teamId().equals(terminalSnapshot.teamId())
                 || existing.stageLevel() != terminalSnapshot.stageLevel()
                 || existing.issuedQuantity() != quantity) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The research crystal batch UUID is already assigned to another payload");
         }
         ensureResearchCrystalSegments(connection, batchId, quantity);
-        try (PreparedStatement statement = connection.prepareStatement("""
+        connection.prepareStatement("""
                 INSERT INTO event_drop_escrow(
                     drop_id, event_id, source_kind, source_id, item_id, item_payload,
                     quantity, claimed_quantity, status, display_entity_id,
                     create_operation_id, created_at, updated_at
                 ) VALUES (?, ?, 'ENEMY', ?, 'research_crystal', ?, ?, 0, 'HELD', NULL, ?, ?, ?)
                 ON CONFLICT(drop_id) DO NOTHING
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, batchId.toString());
             statement.setString(2, terminalSnapshot.eventId().toString());
             statement.setString(3, terminalSnapshot.eventId().toString());
@@ -4222,51 +3909,42 @@ public final class DefenseRepository {
             statement.setString(7, issuedAt.toString());
             statement.setString(8, issuedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void advanceTeamProgressAfterVictory(
-            Connection connection,
-            UUID teamId,
-            long stageLevel,
-            Instant updatedAt) throws SQLException {
-        TeamProgress current = loadTeamProgress(connection, teamId).orElseThrow(
-                () -> new PersistenceConflictException(
-                        "Team " + teamId + " has no progression row"));
-        TeamProgress advanced = current.afterVictory(stageLevel);
+    private fun advanceTeamProgressAfterVictory(connection: Connection, teamId: UUID, stageLevel: Long, updatedAt: Instant): Unit {
+        var current = loadTeamProgress(connection, teamId).orElseThrow { PersistenceConflictException(
+                        "Team " + teamId + " has no progression row") };
+        var advanced = current.afterVictory(stageLevel);
         if (advanced.equals(current)) {
             return;
         }
-        try (PreparedStatement statement = connection.prepareStatement("""
+        connection.prepareStatement("""
                 UPDATE team_progress
                 SET highest_cleared_level = ?, unlocked_level = ?, updated_at = ?
                 WHERE team_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setLong(1, advanced.highestClearedLevel());
             statement.setLong(2, advanced.unlockedLevel());
             statement.setString(3, updatedAt.toString());
             statement.setString(4, teamId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The victory progression update affected no rows");
+                throw SQLException("The victory progression update affected no rows");
             }
-        }
+        
+}
     }
 
-    private TeamInvitationMutationResult resolveTeamInvitation(
-            UUID invitationId,
-            UUID inviteeId,
-            UUID operationId,
-            Instant resolvedAt,
-            String operationKind,
-            boolean accept) {
+    private fun resolveTeamInvitation(invitationId: UUID, inviteeId: UUID, operationId: UUID, resolvedAt: Instant, operationKind: String, accept: Boolean): TeamInvitationMutationResult {
         Objects.requireNonNull(invitationId, "invitationId");
         Objects.requireNonNull(inviteeId, "inviteeId");
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(resolvedAt, "resolvedAt");
-        String fingerprint = managementFingerprint(operationKind, invitationId, inviteeId);
+        var fingerprint = managementFingerprint(operationKind, invitationId, inviteeId);
         try {
-            return database.inImmediateTransaction(connection -> {
-                Optional<TeamInviteOperation> existing = loadTeamInviteOperation(
+            return database.inImmediateTransaction({ connection ->
+                var existing = loadTeamInviteOperation(
                         connection, operationId);
                 if (existing.isPresent()) {
                     requireMatchingTeamInviteOperation(
@@ -4274,57 +3952,56 @@ public final class DefenseRepository {
                             operationKind,
                             inviteeId,
                             fingerprint);
-                    TeamInvitation invitation = requireTeamInvitation(
+                    var invitation = requireTeamInvitation(
                             connection, existing.orElseThrow().inviteId());
-                    return invitationMutation(
+                    return@inImmediateTransaction invitationMutation(
                             ManagementOutcome.ALREADY_APPLIED,
                             connection,
                             invitation);
                 }
-                requireNoActiveEvent(connection, accept
-                        ? "accept a team invitation"
-                        : "decline a team invitation");
-                TeamInvitation invitation = requireTeamInvitation(connection, invitationId);
+                requireNoActiveEvent(connection, if (accept) "accept a team invitation" else "decline a team invitation")
+                var invitation = requireTeamInvitation(connection, invitationId);
                 if (!invitation.inviteeId().equals(inviteeId)) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "This invitation is addressed to another player");
                 }
                 if (invitation.state() != TeamInvitationState.PENDING) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "This invitation is no longer pending");
                 }
                 if (!resolvedAt.isBefore(invitation.expiresAt())) {
                     expireInvitation(connection, invitationId, resolvedAt);
-                    return invitationMutation(
+                    return@inImmediateTransaction invitationMutation(
                             ManagementOutcome.APPLIED,
                             connection,
                             requireTeamInvitation(connection, invitationId));
                 }
                 if (accept) {
-                    TeamRecord team = requireTeam(connection, invitation.teamId());
+                    var team = requireTeam(connection, invitation.teamId());
                     if (findTeamByMember(connection, inviteeId).isPresent()) {
-                        throw new PersistenceConflictException(
+                        throw PersistenceConflictException(
                                 "The invited player already belongs to a team");
                     }
-                    if (team.members().size() >= MAX_TEAM_MEMBERS) {
-                        throw new PersistenceConflictException(
+                    if (team.members().size >= MAX_TEAM_MEMBERS) {
+                        throw PersistenceConflictException(
                                 "The team has reached the maximum of " + MAX_TEAM_MEMBERS
                                         + " members");
                     }
-                    try (PreparedStatement statement = connection.prepareStatement("""
+                    connection.prepareStatement("""
                             INSERT INTO team_members(team_id, player_id, role, joined_at)
                             VALUES (?, ?, 'MEMBER', ?)
-                            """)) {
+                            """.trimIndent()).use { statement ->
                         statement.setString(1, team.id().toString());
                         statement.setString(2, inviteeId.toString());
                         statement.setString(3, resolvedAt.toString());
                         statement.executeUpdate();
-                    }
+                    
+}
                 }
                 updateInvitationState(
                         connection,
                         invitationId,
-                        accept ? TeamInvitationState.ACCEPTED : TeamInvitationState.DECLINED,
+                        if (accept) TeamInvitationState.ACCEPTED else TeamInvitationState.DECLINED,
                         resolvedAt);
                 insertTeamInviteOperation(
                         connection,
@@ -4334,125 +4011,115 @@ public final class DefenseRepository {
                         operationKind,
                         fingerprint,
                         resolvedAt);
-                TeamInvitation updated = requireTeamInvitation(connection, invitationId);
-                return invitationMutation(ManagementOutcome.APPLIED, connection, updated);
+                var updated = requireTeamInvitation(connection, invitationId);
+                return@inImmediateTransaction invitationMutation(ManagementOutcome.APPLIED, connection, updated);
             });
-        } catch (SQLException exception) {
+        } catch (exception: SQLException) {
             if (isConstraintViolation(exception)) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The invitation cannot change team membership", exception);
             }
             throw failure(
-                    accept ? "accept a team invitation" : "decline a team invitation",
+                    if (accept) "accept a team invitation" else "decline a team invitation",
                     exception);
         }
     }
 
-    private static TeamInvitationMutationResult invitationMutation(
-            ManagementOutcome outcome,
-            Connection connection,
-            TeamInvitation invitation) throws SQLException {
-        return new TeamInvitationMutationResult(
+    private fun invitationMutation(outcome: ManagementOutcome, connection: Connection, invitation: TeamInvitation): TeamInvitationMutationResult {
+        return TeamInvitationMutationResult(
                 outcome,
                 invitation,
                 loadTeam(connection, invitation.teamId()));
     }
 
-    private static void insertTeamInvitation(
-            Connection connection,
-            TeamInvitation invitation,
-            String payloadFingerprint) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTeamInvitation(connection: Connection, invitation: TeamInvitation, payloadFingerprint: String): Unit {
+        connection.prepareStatement("""
                 INSERT INTO team_invites(
                     invite_id, team_id, inviter_id, invitee_id, state,
                     created_at, expires_at, resolved_at, create_payload_fingerprint
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, invitation.id().toString());
             statement.setString(2, invitation.teamId().toString());
             statement.setString(3, invitation.inviterId().toString());
             statement.setString(4, invitation.inviteeId().toString());
-            statement.setString(5, invitation.state().name());
+            statement.setString(5, invitation.state().name);
             statement.setString(6, invitation.createdAt().toString());
             statement.setString(7, invitation.expiresAt().toString());
             statement.setString(8, nullableInstantString(invitation.resolvedAt()));
             statement.setString(9, payloadFingerprint);
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void updateInvitationState(
-            Connection connection,
-            UUID invitationId,
-            TeamInvitationState state,
-            Instant resolvedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateInvitationState(connection: Connection, invitationId: UUID, state: TeamInvitationState, resolvedAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE team_invites
                 SET state = ?, resolved_at = ?
                 WHERE invite_id = ? AND state = 'PENDING'
-                """)) {
-            statement.setString(1, state.name());
+                """.trimIndent()).use { statement ->
+            statement.setString(1, state.name);
             statement.setString(2, resolvedAt.toString());
             statement.setString(3, invitationId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The invitation state update affected no rows");
+                throw SQLException("The invitation state update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void expireInvitation(
-            Connection connection, UUID invitationId, Instant resolvedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun expireInvitation(connection: Connection, invitationId: UUID, resolvedAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE team_invites
                 SET state = 'EXPIRED', resolved_at = ?
                 WHERE invite_id = ? AND state = 'PENDING'
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, resolvedAt.toString());
             statement.setString(2, invitationId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static boolean hasPendingInvitation(
-            Connection connection, UUID teamId, UUID inviteeId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun hasPendingInvitation(connection: Connection, teamId: UUID, inviteeId: UUID): Boolean {
+        connection.prepareStatement("""
                 SELECT 1 FROM team_invites
                 WHERE team_id = ? AND invitee_id = ? AND state = 'PENDING'
                 LIMIT 1
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
             statement.setString(2, inviteeId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 return resultSet.next();
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static Optional<TeamInvitation> loadTeamInvitation(
-            Connection connection, UUID invitationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTeamInvitation(connection: Connection, invitationId: UUID): Optional<TeamInvitation> {
+        connection.prepareStatement("""
                 SELECT invite_id, team_id, inviter_id, invitee_id, state,
                        created_at, expires_at, resolved_at
                 FROM team_invites WHERE invite_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, invitationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(teamInvitationFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(teamInvitationFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static TeamInvitation requireTeamInvitation(
-            Connection connection, UUID invitationId) throws SQLException {
-        return loadTeamInvitation(connection, invitationId).orElseThrow(
-                () -> new PersistenceConflictException(
-                        "Team invitation " + invitationId + " does not exist"));
+    private fun requireTeamInvitation(connection: Connection, invitationId: UUID): TeamInvitation {
+        return loadTeamInvitation(connection, invitationId).orElseThrow { PersistenceConflictException(
+                        "Team invitation " + invitationId + " does not exist") };
     }
 
-    private static TeamInvitation teamInvitationFromRow(ResultSet resultSet) throws SQLException {
-        return new TeamInvitation(
+    private fun teamInvitationFromRow(resultSet: ResultSet): TeamInvitation {
+        return TeamInvitation(
                 uuid(resultSet.getString("invite_id")),
                 uuid(resultSet.getString("team_id")),
                 uuid(resultSet.getString("inviter_id")),
@@ -4463,20 +4130,13 @@ public final class DefenseRepository {
                 nullableInstant(resultSet.getString("resolved_at")));
     }
 
-    private static void insertTeamInviteOperation(
-            Connection connection,
-            UUID operationId,
-            UUID invitationId,
-            UUID actorId,
-            String operationKind,
-            String payloadFingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTeamInviteOperation(connection: Connection, operationId: UUID, invitationId: UUID, actorId: UUID, operationKind: String, payloadFingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO team_invite_operations(
                     operation_id, invite_id, actor_id, operation_kind,
                     payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, invitationId.toString());
             statement.setString(3, actorId.toString());
@@ -4484,74 +4144,74 @@ public final class DefenseRepository {
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<TeamInviteOperation> loadTeamInviteOperation(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTeamInviteOperation(connection: Connection, operationId: UUID): Optional<TeamInviteOperation> {
+        connection.prepareStatement("""
                 SELECT invite_id, actor_id, operation_kind, payload_fingerprint
                 FROM team_invite_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new TeamInviteOperation(
+                return Optional.of(TeamInviteOperation(
                         uuid(resultSet.getString("invite_id")),
                         uuid(resultSet.getString("actor_id")),
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingTeamInviteOperation(
-            TeamInviteOperation operation,
-            String operationKind,
-            UUID actorId,
-            String payloadFingerprint) {
+    private fun requireMatchingTeamInviteOperation(operation: TeamInviteOperation, operationKind: String, actorId: UUID, payloadFingerprint: String): Unit {
         if (!operation.actorId().equals(actorId)
                 || !operation.operationKind().equals(operationKind)
                 || !operation.payloadFingerprint().equals(payloadFingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The invitation operation UUID is already assigned to a different payload");
         }
     }
 
-    private static Optional<TeamRecord> findTeamByMember(
-            Connection connection, UUID playerId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun findTeamByMember(connection: Connection, playerId: UUID): Optional<TeamRecord> {
+        connection.prepareStatement("""
                 SELECT team_id FROM team_members WHERE player_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, playerId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
                 return loadTeam(connection, uuid(resultSet.getString("team_id")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static TeamRecord teamFromRow(Connection connection, ResultSet resultSet)
-            throws SQLException {
-        UUID teamId = uuid(resultSet.getString("team_id"));
-        UUID ownerId = uuid(resultSet.getString("owner_player_id"));
-        Instant createdAt = instant(resultSet.getString("created_at"));
-        Set<UUID> members = new LinkedHashSet<>();
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun teamFromRow(connection: Connection, resultSet: ResultSet): TeamRecord {
+        var teamId = uuid(resultSet.getString("team_id"));
+        var ownerId = uuid(resultSet.getString("owner_player_id"));
+        var createdAt = instant(resultSet.getString("created_at"));
+        var members = LinkedHashSet<UUID>();
+        connection.prepareStatement("""
                 SELECT player_id FROM team_members WHERE team_id = ? ORDER BY player_id
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet membersResult = statement.executeQuery()) {
+            statement.executeQuery().use { membersResult ->
                 while (membersResult.next()) {
                     members.add(uuid(membersResult.getString("player_id")));
                 }
-            }
-        }
-        return new TeamRecord(
+            
+}
+        
+}
+        return TeamRecord(
                 teamId,
                 ownerId,
                 members,
@@ -4559,89 +4219,82 @@ public final class DefenseRepository {
                 createdAt);
     }
 
-    private static Optional<TeamRecord> loadTeam(Connection connection, UUID teamId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTeam(connection: Connection, teamId: UUID): Optional<TeamRecord> {
+        connection.prepareStatement("""
                 SELECT team_id, owner_player_id, display_name, created_at
                 FROM teams WHERE team_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
                 return Optional.of(teamFromRow(connection, resultSet));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static Optional<TeamProgress> loadTeamProgress(
-            Connection connection, UUID teamId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTeamProgress(connection: Connection, teamId: UUID): Optional<TeamProgress> {
+        connection.prepareStatement("""
                 SELECT team_id, highest_cleared_level, unlocked_level, research_points
                 FROM team_progress WHERE team_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(new TeamProgress(
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(TeamProgress(
                                 uuid(resultSet.getString("team_id")),
                                 resultSet.getLong("highest_cleared_level"),
                                 resultSet.getLong("unlocked_level"),
-                                resultSet.getLong("research_points")))
-                        : Optional.empty();
-            }
-        }
+                                resultSet.getLong("research_points"))) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static Optional<ResearchCrystalBatch> loadResearchCrystalBatch(
-            Connection connection, UUID batchId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadResearchCrystalBatch(connection: Connection, batchId: UUID): Optional<ResearchCrystalBatch> {
+        connection.prepareStatement("""
                 SELECT batch_id, event_id, team_id, stage_level, issued_quantity,
                        redeemed_quantity, state, created_at, updated_at
                 FROM research_crystal_batches WHERE batch_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, batchId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(researchCrystalBatchFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(researchCrystalBatchFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static Optional<ResearchCrystalSegment> loadResearchCrystalSegment(
-            Connection connection,
-            UUID batchId,
-            int segmentOffset) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadResearchCrystalSegment(connection: Connection, batchId: UUID, segmentOffset: Int): Optional<ResearchCrystalSegment> {
+        connection.prepareStatement("""
                 SELECT segment_quantity, redeemed_quantity
                 FROM research_crystal_segments
                 WHERE batch_id = ? AND segment_offset = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, batchId.toString());
             statement.setInt(2, segmentOffset);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(new ResearchCrystalSegment(
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(ResearchCrystalSegment(
                                 resultSet.getInt("segment_quantity"),
-                                resultSet.getInt("redeemed_quantity")))
-                        : Optional.empty();
-            }
-        }
+                                resultSet.getInt("redeemed_quantity"))) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static void ensureResearchCrystalSegments(
-            Connection connection,
-            UUID batchId,
-            int issuedQuantity) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun ensureResearchCrystalSegments(connection: Connection, batchId: UUID, issuedQuantity: Int): Unit {
+        connection.prepareStatement("""
                 INSERT INTO research_crystal_segments(
                     batch_id, segment_offset, segment_quantity)
                 VALUES (?, ?, ?)
                 ON CONFLICT(batch_id, segment_offset) DO NOTHING
-                """)) {
-            for (int offset = 0; offset < issuedQuantity; offset += RESEARCH_CRYSTAL_SEGMENT_SIZE) {
+                """.trimIndent()).use { statement ->
+            for (offset in 0 until issuedQuantity step RESEARCH_CRYSTAL_SEGMENT_SIZE) {
                 statement.setString(1, batchId.toString());
                 statement.setInt(2, offset);
                 statement.setInt(
@@ -4652,12 +4305,12 @@ public final class DefenseRepository {
                 statement.addBatch();
             }
             statement.executeBatch();
-        }
+        
+}
     }
 
-    private static ResearchCrystalBatch researchCrystalBatchFromRow(ResultSet resultSet)
-            throws SQLException {
-        return new ResearchCrystalBatch(
+    private fun researchCrystalBatchFromRow(resultSet: ResultSet): ResearchCrystalBatch {
+        return ResearchCrystalBatch(
                 uuid(resultSet.getString("batch_id")),
                 uuid(resultSet.getString("event_id")),
                 uuid(resultSet.getString("team_id")),
@@ -4669,26 +4322,24 @@ public final class DefenseRepository {
                 instant(resultSet.getString("updated_at")));
     }
 
-    private static Optional<ResearchCrystalRedemption> loadResearchCrystalRedemption(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadResearchCrystalRedemption(connection: Connection, operationId: UUID): Optional<ResearchCrystalRedemption> {
+        connection.prepareStatement("""
                 SELECT operation_id, batch_id, core_id, team_id, actor_id, quantity,
                        payload_fingerprint, segment_offset, segment_quantity, state,
                        prepared_at, applied_at, rolled_back_at
                 FROM research_crystal_redemptions WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(researchCrystalRedemptionFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(researchCrystalRedemptionFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static ResearchCrystalRedemption researchCrystalRedemptionFromRow(
-            ResultSet resultSet) throws SQLException {
-        return new ResearchCrystalRedemption(
+    private fun researchCrystalRedemptionFromRow(resultSet: ResultSet): ResearchCrystalRedemption {
+        return ResearchCrystalRedemption(
                 uuid(resultSet.getString("operation_id")),
                 uuid(resultSet.getString("batch_id")),
                 uuid(resultSet.getString("core_id")),
@@ -4704,16 +4355,14 @@ public final class DefenseRepository {
                 nullableInstant(resultSet.getString("rolled_back_at")));
     }
 
-    private static void insertResearchCrystalRedemption(
-            Connection connection,
-            ResearchCrystalRedemption redemption) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertResearchCrystalRedemption(connection: Connection, redemption: ResearchCrystalRedemption): Unit {
+        connection.prepareStatement("""
                 INSERT INTO research_crystal_redemptions(
                     operation_id, batch_id, core_id, team_id, actor_id, quantity,
                     payload_fingerprint, segment_offset, segment_quantity,
                     state, prepared_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, redemption.operationId().toString());
             statement.setString(2, redemption.batchId().toString());
             statement.setString(3, redemption.coreId().toString());
@@ -4730,154 +4379,140 @@ public final class DefenseRepository {
             }
             statement.setString(10, redemption.preparedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static ResearchCrystalRedemptionResult crystalRedemptionResult(
-            Connection connection,
-            OperationOutcome outcome,
-            UUID batchId) throws SQLException {
-        ResearchCrystalBatch batch = loadResearchCrystalBatch(connection, batchId)
-                .orElseThrow(() -> new SQLException("The crystal batch disappeared"));
-        TeamProgress progress = loadTeamProgress(connection, batch.teamId())
-                .orElseThrow(() -> new SQLException("The crystal team progression disappeared"));
-        return new ResearchCrystalRedemptionResult(outcome, progress, batch);
+    private fun crystalRedemptionResult(connection: Connection, outcome: OperationOutcome, batchId: UUID): ResearchCrystalRedemptionResult {
+        var batch = loadResearchCrystalBatch(connection, batchId)
+                .orElseThrow { SQLException("The crystal batch disappeared") };
+        var progress = loadTeamProgress(connection, batch.teamId())
+                .orElseThrow { SQLException("The crystal team progression disappeared") };
+        return ResearchCrystalRedemptionResult(outcome, progress, batch);
     }
 
-    private static void requireMatchingCrystalRedemption(
-            ResearchCrystalRedemption redemption,
-            UUID operationId,
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            int quantity,
-            String fingerprint) {
+    private fun requireMatchingCrystalRedemption(redemption: ResearchCrystalRedemption, operationId: UUID, batchId: UUID, coreId: UUID, actorId: UUID, quantity: Int, fingerprint: String): Unit {
         if (!redemption.operationId().equals(operationId)
                 || !redemption.batchId().equals(batchId)
                 || !redemption.coreId().equals(coreId)
                 || !redemption.actorId().equals(actorId)
                 || redemption.quantity() != quantity
                 || !redemption.payloadFingerprint().equals(fingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The research crystal redemption UUID is already assigned to another payload");
         }
     }
 
-    private static TeamRecord requireTeam(Connection connection, UUID teamId)
-            throws SQLException {
-        return loadTeam(connection, teamId).orElseThrow(
-                () -> new PersistenceConflictException("Team " + teamId + " does not exist"));
+    private fun requireTeam(connection: Connection, teamId: UUID): TeamRecord {
+        return loadTeam(connection, teamId).orElseThrow { PersistenceConflictException("Team " + teamId + " does not exist") };
     }
 
-    private static CoreRecord requireCore(Connection connection, UUID coreId)
-            throws SQLException {
-        return loadCore(connection, coreId).orElseThrow(
-                () -> new PersistenceConflictException("Core " + coreId + " does not exist"));
+    private fun requireCore(connection: Connection, coreId: UUID): CoreRecord {
+        return loadCore(connection, coreId).orElseThrow { PersistenceConflictException("Core " + coreId + " does not exist") };
     }
 
-    private static void requireTeamOwner(TeamRecord team, UUID actorId) {
+    private fun requireTeamOwner(team: TeamRecord, actorId: UUID): Unit {
         if (!team.ownerId().equals(actorId)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Only the team owner may perform this operation");
         }
     }
 
-    private static void requireTeamMember(
-            Connection connection, UUID teamId, UUID playerId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun requireTeamMember(connection: Connection, teamId: UUID, playerId: UUID): Unit {
+        connection.prepareStatement("""
                 SELECT 1 FROM team_members WHERE team_id = ? AND player_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
             statement.setString(2, playerId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "Player " + playerId + " is not a member of team " + teamId);
                 }
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireNoActiveEvent(Connection connection, String operation)
-            throws SQLException {
+    private fun requireNoActiveEvent(connection: Connection, operation: String): Unit {
         if (loadActiveEventId(connection).isPresent()) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Cannot " + operation + " while a defense event owns the global lock");
         }
     }
 
-    private static void requireTeamCanBeDeleted(Connection connection, UUID teamId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun requireTeamCanBeDeleted(connection: Connection, teamId: UUID): Unit {
+        connection.prepareStatement("""
                 SELECT 1 FROM team_resource_balances
                 WHERE team_id = ? AND balance > 0 LIMIT 1
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (resultSet.next()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A team with resource wallet points cannot be disbanded");
                 }
-            }
-        }
+            
+}
+        
+}
         if (ResourceVoucherRepository.hasLiveVouchers(connection, teamId)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "A team with an unredeemed resource voucher cannot be disbanded");
         }
         if (loadCoreByTeam(connection, teamId).isPresent()) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "A team with a core cannot be disbanded or left by its sole owner");
         }
-        try (PreparedStatement statement = connection.prepareStatement("""
+        connection.prepareStatement("""
                 SELECT 1 FROM defense_events WHERE team_id = ? LIMIT 1
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (resultSet.next()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A team with defense history cannot be deleted");
                 }
-            }
-        }
-        try (PreparedStatement statement = connection.prepareStatement("""
+            
+}
+        
+}
+        connection.prepareStatement("""
                 SELECT 1 FROM team_resource_balances
                 WHERE team_id = ? AND balance > 0
                 LIMIT 1
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (resultSet.next()) {
-                    throw new PersistenceConflictException(
+                    throw PersistenceConflictException(
                             "A team with a non-zero resource wallet cannot be deleted");
                 }
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void deleteTeam(Connection connection, UUID teamId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM teams WHERE team_id = ?")) {
+    private fun deleteTeam(connection: Connection, teamId: UUID): Unit {
+        connection.prepareStatement(
+                "DELETE FROM teams WHERE team_id = ?").use { statement ->
             statement.setString(1, teamId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The team delete affected no rows");
+                throw SQLException("The team delete affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void insertTeamProfileOperation(
-            Connection connection,
-            UUID operationId,
-            UUID teamId,
-            UUID actorId,
-            String operationKind,
-            String payloadFingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTeamProfileOperation(connection: Connection, operationId: UUID, teamId: UUID, actorId: UUID, operationKind: String, payloadFingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO team_profile_operations(
                     operation_id, team_id, actor_id, operation_kind,
                     payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, teamId.toString());
             statement.setString(3, actorId.toString());
@@ -4885,54 +4520,50 @@ public final class DefenseRepository {
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<TeamProfileOperation> loadTeamProfileOperation(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadTeamProfileOperation(connection: Connection, operationId: UUID): Optional<TeamProfileOperation> {
+        connection.prepareStatement("""
                 SELECT team_id, actor_id, operation_kind, payload_fingerprint
                 FROM team_profile_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new TeamProfileOperation(
+                return Optional.of(TeamProfileOperation(
                         uuid(resultSet.getString("team_id")),
                         uuid(resultSet.getString("actor_id")),
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingTeamProfileOperation(
-            TeamProfileOperation operation,
-            UUID teamId,
-            UUID actorId,
-            String payloadFingerprint) {
+    private fun requireMatchingTeamProfileOperation(operation: TeamProfileOperation, teamId: UUID, actorId: UUID, payloadFingerprint: String): Unit {
         if (!operation.teamId().equals(teamId)
                 || !operation.actorId().equals(actorId)
                 || !operation.operationKind().equals("TEAM_RENAME")
                 || !operation.payloadFingerprint().equals(payloadFingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The team profile operation UUID is already assigned to a different payload");
         }
     }
 
-    private static void insertCoreRepairOperation(
-            Connection connection,
-            CoreRepairOperation operation) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertCoreRepairOperation(connection: Connection, operation: CoreRepairOperation): Unit {
+        connection.prepareStatement("""
                 INSERT INTO core_repair_operations(
                     operation_id, core_id, team_id, actor_id, expected_current_hp,
                     repair_amount, defense_point_cost, payment_mode, vanilla_material,
                     vanilla_material_amount, legacy_defense_shard_amount,
                     payload_fingerprint, state, prepared_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operation.operationId().toString());
             statement.setString(2, operation.coreId().toString());
             statement.setString(3, operation.teamId().toString());
@@ -4940,39 +4571,37 @@ public final class DefenseRepository {
             statement.setLong(5, operation.expectedCurrentHitPoints());
             statement.setLong(6, operation.repairAmount());
             statement.setLong(7, operation.defensePointCost());
-            statement.setString(8, operation.paymentMode().name());
+            statement.setString(8, operation.paymentMode().name);
             statement.setString(9, operation.vanillaMaterial());
             statement.setLong(10, operation.vanillaMaterialAmount());
             statement.setLong(11, operation.legacyDefenseShardAmount());
             statement.setString(12, operation.payloadFingerprint());
             statement.setString(13, operation.preparedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<CoreRepairOperation> loadCoreRepairOperation(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadCoreRepairOperation(connection: Connection, operationId: UUID): Optional<CoreRepairOperation> {
+        connection.prepareStatement("""
                 SELECT operation_id, core_id, team_id, actor_id, expected_current_hp,
                        repair_amount, defense_point_cost, payment_mode, vanilla_material,
                        vanilla_material_amount, legacy_defense_shard_amount,
                        payload_fingerprint, state, prepared_at,
                        applied_at, rolled_back_at
                 FROM core_repair_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(coreRepairOperationFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(coreRepairOperationFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static CoreRepairOperation coreRepairOperationFromRow(ResultSet resultSet)
-            throws SQLException {
-        return new CoreRepairOperation(
+    private fun coreRepairOperationFromRow(resultSet: ResultSet): CoreRepairOperation {
+        return CoreRepairOperation(
                 uuid(resultSet.getString("operation_id")),
                 uuid(resultSet.getString("core_id")),
                 uuid(resultSet.getString("team_id")),
@@ -4991,17 +4620,7 @@ public final class DefenseRepository {
                 nullableInstant(resultSet.getString("rolled_back_at")));
     }
 
-    private static void requireMatchingCoreRepairOperation(
-            CoreRepairOperation existing,
-            UUID coreId,
-            UUID actorId,
-            long amount,
-            long defensePointCost,
-            PaymentMode paymentMode,
-            String vanillaMaterial,
-            long vanillaMaterialAmount,
-            long legacyDefenseShardAmount,
-            String payloadFingerprint) {
+    private fun requireMatchingCoreRepairOperation(existing: CoreRepairOperation, coreId: UUID, actorId: UUID, amount: Long, defensePointCost: Long, paymentMode: PaymentMode, vanillaMaterial: String, vanillaMaterialAmount: Long, legacyDefenseShardAmount: Long, payloadFingerprint: String): Unit {
         if (!existing.coreId().equals(coreId)
                 || !existing.actorId().equals(actorId)
                 || existing.repairAmount() != amount
@@ -5011,82 +4630,73 @@ public final class DefenseRepository {
                 || existing.vanillaMaterialAmount() != vanillaMaterialAmount
                 || existing.legacyDefenseShardAmount() != legacyDefenseShardAmount
                 || !existing.payloadFingerprint().equals(payloadFingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The core repair operation UUID is already assigned to another payload");
         }
     }
 
-    private static String expectedReceiptMaterial(CoreRepairOperation operation) {
-        return operation.paymentMode() == PaymentMode.LEGACY_ITEMS
-                && operation.legacyDefenseShardAmount() > 0L
-                ? "CORE_REPAIR_BUNDLE"
-                : operation.vanillaMaterial();
+    private fun expectedReceiptMaterial(operation: CoreRepairOperation): String {
+        return if (operation.paymentMode() == PaymentMode.LEGACY_ITEMS && operation.legacyDefenseShardAmount() > 0L) "CORE_REPAIR_BUNDLE" else operation.vanillaMaterial();
     }
 
-    private static long expectedReceiptQuantity(CoreRepairOperation operation) {
+    private fun expectedReceiptQuantity(operation: CoreRepairOperation): Long {
         return Math.addExact(operation.vanillaMaterialAmount(), operation.legacyDefenseShardAmount());
     }
 
-    private static void updateCoreRepairOperationState(
-            Connection connection,
-            UUID operationId,
-            CoreRepairOperationState state,
-            Instant at) throws SQLException {
-        String sql = switch (state) {
-            case APPLIED -> """
+    private fun updateCoreRepairOperationState(connection: Connection, operationId: UUID, state: CoreRepairOperationState, at: Instant): Unit {
+        var sql = when (state) {
+            CoreRepairOperationState.APPLIED -> """
                     UPDATE core_repair_operations
                     SET state = 'APPLIED', applied_at = ?
                     WHERE operation_id = ? AND state = 'PREPARED'
-                    """;
-            case ROLLED_BACK -> """
+                    """.trimIndent()
+            CoreRepairOperationState.ROLLED_BACK -> """
                     UPDATE core_repair_operations
                     SET state = 'ROLLED_BACK', rolled_back_at = ?
                     WHERE operation_id = ? AND state = 'PREPARED'
-                    """;
-            case PREPARED -> throw new IllegalArgumentException(
-                    "A core repair cannot transition back to PREPARED");
-        };
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    """.trimIndent()
+            CoreRepairOperationState.PREPARED -> throw IllegalArgumentException(
+                "A core repair cannot transition back to PREPARED")
+        }
+        connection.prepareStatement(sql).use { statement ->
             statement.setString(1, at.toString());
             statement.setString(2, operationId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "The core repair state changed concurrently");
             }
-        }
+        
+}
     }
 
-    private static void insertCoreRepairReceipt(
-            Connection connection,
-            CoreRepairReceipt receipt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertCoreRepairReceipt(connection: Connection, receipt: CoreRepairReceipt): Unit {
+        connection.prepareStatement("""
                 INSERT INTO core_repair_receipts(
                     operation_id, player_id, material, quantity, state, reserved_at)
                 VALUES (?, ?, ?, ?, 'RESERVED', ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, receipt.operationId().toString());
             statement.setString(2, receipt.playerId().toString());
             statement.setString(3, receipt.material());
             statement.setLong(4, receipt.quantity());
             statement.setString(5, receipt.reservedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<CoreRepairReceipt> loadCoreRepairReceipt(
-            Connection connection,
-            UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadCoreRepairReceipt(connection: Connection, operationId: UUID): Optional<CoreRepairReceipt> {
+        connection.prepareStatement("""
                 SELECT operation_id, player_id, material, quantity, state,
                        reserved_at, resolved_at
                 FROM core_repair_receipts WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new CoreRepairReceipt(
+                return Optional.of(CoreRepairReceipt(
                         uuid(resultSet.getString("operation_id")),
                         uuid(resultSet.getString("player_id")),
                         resultSet.getString("material"),
@@ -5094,16 +4704,14 @@ public final class DefenseRepository {
                         CoreRepairReceiptState.valueOf(resultSet.getString("state")),
                         instant(resultSet.getString("reserved_at")),
                         nullableInstant(resultSet.getString("resolved_at"))));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void updateCoreRepairReceiptState(
-            Connection connection,
-            UUID operationId,
-            CoreRepairReceiptState state,
-            Instant at) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateCoreRepairReceiptState(connection: Connection, operationId: UUID, state: CoreRepairReceiptState, at: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE core_repair_receipts
                 SET state = ?, resolved_at = ?
                 WHERE operation_id = ?
@@ -5111,26 +4719,20 @@ public final class DefenseRepository {
                        OR (? = 'RESTORED' AND state IN ('RESERVED', 'SECURED', 'RETURN_PENDING'))
                        OR (? = 'RETURN_PENDING' AND state IN ('RESERVED', 'SECURED'))
                        OR (? = 'CLEAR_PENDING' AND state = 'SECURED'))
-                """)) {
-            statement.setString(1, state.name());
+                """.trimIndent()).use { statement ->
+            statement.setString(1, state.name);
             statement.setString(2, at.toString());
             statement.setString(3, operationId.toString());
-            statement.setString(4, state.name());
-            statement.setString(5, state.name());
-            statement.setString(6, state.name());
-            statement.setString(7, state.name());
+            statement.setString(4, state.name);
+            statement.setString(5, state.name);
+            statement.setString(6, state.name);
+            statement.setString(7, state.name);
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void insertManagementOperation(
-            Connection connection,
-            UUID operationId,
-            String resourceType,
-            UUID resourceId,
-            String operationKind,
-            String payloadFingerprint,
-            Instant appliedAt) throws SQLException {
+    private fun insertManagementOperation(connection: Connection, operationId: UUID, resourceType: String, resourceId: UUID, operationKind: String, payloadFingerprint: String, appliedAt: Instant): Unit {
         insertManagementOperation(
                 connection,
                 operationId,
@@ -5142,59 +4744,48 @@ public final class DefenseRepository {
                 appliedAt);
     }
 
-    private static void insertManagementOperation(
-            Connection connection,
-            UUID operationId,
-            String resourceType,
-            UUID resourceId,
-            String operationKind,
-            String payloadFingerprint,
-            PaymentMode paymentMode,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertManagementOperation(connection: Connection, operationId: UUID, resourceType: String, resourceId: UUID, operationKind: String, payloadFingerprint: String, paymentMode: PaymentMode, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO management_operations(
                     operation_id, resource_type, resource_id, operation_kind,
                     payload_fingerprint, payment_mode, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, resourceType);
             statement.setString(3, resourceId.toString());
             statement.setString(4, operationKind);
             statement.setString(5, payloadFingerprint);
-            statement.setString(6, paymentMode.name());
+            statement.setString(6, paymentMode.name);
             statement.setString(7, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<ManagementOperation> loadManagementOperation(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadManagementOperation(connection: Connection, operationId: UUID): Optional<ManagementOperation> {
+        connection.prepareStatement("""
                 SELECT resource_type, resource_id, operation_kind, payload_fingerprint, payment_mode
                 FROM management_operations WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new ManagementOperation(
+                return Optional.of(ManagementOperation(
                         resultSet.getString("resource_type"),
                         uuid(resultSet.getString("resource_id")),
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint"),
                         PaymentMode.valueOf(resultSet.getString("payment_mode"))));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingManagementOperation(
-            ManagementOperation operation,
-            String resourceType,
-            UUID resourceId,
-            String operationKind,
-            String payloadFingerprint) {
+    private fun requireMatchingManagementOperation(operation: ManagementOperation, resourceType: String, resourceId: UUID, operationKind: String, payloadFingerprint: String): Unit {
         requireMatchingManagementOperation(
                 operation,
                 resourceType,
@@ -5204,48 +4795,40 @@ public final class DefenseRepository {
                 PaymentMode.LEGACY_ITEMS);
     }
 
-    private static void requireMatchingManagementOperation(
-            ManagementOperation operation,
-            String resourceType,
-            UUID resourceId,
-            String operationKind,
-            String payloadFingerprint,
-            PaymentMode paymentMode) {
+    private fun requireMatchingManagementOperation(operation: ManagementOperation, resourceType: String, resourceId: UUID, operationKind: String, payloadFingerprint: String, paymentMode: PaymentMode): Unit {
         if (!operation.resourceType().equals(resourceType)
                 || !operation.resourceId().equals(resourceId)
                 || !operation.operationKind().equals(operationKind)
                 || !operation.payloadFingerprint().equals(payloadFingerprint)
                 || operation.paymentMode() != paymentMode) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The management operation UUID is already assigned to a different payload");
         }
     }
 
-    private static String managementFingerprint(String operationKind, Object... values) {
-        StringBuilder canonical = new StringBuilder(operationKind);
+    private fun managementFingerprint(operationKind: String, vararg values: Any?): String {
+        var canonical = StringBuilder(operationKind);
         canonical.append('|');
-        for (Object value : values) {
+        for (value in values) {
             canonical.append(Objects.requireNonNull(value, "management fingerprint value"));
             canonical.append('|');
         }
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            var digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(
-                    digest.digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new AssertionError("Every Java runtime must provide SHA-256", exception);
+                    digest.digest(canonical.toString().toByteArray(StandardCharsets.UTF_8)));
+        } catch (exception: NoSuchAlgorithmException) {
+            throw AssertionError("Every Java runtime must provide SHA-256", exception);
         }
     }
 
-    private static CoreRecord placeCore(
-            Connection connection, CoreRecord core, double minimumCoreDistance)
-            throws SQLException {
+    private fun placeCore(connection: Connection, core: CoreRecord, minimumCoreDistance: Double): CoreRecord {
         requireNoActiveEvent(connection, "place a core");
         if (loadCoreByTeam(connection, core.teamId()).isPresent()) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Team " + core.teamId() + " already owns a core");
         }
-        Optional<CoreRecord> nearby = findDistanceConflict(
+        var nearby = findDistanceConflict(
                 connection,
                 core.worldId(),
                 core.blockX(),
@@ -5253,34 +4836,33 @@ public final class DefenseRepository {
                 minimumCoreDistance,
                 null);
         if (nearby.isPresent()) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "Core position is too close to core " + nearby.orElseThrow().id());
         }
         insertCore(connection, core);
         return core;
     }
 
-    private static void updateCoreHealth(Connection connection, CoreRecord core)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateCoreHealth(connection: Connection, core: CoreRecord): Unit {
+        connection.prepareStatement("""
                 UPDATE cores SET current_hp = ?, updated_at = ? WHERE core_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setLong(1, core.currentHitPoints());
             statement.setString(2, core.updatedAt().toString());
             statement.setString(3, core.id().toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The core health update affected no rows");
+                throw SQLException("The core health update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void updateCorePosition(Connection connection, CoreRecord core)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateCorePosition(connection: Connection, core: CoreRecord): Unit {
+        connection.prepareStatement("""
                 UPDATE cores
                 SET world_id = ?, block_x = ?, block_y = ?, block_z = ?, updated_at = ?
                 WHERE core_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, core.worldId().toString());
             statement.setInt(2, core.blockX());
             statement.setInt(3, core.blockY());
@@ -5288,18 +4870,19 @@ public final class DefenseRepository {
             statement.setString(5, core.updatedAt().toString());
             statement.setString(6, core.id().toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The core position update affected no rows");
+                throw SQLException("The core position update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void updateCore(Connection connection, CoreRecord core) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun updateCore(connection: Connection, core: CoreRecord): Unit {
+        connection.prepareStatement("""
                 UPDATE cores
                 SET team_id = ?, world_id = ?, block_x = ?, block_y = ?, block_z = ?,
                     current_hp = ?, max_hp = ?, created_at = ?, updated_at = ?
                 WHERE core_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, core.teamId().toString());
             statement.setString(2, core.worldId().toString());
             statement.setInt(3, core.blockX());
@@ -5311,18 +4894,19 @@ public final class DefenseRepository {
             statement.setString(9, core.updatedAt().toString());
             statement.setString(10, core.id().toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The core rebuild update affected no rows");
+                throw SQLException("The core rebuild update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void insertCore(Connection connection, CoreRecord core) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertCore(connection: Connection, core: CoreRecord): Unit {
+        connection.prepareStatement("""
                 INSERT INTO cores(
                     core_id, team_id, world_id, block_x, block_y, block_z,
                     current_hp, max_hp, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, core.id().toString());
             statement.setString(2, core.teamId().toString());
             statement.setString(3, core.worldId().toString());
@@ -5334,46 +4918,45 @@ public final class DefenseRepository {
             statement.setString(9, core.createdAt().toString());
             statement.setString(10, core.updatedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<CoreRecord> loadCore(Connection connection, UUID coreId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadCore(connection: Connection, coreId: UUID): Optional<CoreRecord> {
+        connection.prepareStatement("""
                 SELECT core_id, team_id, world_id, block_x, block_y, block_z,
                        current_hp, max_hp, created_at, updated_at
                 FROM cores WHERE core_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, coreId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(coreFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static Optional<CoreRecord> loadCoreByTeam(Connection connection, UUID teamId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadCoreByTeam(connection: Connection, teamId: UUID): Optional<CoreRecord> {
+        connection.prepareStatement("""
                 SELECT core_id, team_id, world_id, block_x, block_y, block_z,
                        current_hp, max_hp, created_at, updated_at
                 FROM cores WHERE team_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, teamId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(coreFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private List<CorePlacement> loadCorePlacementsByState(CorePlacementState state) {
+    private fun loadCorePlacementsByState(state: CorePlacementState): List<CorePlacement> {
         Objects.requireNonNull(state, "state");
-        return read("load core placements", connection -> {
-            List<CorePlacement> placements = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("""
+        return read("load core placements", { connection ->
+            var placements = ArrayList<CorePlacement>();
+            connection.prepareStatement("""
                     SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                            block_x, block_y, block_z, max_hp, minimum_core_distance,
                            rebuilding_destroyed_core, relocating_existing_core,
@@ -5382,37 +4965,38 @@ public final class DefenseRepository {
                     FROM core_placement_operations
                     WHERE state = ?
                     ORDER BY prepared_at, operation_id
-                    """)) {
-                statement.setString(1, state.name());
-                try (ResultSet resultSet = statement.executeQuery()) {
+                    """.trimIndent()).use { statement ->
+                statement.setString(1, state.name);
+                statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         placements.add(corePlacementFromRow(resultSet));
                     }
-                }
-            }
-            return List.copyOf(placements);
+                
+}
+            
+}
+            return@read java.util.List.copyOf(placements);
         });
     }
 
-    private static void insertEmptyResourceBalances(
-            Connection connection, UUID teamId, Instant createdAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertEmptyResourceBalances(connection: Connection, teamId: UUID, createdAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO team_resource_balances(team_id, resource_type, balance, updated_at)
                 VALUES (?, ?, 0, ?)
-                """)) {
-            for (ResourceType resourceType : ResourceType.values()) {
+                """.trimIndent()).use { statement ->
+            for (resourceType in ResourceType.values()) {
                 statement.setString(1, teamId.toString());
-                statement.setString(2, resourceType.name());
+                statement.setString(2, resourceType.name);
                 statement.setString(3, createdAt.toString());
                 statement.addBatch();
             }
             statement.executeBatch();
-        }
+        
+}
     }
 
-    private static Optional<CorePlacement> loadCorePlacement(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadCorePlacement(connection: Connection, operationId: UUID): Optional<CorePlacement> {
+        connection.prepareStatement("""
                 SELECT operation_id, item_id, core_id, actor_id, team_id, world_id,
                        block_x, block_y, block_z, max_hp, minimum_core_distance,
                        rebuilding_destroyed_core, relocating_existing_core,
@@ -5420,26 +5004,25 @@ public final class DefenseRepository {
                        prepared_at, applied_at, rolled_back_at
                 FROM core_placement_operations
                 WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(corePlacementFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(corePlacementFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static void insertCorePlacement(
-            Connection connection, CorePlacement placement) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertCorePlacement(connection: Connection, placement: CorePlacement): Unit {
+        connection.prepareStatement("""
                 INSERT INTO core_placement_operations(
                     operation_id, item_id, core_id, actor_id, team_id, world_id,
                     block_x, block_y, block_z, max_hp, minimum_core_distance,
                     rebuilding_destroyed_core, relocating_existing_core,
                     previous_block_data, state, prepared_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, placement.operationId().toString());
             statement.setString(2, placement.itemId().toString());
             statement.setString(3, placement.coreId().toString());
@@ -5451,17 +5034,17 @@ public final class DefenseRepository {
             statement.setInt(9, placement.blockZ());
             statement.setLong(10, placement.maximumHitPoints());
             statement.setDouble(11, placement.minimumCoreDistance());
-            statement.setInt(12, placement.rebuildingDestroyedCore() ? 1 : 0);
-            statement.setInt(13, placement.relocatingExistingCore() ? 1 : 0);
+            statement.setInt(12, if (placement.rebuildingDestroyedCore()) 1 else 0);
+            statement.setInt(13, if (placement.relocatingExistingCore()) 1 else 0);
             statement.setString(14, placement.previousBlockData());
             statement.setString(15, placement.preparedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void updateCorePlacementState(
-            Connection connection, CorePlacement placement) throws SQLException {
-        String sql;
+    private fun updateCorePlacementState(connection: Connection, placement: CorePlacement): Unit {
+        var sql = ""
         if (placement.state() == CorePlacementState.APPLIED) {
             sql = """
                     UPDATE core_placement_operations
@@ -5475,23 +5058,26 @@ public final class DefenseRepository {
                     WHERE operation_id = ? AND state = 'PREPARED'
                     """;
         } else {
-            throw new IllegalArgumentException("Only terminal placement states can be persisted");
+            throw IllegalArgumentException("Only terminal placement states can be persisted");
         }
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+        connection.prepareStatement(sql).use { statement ->
             statement.setString(
                     1,
-                    placement.state() == CorePlacementState.APPLIED
-                            ? placement.appliedAt().toString()
-                            : placement.rolledBackAt().toString());
+                    if (placement.state() == CorePlacementState.APPLIED) {
+                        placement.appliedAt().toString()
+                    } else {
+                        placement.rolledBackAt().toString()
+                    });
             statement.setString(2, placement.operationId().toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The core placement state update affected no rows");
+                throw SQLException("The core placement state update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static CorePlacement corePlacementFromRow(ResultSet resultSet) throws SQLException {
-        return new CorePlacement(
+    private fun corePlacementFromRow(resultSet: ResultSet): CorePlacement {
+        return CorePlacement(
                 uuid(resultSet.getString("operation_id")),
                 uuid(resultSet.getString("item_id")),
                 uuid(resultSet.getString("core_id")),
@@ -5512,8 +5098,7 @@ public final class DefenseRepository {
                 nullableInstant(resultSet.getString("rolled_back_at")));
     }
 
-    private static void requireMatchingCorePlacement(
-            CorePlacement existing, CorePlacement requested) {
+    private fun requireMatchingCorePlacement(existing: CorePlacement, requested: CorePlacement): Unit {
         if (!existing.itemId().equals(requested.itemId())
                 || !existing.coreId().equals(requested.coreId())
                 || !existing.actorId().equals(requested.actorId())
@@ -5523,38 +5108,27 @@ public final class DefenseRepository {
                 || existing.blockY() != requested.blockY()
                 || existing.blockZ() != requested.blockZ()
                 || existing.maximumHitPoints() != requested.maximumHitPoints()
-                || Double.compare(
+                || java.lang.Double.compare(
                                 existing.minimumCoreDistance(), requested.minimumCoreDistance())
                         != 0
                 || existing.rebuildingDestroyedCore() != requested.rebuildingDestroyedCore()
                 || existing.relocatingExistingCore() != requested.relocatingExistingCore()
                 || !existing.previousBlockData().equals(requested.previousBlockData())) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The operation UUID was reused with a different core placement payload");
         }
     }
 
-    private static Optional<CoreRecord> findDistanceConflict(
-            Connection connection,
-            UUID worldId,
-            int blockX,
-            int blockZ,
-            double minimumCoreDistance) throws SQLException {
+    private fun findDistanceConflict(connection: Connection, worldId: UUID, blockX: Int, blockZ: Int, minimumCoreDistance: Double): Optional<CoreRecord> {
         return findDistanceConflict(
                 connection, worldId, blockX, blockZ, minimumCoreDistance, null);
     }
 
-    private static Optional<CoreRecord> findDistanceConflict(
-            Connection connection,
-            UUID worldId,
-            int blockX,
-            int blockZ,
-            double minimumCoreDistance,
-            UUID excludedCoreId) throws SQLException {
-        if (minimumCoreDistance == 0.0D) {
+    private fun findDistanceConflict(connection: Connection, worldId: UUID, blockX: Int, blockZ: Int, minimumCoreDistance: Double, excludedCoreId: UUID?): Optional<CoreRecord> {
+        if (minimumCoreDistance == 0.0) {
             return Optional.empty();
         }
-        try (PreparedStatement statement = connection.prepareStatement("""
+        connection.prepareStatement("""
                 SELECT core_id, team_id, world_id, block_x, block_y, block_z,
                        current_hp, max_hp, created_at, updated_at
                 FROM cores
@@ -5566,7 +5140,7 @@ public final class DefenseRepository {
                   ) < ?
                 ORDER BY core_id
                 LIMIT 1
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, worldId.toString());
             if (excludedCoreId == null) {
                 statement.setNull(2, java.sql.Types.VARCHAR);
@@ -5580,16 +5154,16 @@ public final class DefenseRepository {
             statement.setInt(6, blockZ);
             statement.setInt(7, blockZ);
             statement.setDouble(8, minimumCoreDistance * minimumCoreDistance);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next()
-                        ? Optional.of(coreFromRow(resultSet))
-                        : Optional.empty();
-            }
-        }
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
+            
+}
+        
+}
     }
 
-    private static CoreRecord coreFromRow(ResultSet resultSet) throws SQLException {
-        return new CoreRecord(
+    private fun coreFromRow(resultSet: ResultSet): CoreRecord {
+        return CoreRecord(
                 uuid(resultSet.getString("core_id")),
                 uuid(resultSet.getString("team_id")),
                 uuid(resultSet.getString("world_id")),
@@ -5602,10 +5176,9 @@ public final class DefenseRepository {
                 instant(resultSet.getString("updated_at")));
     }
 
-    private static void insertEvent(
-            Connection connection, StartRequest request, CoreRecord core) throws SQLException {
-        DefenseSessionSnapshot snapshot = request.session();
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertEvent(connection: Connection, request: StartRequest, core: CoreRecord): Unit {
+        var snapshot = request.session();
+        connection.prepareStatement("""
                 INSERT INTO defense_events(
                     event_id, team_id, core_id, state, stage_level, total_waves,
                     participant_limit, participants_frozen, wave_index, pending_enemies,
@@ -5613,15 +5186,15 @@ public final class DefenseRepository {
                     core_present, core_world_id, core_block_x, core_block_y, core_block_z,
                     config_snapshot, config_version, started_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, snapshot.eventId().toString());
             statement.setString(2, snapshot.teamId().toString());
             statement.setString(3, core.id().toString());
-            statement.setString(4, snapshot.phase().name());
+            statement.setString(4, snapshot.phase().name);
             statement.setLong(5, snapshot.stageLevel());
             statement.setInt(6, snapshot.totalWaves());
             statement.setInt(7, snapshot.participantLimit());
-            statement.setInt(8, snapshot.participantsFrozen() ? 1 : 0);
+            statement.setInt(8, if (snapshot.participantsFrozen()) 1 else 0);
             statement.setInt(9, snapshot.currentWave());
             statement.setLong(10, snapshot.pendingEnemies());
             statement.setLong(11, snapshot.aliveEnemies());
@@ -5629,7 +5202,7 @@ public final class DefenseRepository {
             statement.setLong(13, core.maximumHitPoints());
             statement.setLong(14, snapshot.coreState().currentHitPoints());
             statement.setLong(15, snapshot.coreState().maximumHitPoints());
-            statement.setInt(16, snapshot.coreState().present() ? 1 : 0);
+            statement.setInt(16, if (snapshot.coreState().present()) 1 else 0);
             statement.setString(17, core.worldId().toString());
             statement.setInt(18, core.blockX());
             statement.setInt(19, core.blockY());
@@ -5639,21 +5212,21 @@ public final class DefenseRepository {
             statement.setString(23, request.startedAt().toString());
             statement.setString(24, request.startedAt().toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<StoredDefenseEvent> loadEvent(Connection connection, UUID eventId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadEvent(connection: Connection, eventId: UUID): Optional<StoredDefenseEvent> {
+        connection.prepareStatement("""
                 SELECT * FROM defense_events WHERE event_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                ParticipantSets participants = loadParticipants(connection, eventId);
-                DefenseSessionSnapshot snapshot = new DefenseSessionSnapshot(
+                var participants = loadParticipants(connection, eventId);
+                var snapshot = DefenseSessionSnapshot(
                         eventId,
                         uuid(resultSet.getString("team_id")),
                         resultSet.getLong("stage_level"),
@@ -5661,18 +5234,18 @@ public final class DefenseRepository {
                         resultSet.getInt("participant_limit"),
                         DefensePhase.valueOf(resultSet.getString("state")),
                         resultSet.getInt("wave_index"),
-                        participants.registered(),
-                        participants.effective(),
+                        java.util.HashSet(participants.registered()),
+                        java.util.HashSet(participants.effective()),
                         resultSet.getInt("participants_frozen") != 0,
                         resultSet.getLong("pending_enemies"),
                         resultSet.getLong("alive_enemies"),
-                        new CoreState(
+                        CoreState(
                                 resultSet.getLong("core_max_hp"),
                                 resultSet.getLong("core_hp"),
                                 resultSet.getInt("core_present") != 0));
-                String terminalOperation = resultSet.getString("terminal_operation_id");
-                String terminalAt = resultSet.getString("terminal_at");
-                return Optional.of(new StoredDefenseEvent(
+                var terminalOperation = resultSet.getString("terminal_operation_id");
+                var terminalAt = resultSet.getString("terminal_at");
+                return Optional.of(StoredDefenseEvent(
                         snapshot,
                         uuid(resultSet.getString("core_id")),
                         uuid(resultSet.getString("core_world_id")),
@@ -5686,36 +5259,31 @@ public final class DefenseRepository {
                         instant(resultSet.getString("started_at")),
                         instant(resultSet.getString("updated_at")),
                         resultSet.getLong("revision"),
-                        terminalOperation == null
-                                ? Optional.empty()
-                                : Optional.of(uuid(terminalOperation)),
-                        terminalAt == null
-                                ? Optional.empty()
-                                : Optional.of(instant(terminalAt))));
-            }
-        }
+                        if (terminalOperation == null) Optional.empty() else Optional.of(uuid(terminalOperation)),
+                        if (terminalAt == null) Optional.empty() else Optional.of(instant(terminalAt))));
+            
+}
+        
+}
     }
 
-    private static StoredDefenseEvent requireEvent(Connection connection, UUID eventId)
-            throws SQLException {
-        return loadEvent(connection, eventId).orElseThrow(
-                () -> new IllegalArgumentException("Unknown defense event " + eventId));
+    private fun requireEvent(connection: Connection, eventId: UUID): StoredDefenseEvent {
+        return loadEvent(connection, eventId).orElseThrow { IllegalArgumentException("Unknown defense event " + eventId) };
     }
 
-    private static ParticipantSets loadParticipants(Connection connection, UUID eventId)
-            throws SQLException {
-        Set<UUID> registered = new LinkedHashSet<>();
-        Set<UUID> effective = new LinkedHashSet<>();
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadParticipants(connection: Connection, eventId: UUID): ParticipantSets {
+        var registered = LinkedHashSet<UUID>();
+        var effective = LinkedHashSet<UUID>();
+        connection.prepareStatement("""
                 SELECT player_id, registered, effective
                 FROM event_participants
                 WHERE event_id = ?
                 ORDER BY player_id
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
-                    UUID playerId = uuid(resultSet.getString("player_id"));
+                    var playerId = uuid(resultSet.getString("player_id"));
                     if (resultSet.getInt("registered") != 0) {
                         registered.add(playerId);
                     }
@@ -5723,16 +5291,17 @@ public final class DefenseRepository {
                         effective.add(playerId);
                     }
                 }
-            }
-        }
-        return new ParticipantSets(Set.copyOf(registered), Set.copyOf(effective));
+            
+}
+        
+}
+        return ParticipantSets(
+                registered as java.util.Set<UUID>,
+                effective as java.util.Set<UUID>);
     }
 
-    private static void replaceParticipants(
-            Connection connection,
-            DefenseSessionSnapshot snapshot,
-            Instant changedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun replaceParticipants(connection: Connection, snapshot: DefenseSessionSnapshot, changedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_participants(
                     event_id, player_id, registered, effective, joined_at
                 ) VALUES (?, ?, ?, 1, ?)
@@ -5740,229 +5309,211 @@ public final class DefenseRepository {
                     registered = excluded.registered,
                     effective = 1,
                     joined_at = excluded.joined_at
-                """)) {
-            for (UUID playerId : snapshot.effectiveParticipants()) {
+                """.trimIndent()).use { statement ->
+            for (playerId in snapshot.effectiveParticipants()) {
                 statement.setString(1, snapshot.eventId().toString());
                 statement.setString(2, playerId.toString());
                 statement.setInt(
-                        3, snapshot.registeredParticipants().contains(playerId) ? 1 : 0);
+                        3, if (snapshot.registeredParticipants().contains(playerId)) 1 else 0);
                 statement.setString(4, changedAt.toString());
                 statement.addBatch();
             }
             statement.executeBatch();
-        }
+        
+}
     }
 
-    private static boolean persistSnapshot(
-            Connection connection,
-            UUID coreId,
-            DefenseSessionSnapshot snapshot,
-            long expectedRevision,
-            Instant updatedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun persistSnapshot(connection: Connection, coreId: UUID, snapshot: DefenseSessionSnapshot, expectedRevision: Long, updatedAt: Instant): Boolean {
+        connection.prepareStatement("""
                 UPDATE defense_events
                 SET state = ?, stage_level = ?, total_waves = ?, participant_limit = ?,
                     participants_frozen = ?, wave_index = ?, pending_enemies = ?,
                     alive_enemies = ?, core_hp = ?, core_max_hp = ?, core_present = ?,
                     updated_at = ?, revision = revision + 1
                 WHERE event_id = ? AND revision = ?
-                """)) {
-            statement.setString(1, snapshot.phase().name());
+                """.trimIndent()).use { statement ->
+            statement.setString(1, snapshot.phase().name);
             statement.setLong(2, snapshot.stageLevel());
             statement.setInt(3, snapshot.totalWaves());
             statement.setInt(4, snapshot.participantLimit());
-            statement.setInt(5, snapshot.participantsFrozen() ? 1 : 0);
+            statement.setInt(5, if (snapshot.participantsFrozen()) 1 else 0);
             statement.setInt(6, snapshot.currentWave());
             statement.setLong(7, snapshot.pendingEnemies());
             statement.setLong(8, snapshot.aliveEnemies());
             statement.setLong(9, snapshot.coreState().currentHitPoints());
             statement.setLong(10, snapshot.coreState().maximumHitPoints());
-            statement.setInt(11, snapshot.coreState().present() ? 1 : 0);
+            statement.setInt(11, if (snapshot.coreState().present()) 1 else 0);
             statement.setString(12, updatedAt.toString());
             statement.setString(13, snapshot.eventId().toString());
             statement.setLong(14, expectedRevision);
             if (statement.executeUpdate() != 1) {
                 return false;
             }
-        }
-        try (PreparedStatement statement = connection.prepareStatement("""
+        
+}
+        connection.prepareStatement("""
                 UPDATE cores
                 SET current_hp = ?, max_hp = ?, updated_at = ?
                 WHERE core_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setLong(1, snapshot.coreState().currentHitPoints());
             statement.setLong(2, snapshot.coreState().maximumHitPoints());
             statement.setString(3, updatedAt.toString());
             statement.setString(4, coreId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The event core update affected no rows");
+                throw SQLException("The event core update affected no rows");
             }
-        }
+        
+}
         return true;
     }
 
-    private static void insertTransition(
-            Connection connection,
-            UUID operationId,
-            DefensePhase from,
-            DefenseSessionSnapshot snapshot,
-            Instant occurredAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertTransition(connection: Connection, operationId: UUID, from: DefensePhase, snapshot: DefenseSessionSnapshot, occurredAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_transitions(
                     event_id, operation_id, from_state, to_state, wave_index,
                     pending_enemies, alive_enemies, occurred_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, snapshot.eventId().toString());
             statement.setString(2, operationId.toString());
-            statement.setString(3, from.name());
-            statement.setString(4, snapshot.phase().name());
+            statement.setString(3, from.name);
+            statement.setString(4, snapshot.phase().name);
             statement.setInt(5, snapshot.currentWave());
             statement.setLong(6, snapshot.pendingEnemies());
             statement.setLong(7, snapshot.aliveEnemies());
             statement.setString(8, occurredAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void insertOperation(
-            Connection connection,
-            UUID operationId,
-            UUID eventId,
-            OperationKind kind,
-            long targetRevision,
-            String payloadFingerprint,
-            Instant appliedAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun insertOperation(connection: Connection, operationId: UUID, eventId: UUID, kind: OperationKind, targetRevision: Long, payloadFingerprint: String, appliedAt: Instant): Unit {
+        connection.prepareStatement("""
                 INSERT INTO event_operations(
                     operation_id, event_id, operation_kind, target_revision,
                     payload_fingerprint, applied_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, eventId.toString());
-            statement.setString(3, kind.name());
+            statement.setString(3, kind.name);
             statement.setLong(4, targetRevision);
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<OperationRow> loadOperation(
-            Connection connection, UUID operationId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun loadOperation(connection: Connection, operationId: UUID): Optional<OperationRow> {
+        connection.prepareStatement("""
                 SELECT event_id, operation_kind, target_revision, payload_fingerprint
                 FROM event_operations
                 WHERE operation_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 if (!resultSet.next()) {
                     return Optional.empty();
                 }
-                return Optional.of(new OperationRow(
+                return Optional.of(OperationRow(
                         uuid(resultSet.getString("event_id")),
                         OperationKind.valueOf(resultSet.getString("operation_kind")),
                         resultSet.getLong("target_revision"),
                         resultSet.getString("payload_fingerprint")));
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static void requireMatchingOperation(
-            OperationRow operation,
-            UUID eventId,
-            OperationKind kind,
-            long targetRevision,
-            String payloadFingerprint) {
+    private fun requireMatchingOperation(operation: OperationRow, eventId: UUID, kind: OperationKind, targetRevision: Long, payloadFingerprint: String): Unit {
         if (!operation.eventId().equals(eventId)
                 || operation.kind() != kind
                 || operation.targetRevision() != targetRevision
                 || !operation.payloadFingerprint().equals(payloadFingerprint)) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The operation UUID is already assigned to a different payload or revision");
         }
     }
 
-    private static void markTerminal(
-            Connection connection,
-            UUID eventId,
-            UUID operationId,
-            Instant terminalAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun markTerminal(connection: Connection, eventId: UUID, operationId: UUID, terminalAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE defense_events
                 SET terminal_operation_id = ?, terminal_at = ?
                 WHERE event_id = ?
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, operationId.toString());
             statement.setString(2, terminalAt.toString());
             statement.setString(3, eventId.toString());
             if (statement.executeUpdate() != 1) {
-                throw new SQLException("The terminal event update affected no rows");
+                throw SQLException("The terminal event update affected no rows");
             }
-        }
+        
+}
     }
 
-    private static void markEnemiesRecoveryRemoved(
-            Connection connection, UUID eventId, Instant occurredAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun markEnemiesRecoveryRemoved(connection: Connection, eventId: UUID, occurredAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE event_enemies
                 SET status = 'RECOVERY_REMOVED', updated_at = ?
                 WHERE event_id = ? AND status IN ('ALLOCATED', 'SPAWNED')
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, occurredAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void markEnemiesDespawned(
-            Connection connection, UUID eventId, Instant occurredAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
+    private fun markEnemiesDespawned(connection: Connection, eventId: UUID, occurredAt: Instant): Unit {
+        connection.prepareStatement("""
                 UPDATE event_enemies
                 SET status = 'DESPAWNED', updated_at = ?
                 WHERE event_id = ?
                   AND status NOT IN ('DEAD', 'DESPAWNED', 'RECOVERY_REMOVED')
-                """)) {
+                """.trimIndent()).use { statement ->
             statement.setString(1, occurredAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static void releaseEventLock(Connection connection, UUID eventId)
-            throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM event_lock WHERE singleton = 1 AND event_id = ?")) {
+    private fun releaseEventLock(connection: Connection, eventId: UUID): Unit {
+        connection.prepareStatement(
+                "DELETE FROM event_lock WHERE singleton = 1 AND event_id = ?").use { statement ->
             statement.setString(1, eventId.toString());
             statement.executeUpdate();
-        }
+        
+}
     }
 
-    private static Optional<UUID> loadActiveEventId(Connection connection) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT event_id FROM event_lock WHERE singleton = 1");
-                ResultSet resultSet = statement.executeQuery()) {
-            return resultSet.next()
-                    ? Optional.of(uuid(resultSet.getString("event_id")))
-                    : Optional.empty();
-        }
+    private fun loadActiveEventId(connection: Connection): Optional<UUID> {
+        connection.prepareStatement(
+                "SELECT event_id FROM event_lock WHERE singleton = 1").use { statement ->
+statement.executeQuery().use { resultSet ->
+            return if (resultSet.next()) Optional.of(uuid(resultSet.getString("event_id"))) else Optional.empty()
+        
+}}
     }
 
-    private static boolean eventExists(Connection connection, UUID eventId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT 1 FROM defense_events WHERE event_id = ?")) {
+    private fun eventExists(connection: Connection, eventId: UUID): Boolean {
+        connection.prepareStatement(
+                "SELECT 1 FROM defense_events WHERE event_id = ?").use { statement ->
             statement.setString(1, eventId.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
+            statement.executeQuery().use { resultSet ->
                 return resultSet.next();
-            }
-        }
+            
+}
+        
+}
     }
 
-    private static DefenseSessionSnapshot recoverySnapshot(StoredDefenseEvent event) {
-        DefenseSessionSnapshot current = event.session();
-        return new DefenseSessionSnapshot(
+    private fun recoverySnapshot(event: StoredDefenseEvent): DefenseSessionSnapshot {
+        var current = event.session();
+        return DefenseSessionSnapshot(
                 current.eventId(),
                 current.teamId(),
                 current.stageLevel(),
@@ -5975,26 +5526,24 @@ public final class DefenseRepository {
                 current.participantsFrozen(),
                 current.pendingEnemies(),
                 current.aliveEnemies(),
-                new CoreState(
+                CoreState(
                         event.startCoreMaximumHitPoints(),
                         event.startCoreHitPoints(),
                         true));
     }
 
-    private static void validateStartCore(
-            DefenseSessionSnapshot snapshot, CoreRecord core) {
+    private fun validateStartCore(snapshot: DefenseSessionSnapshot, core: CoreRecord): Unit {
         if (!snapshot.teamId().equals(core.teamId())) {
-            throw new PersistenceConflictException("The selected core belongs to another team");
+            throw PersistenceConflictException("The selected core belongs to another team");
         }
         if (snapshot.coreState().maximumHitPoints() != core.maximumHitPoints()
                 || snapshot.coreState().currentHitPoints() != core.currentHitPoints()) {
-            throw new PersistenceConflictException(
+            throw PersistenceConflictException(
                     "The session core snapshot is stale compared with the database");
         }
     }
 
-    private static void ensureSameSession(
-            DefenseSessionSnapshot current, DefenseSessionSnapshot next) {
+    private fun ensureSameSession(current: DefenseSessionSnapshot, next: DefenseSessionSnapshot): Unit {
         if (!current.eventId().equals(next.eventId())
                 || !current.teamId().equals(next.teamId())
                 || current.stageLevel() != next.stageLevel()
@@ -6002,265 +5551,309 @@ public final class DefenseRepository {
                 || current.participantLimit() != next.participantLimit()
                 || current.coreState().maximumHitPoints()
                         != next.coreState().maximumHitPoints()) {
-            throw new IllegalArgumentException(
+            throw IllegalArgumentException(
                     "A persisted session's immutable identity and configuration cannot change");
         }
     }
 
-    private static boolean isPermittedInPhaseUpdate(
-            DefenseSessionSnapshot current, DefenseSessionSnapshot next) {
+    private fun isPermittedInPhaseUpdate(current: DefenseSessionSnapshot, next: DefenseSessionSnapshot): Boolean {
         if (current.currentWave() != next.currentWave()
                 || !current.registeredParticipants().equals(next.registeredParticipants())
                 || !next.effectiveParticipants().containsAll(current.effectiveParticipants())) {
             return false;
         }
-        return next.coreState().currentHitPoints()
-                <= current.coreState().currentHitPoints();
+        return next.coreState().currentHitPoints() <= current.coreState().currentHitPoints();
     }
 
-    private static void requireDistance(double minimumCoreDistance) {
-        if (!Double.isFinite(minimumCoreDistance) || minimumCoreDistance < 0.0D) {
-            throw new IllegalArgumentException(
+    private fun requireDistance(minimumCoreDistance: Double): Unit {
+        if (!java.lang.Double.isFinite(minimumCoreDistance) || minimumCoreDistance < 0.0) {
+            throw IllegalArgumentException(
                     "minimumCoreDistance must be a finite, non-negative number");
         }
     }
 
-    private long currentRevision(UUID eventId) {
+    private fun currentRevision(eventId: UUID): Long {
         Objects.requireNonNull(eventId, "eventId");
         return read(
                 "load the current event revision",
-                connection -> requireEvent(connection, eventId).revision());
+                { connection -> requireEvent(connection, eventId).revision() });
     }
 
-    private long operationExpectedRevisionOrCurrent(UUID eventId, UUID operationId) {
+    private fun operationExpectedRevisionOrCurrent(eventId: UUID, operationId: UUID): Long {
         Objects.requireNonNull(eventId, "eventId");
         Objects.requireNonNull(operationId, "operationId");
-        return read("load an operation revision", connection -> {
-            Optional<OperationRow> operation = loadOperation(connection, operationId);
+        return read("load an operation revision", { connection ->
+            var operation = loadOperation(connection, operationId);
             if (operation.isEmpty()) {
-                return requireEvent(connection, eventId).revision();
+                return@read requireEvent(connection, eventId).revision();
             }
-            long targetRevision = operation.orElseThrow().targetRevision();
+            var targetRevision = operation.orElseThrow().targetRevision();
             if (targetRevision <= 0L) {
-                throw new PersistenceConflictException(
+                throw PersistenceConflictException(
                         "A legacy operation has no revision binding and cannot be replayed safely");
             }
-            return targetRevision - 1L;
+            return@read targetRevision - 1L;
         });
     }
 
-    private static void requireRevision(long revision) {
+    private fun requireRevision(revision: Long): Unit {
         if (revision < 0L) {
-            throw new IllegalArgumentException("expectedRevision must not be negative");
+            throw IllegalArgumentException("expectedRevision must not be negative");
         }
     }
 
-    private static long nextRevision(long revision) {
+    private fun nextRevision(revision: Long): Long {
         try {
             return Math.addExact(revision, 1L);
-        } catch (ArithmeticException exception) {
-            throw new IllegalArgumentException("event revision overflow", exception);
+        } catch (exception: ArithmeticException) {
+            throw IllegalArgumentException("event revision overflow", exception);
         }
     }
 
-    private static String payloadFingerprint(DefenseSessionSnapshot snapshot) {
-        StringBuilder canonical = new StringBuilder(512);
+    private fun payloadFingerprint(snapshot: DefenseSessionSnapshot): String {
+        val canonical = StringBuilder(512)
         canonical.append(snapshot.eventId()).append('|')
-                .append(snapshot.teamId()).append('|')
-                .append(snapshot.stageLevel()).append('|')
-                .append(snapshot.totalWaves()).append('|')
-                .append(snapshot.participantLimit()).append('|')
-                .append(snapshot.phase().name()).append('|')
-                .append(snapshot.currentWave()).append('|')
-                .append(snapshot.participantsFrozen()).append('|')
-                .append(snapshot.pendingEnemies()).append('|')
-                .append(snapshot.aliveEnemies()).append('|')
-                .append(snapshot.coreState().maximumHitPoints()).append('|')
-                .append(snapshot.coreState().currentHitPoints()).append('|')
-                .append(snapshot.coreState().present()).append('|');
+        canonical.append(snapshot.teamId()).append('|')
+        canonical.append(snapshot.stageLevel()).append('|')
+        canonical.append(snapshot.totalWaves()).append('|')
+        canonical.append(snapshot.participantLimit()).append('|')
+        canonical.append(snapshot.phase().name).append('|')
+        canonical.append(snapshot.currentWave()).append('|')
+        canonical.append(snapshot.participantsFrozen()).append('|')
+        canonical.append(snapshot.pendingEnemies()).append('|')
+        canonical.append(snapshot.aliveEnemies()).append('|')
+        canonical.append(snapshot.coreState().maximumHitPoints()).append('|')
+        canonical.append(snapshot.coreState().currentHitPoints()).append('|')
+        canonical.append(snapshot.coreState().present()).append('|')
         appendSortedUuids(canonical, snapshot.registeredParticipants());
         canonical.append('|');
         appendSortedUuids(canonical, snapshot.effectiveParticipants());
 
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            var digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(
-                    digest.digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new AssertionError("Every Java runtime must provide SHA-256", exception);
+                    digest.digest(canonical.toString().toByteArray(StandardCharsets.UTF_8)));
+        } catch (exception: NoSuchAlgorithmException) {
+            throw AssertionError("Every Java runtime must provide SHA-256", exception);
         }
     }
 
-    private static String researchCrystalPayload(
-            UUID batchId,
-            UUID teamId,
-            int issuedQuantity) {
+    private fun researchCrystalPayload(batchId: UUID, teamId: UUID, issuedQuantity: Int): String {
         return "research_crystal:v2:" + batchId + ":" + teamId + ":" + issuedQuantity;
     }
 
-    private static String crystalRedemptionFingerprint(
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            int quantity) {
+    private fun crystalRedemptionFingerprint(batchId: UUID, coreId: UUID, actorId: UUID, quantity: Int): String {
         return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|" + quantity;
     }
 
-    private static String crystalRedemptionFingerprint(
-            UUID batchId,
-            UUID coreId,
-            UUID actorId,
-            UUID itemTeamId,
-            int itemIssuedQuantity,
-            Integer itemSegmentOffset,
-            Integer itemSegmentQuantity,
-            int quantity) {
-        return "CRYSTAL|" + batchId + "|" + coreId + "|" + actorId + "|"
-                + itemTeamId + "|" + itemIssuedQuantity + "|"
-                + (itemSegmentOffset == null ? "legacy" : itemSegmentOffset)
-                + "|" + (itemSegmentQuantity == null ? "legacy" : itemSegmentQuantity)
-                + "|" + quantity;
+    private fun crystalRedemptionFingerprint(batchId: UUID, coreId: UUID, actorId: UUID, itemTeamId: UUID, itemIssuedQuantity: Int, itemSegmentOffset: Int?, itemSegmentQuantity: Int?, quantity: Int): String {
+        return "CRYSTAL|$batchId|$coreId|$actorId|$itemTeamId|$itemIssuedQuantity|" +
+                "${itemSegmentOffset ?: "legacy"}|${itemSegmentQuantity ?: "legacy"}|$quantity"
     }
 
-    private static UUID deterministicUuid(UUID base, String namespace, String value) {
+    private fun deterministicUuid(base: UUID, namespace: String, value: String): UUID {
         return UUID.nameUUIDFromBytes(
-                (base + "|" + namespace + "|" + value).getBytes(StandardCharsets.UTF_8));
+                (base.toString() + "|" + namespace + "|" + value).toByteArray(StandardCharsets.UTF_8));
     }
 
-    private static void appendSortedUuids(StringBuilder target, Set<UUID> values) {
-        values.stream()
+    private fun appendSortedUuids(target: StringBuilder, values: kotlin.collections.Set<UUID>) {
+        values.asSequence()
                 .map(UUID::toString)
                 .sorted()
-                .forEach(value -> target.append(value).append(','));
+                .forEach { value -> target.append(value).append(',') }
     }
 
-    private <T> T read(String action, Database.SqlWork<T> work) {
-        try (Connection connection = database.openConnection()) {
-            return work.execute(connection);
-        } catch (SQLException exception) {
-            throw failure(action, exception);
+    private fun <T> read(action: String, work: Database.SqlWork<T>): T {
+        return try {
+            database.openConnection().use { connection ->
+                work.execute(connection)
+            }
+        } catch (exception: SQLException) {
+            throw failure(action, exception)
         }
     }
 
-    private static PersistenceException failure(String action, SQLException exception) {
-        return new PersistenceException("Could not " + action, exception);
+    private fun failure(action: String, exception: SQLException): PersistenceException {
+        return PersistenceException("Could not " + action, exception);
     }
 
-    private static boolean isConstraintViolation(SQLException exception) {
-        SQLException current = exception;
+    private fun isConstraintViolation(exception: SQLException): Boolean {
+        var current = exception;
         while (current != null) {
-            if (current.getErrorCode() == 19
-                    || (current.getMessage() != null
-                            && current.getMessage().toLowerCase(java.util.Locale.ROOT)
-                                    .contains("constraint"))) {
+            val message = current.message
+            if (current.errorCode == 19
+                    || (message != null && message.lowercase(java.util.Locale.ROOT)
+                            .contains("constraint"))) {
                 return true;
             }
-            current = current.getNextException();
+            current = current.nextException;
         }
         return false;
     }
 
-    private static UUID uuid(String value) {
+    private fun uuid(value: String): UUID {
         return UUID.fromString(value);
     }
 
-    private static Instant instant(String value) {
+    private fun instant(value: String): Instant {
         return Instant.parse(value);
     }
 
-    private static Instant nullableInstant(String value) {
-        return value == null ? null : Instant.parse(value);
+    private fun nullableInstant(value: String?): Instant? {
+        return if (value == null) null else Instant.parse(value);
     }
 
-    private static Integer nullableInteger(ResultSet resultSet, String column) throws SQLException {
-        int value = resultSet.getInt(column);
-        return resultSet.wasNull() ? null : value;
+    private fun nullableInteger(resultSet: ResultSet, column: String): Int? {
+        var value = resultSet.getInt(column);
+        return if (resultSet.wasNull()) null else value;
     }
 
-    private static String nullableInstantString(Instant value) {
-        return value == null ? null : value.toString();
+    private fun nullableInstantString(value: Instant?): String? {
+        return if (value == null) null else value.toString()
     }
 
-    private record ResearchCrystalSegment(int segmentQuantity, int redeemedQuantity) {
-        private int remainingQuantity() {
-            return segmentQuantity - redeemedQuantity;
-        }
+    private class ResearchCrystalSegment(
+        private val segmentQuantityValue: Int,
+        private val redeemedQuantityValue: Int,
+    ) {
+        fun segmentQuantity(): Int = segmentQuantityValue
+        fun redeemedQuantity(): Int = redeemedQuantityValue
+        fun remainingQuantity(): Int = segmentQuantityValue - redeemedQuantityValue
     }
 
-    private record ParticipantSets(Set<UUID> registered, Set<UUID> effective) {
+    private class ParticipantSets(
+        private val registeredValue: Set<UUID>,
+        private val effectiveValue: Set<UUID>,
+    ) {
+        fun registered(): Set<UUID> = registeredValue
+        fun effective(): Set<UUID> = effectiveValue
     }
 
-    private record OperationRow(
-            UUID eventId,
-            OperationKind kind,
-            long targetRevision,
-            String payloadFingerprint) {
+    private class OperationRow(
+        private val eventIdValue: UUID,
+        private val kindValue: OperationKind,
+        private val targetRevisionValue: Long,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun eventId(): UUID = eventIdValue
+        fun kind(): OperationKind = kindValue
+        fun targetRevision(): Long = targetRevisionValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record ManagementOperation(
-            String resourceType,
-            UUID resourceId,
-            String operationKind,
-            String payloadFingerprint,
-            PaymentMode paymentMode) {
+    private class ManagementOperation(
+        private val resourceTypeValue: String,
+        private val resourceIdValue: UUID,
+        private val operationKindValue: String,
+        private val payloadFingerprintValue: String,
+        private val paymentModeValue: PaymentMode,
+    ) {
+        fun resourceType(): String = resourceTypeValue
+        fun resourceId(): UUID = resourceIdValue
+        fun operationKind(): String = operationKindValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
+        fun paymentMode(): PaymentMode = paymentModeValue
     }
 
-    private record TeamProfileOperation(
-            UUID teamId,
-            UUID actorId,
-            String operationKind,
-            String payloadFingerprint) {
+    private class TeamProfileOperation(
+        private val teamIdValue: UUID,
+        private val actorIdValue: UUID,
+        private val operationKindValue: String,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun teamId(): UUID = teamIdValue
+        fun actorId(): UUID = actorIdValue
+        fun operationKind(): String = operationKindValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record TeamInviteOperation(
-            UUID inviteId,
-            UUID actorId,
-            String operationKind,
-            String payloadFingerprint) {
+    private class TeamInviteOperation(
+        private val inviteIdValue: UUID,
+        private val actorIdValue: UUID,
+        private val operationKindValue: String,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun inviteId(): UUID = inviteIdValue
+        fun actorId(): UUID = actorIdValue
+        fun operationKind(): String = operationKindValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record BattleFundsOperation(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            String operationKind,
-            long amount,
-            String payloadFingerprint) {
+    private class BattleFundsOperation(
+        private val eventIdValue: UUID,
+        private val teamIdValue: UUID,
+        private val actorIdValue: UUID?,
+        private val operationKindValue: String,
+        private val amountValue: Long,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun eventId(): UUID = eventIdValue
+        fun teamId(): UUID = teamIdValue
+        fun actorId(): UUID? = actorIdValue
+        fun operationKind(): String = operationKindValue
+        fun amount(): Long = amountValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record BattleBoostOperation(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            BattleBoostKind kind,
-            long cost,
-            double boostMultiplier,
-            String payloadFingerprint) {
+    private class BattleBoostOperation(
+        private val eventIdValue: UUID,
+        private val teamIdValue: UUID,
+        private val actorIdValue: UUID,
+        private val towerIdValue: UUID,
+        private val kindValue: BattleBoostKind,
+        private val costValue: Long,
+        private val boostMultiplierValue: Double,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun eventId(): UUID = eventIdValue
+        fun teamId(): UUID = teamIdValue
+        fun actorId(): UUID = actorIdValue
+        fun towerId(): UUID = towerIdValue
+        fun kind(): BattleBoostKind = kindValue
+        fun cost(): Long = costValue
+        fun boostMultiplier(): Double = boostMultiplierValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record TowerRepairOperation(
-            UUID eventId,
-            UUID teamId,
-            UUID actorId,
-            UUID towerId,
-            long repairedHitPoints,
-            long cost,
-            String payloadFingerprint) {
+    private class TowerRepairOperation(
+        private val eventIdValue: UUID,
+        private val teamIdValue: UUID,
+        private val actorIdValue: UUID,
+        private val towerIdValue: UUID,
+        private val repairedHitPointsValue: Long,
+        private val costValue: Long,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun eventId(): UUID = eventIdValue
+        fun teamId(): UUID = teamIdValue
+        fun actorId(): UUID = actorIdValue
+        fun towerId(): UUID = towerIdValue
+        fun repairedHitPoints(): Long = repairedHitPointsValue
+        fun cost(): Long = costValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private record TowerDamageOperation(
-            UUID eventId,
-            UUID teamId,
-            UUID attackerLogicalEnemyId,
-            UUID towerId,
-            long damage,
-            long remainingHitPoints,
-            boolean destroyed,
-            String payloadFingerprint) {
+    private class TowerDamageOperation(
+        private val eventIdValue: UUID,
+        private val teamIdValue: UUID,
+        private val attackerLogicalEnemyIdValue: UUID,
+        private val towerIdValue: UUID,
+        private val damageValue: Long,
+        private val remainingHitPointsValue: Long,
+        private val destroyedValue: Boolean,
+        private val payloadFingerprintValue: String,
+    ) {
+        fun eventId(): UUID = eventIdValue
+        fun teamId(): UUID = teamIdValue
+        fun attackerLogicalEnemyId(): UUID = attackerLogicalEnemyIdValue
+        fun towerId(): UUID = towerIdValue
+        fun damage(): Long = damageValue
+        fun remainingHitPoints(): Long = remainingHitPointsValue
+        fun destroyed(): Boolean = destroyedValue
+        fun payloadFingerprint(): String = payloadFingerprintValue
     }
 
-    private enum OperationKind {
+    private enum class OperationKind {
         TRANSITION,
         TERMINATE,
         RECOVER
