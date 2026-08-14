@@ -11,6 +11,8 @@ created: 2026-08-14
 
 - Base: `feat/kotlin-b13-defense-repository-abo` at `f23487e3e4485f736969fd80ba501d565324e91e`
 - Implementation commit: `7d5dd6a65c6809f7eaf0c06dd19f3092ad01401a`
+- B13 whitespace and manifest follow-up commits were propagated before verification; they do not alter the Paper implementation.
+- Verified code HEAD: `d64a1862c581a3f3afee8f9a2ccc9d92244738a4`
 - Migrated boundaries: `TaggedEscrowDrop`, `RewardQueueReceipt`, `RaidSealRecipeDefinition`, and `CoreRecipeDefinition`
 - Java sources removed from `src/main/java/io/github/takenoha/towerdefense/paper/`
 - Kotlin sources added under `src/main/kotlin/io/github/takenoha/towerdefense/paper/`
