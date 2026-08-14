@@ -25,6 +25,15 @@ created: 2026-08-14
 
 ## Build and artifact verification
 
-The clean verification build completed successfully after the ABI test was added. Final test and artifact counts will be recorded from the final fixed HEAD before the PR is opened.
+The final clean verification build completed successfully:
+
+- `BUILD SUCCESSFUL`
+- 83 XML test reports / 303 tests
+- failures 0 / errors 0 / skipped 0
+- Kotlin Paper classes present; Java duplicate recipe/identity classes absent
+- packaged JAR SHA-256: `9FE943F001682316CBFDA05C23EDD5E072A4CC2707252319698544811D21F27E`
+- packaged `plugin.yml` SHA-256: `F0A932C3FEA5393D48B42858BBD5DCCF92A03E76355BBD0A799C729FFABB043A`
+- embedded Kotlin runtime entries: 1045
+- embedded `kotlin-reflect` artifact entries: 0
 
 Independent fixed-HEAD review and Paper real-server acceptance remain separate gates.
