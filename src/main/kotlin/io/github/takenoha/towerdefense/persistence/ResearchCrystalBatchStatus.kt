@@ -1,8 +1,8 @@
-package io.github.takenoha.towerdefense.persistence;
+package io.github.takenoha.towerdefense.persistence
 
 /** Durable lifecycle of one team-bound research-crystal issuance batch. */
-public enum ResearchCrystalBatchStatus {
+enum class ResearchCrystalBatchStatus {
     ISSUED,
     EXHAUSTED,
-    VOIDED
+    VOIDED,
 }
