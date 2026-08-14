@@ -138,7 +138,7 @@ class TacticalBuildSelectionListener(
         }
         val candidateIndex = TacticalBuildSelectionGui.candidateIndexAt(event.rawSlot)
         if (candidateIndex >= 0) {
-            holder.select(holder.candidates().candidates()[candidateIndex].definition().id())
+            holder.select(holder.candidates().candidates()[candidateIndex].definition.id())
             TacticalBuildSelectionGui.refresh(
                 topInventory,
                 holder.candidates(),

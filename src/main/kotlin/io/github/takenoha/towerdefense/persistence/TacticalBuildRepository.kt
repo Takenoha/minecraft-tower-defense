@@ -76,7 +76,7 @@ class TacticalBuildRepository(database: Database) : TacticalBuildStateProvider, 
                     requested.generatedAt(),
                 )
                 for (candidate in requested.candidates()) {
-                    val definition = candidate.definition()
+                    val definition = candidate.definition
                     connection.prepareStatement(
                         """
                         INSERT INTO tactical_build_candidates(
@@ -85,7 +85,7 @@ class TacticalBuildRepository(database: Database) : TacticalBuildStateProvider, 
                         """.trimIndent(),
                     ).use { statement ->
                         statement.setString(1, requested.tacticalSessionId().toString())
-                        statement.setInt(2, candidate.slot())
+                        statement.setInt(2, candidate.slot)
                         statement.setString(3, definition.id())
                         statement.setInt(4, definition.version())
                         statement.setString(5, TacticalDefinitionCodec.encode(definition))
@@ -935,7 +935,7 @@ class TacticalBuildRepository(database: Database) : TacticalBuildStateProvider, 
     private fun generationFingerprint(candidates: TacticalCandidateSet): String =
         candidates.candidates().asSequence()
             .map { candidate ->
-                "${candidate.slot()}:${TacticalDefinitionCodec.encode(candidate.definition())}"
+                "${candidate.slot}:${TacticalDefinitionCodec.encode(candidate.definition)}"
             }
             .fold(
                 "${candidates.startOperationId()}|${candidates.teamId()}|${candidates.stage()}|${candidates.seed()}|${candidates.generatorVersion()}",

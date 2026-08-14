@@ -1,7 +1,7 @@
-package io.github.takenoha.towerdefense.tactical;
+package io.github.takenoha.towerdefense.tactical
 
 /** Effect vocabulary supported by the first tactical-build implementation. */
-public enum TacticalEffectType {
+enum class TacticalEffectType {
     DAMAGE_MULTIPLIER,
     ATTACK_INTERVAL_MULTIPLIER,
     RANGE_ADD,
@@ -18,5 +18,5 @@ public enum TacticalEffectType {
     DAMAGE_TO_HIGH_HP_MULTIPLIER,
     DAMAGE_TO_LOW_HP_MULTIPLIER,
     DAMAGE_TO_SLOWED_TARGET_MULTIPLIER,
-    DAMAGE_TO_BURNING_TARGET_MULTIPLIER
+    DAMAGE_TO_BURNING_TARGET_MULTIPLIER,
 }

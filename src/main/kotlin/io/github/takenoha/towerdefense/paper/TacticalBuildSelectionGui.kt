@@ -81,7 +81,7 @@ class TacticalBuildSelectionGui private constructor() {
                 inventory.setItem(branchSlot, null)
             }
             for (slot in CANDIDATE_SLOTS.indices) {
-                val definition = candidates.candidates().get(slot).definition()
+                val definition = candidates.candidates().get(slot).definition
                 val selected = definition.id() == selectedBuildId
                 inventory.setItem(
                     CANDIDATE_SLOTS[slot],

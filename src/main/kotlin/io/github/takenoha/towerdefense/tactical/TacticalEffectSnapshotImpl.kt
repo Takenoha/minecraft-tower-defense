@@ -123,11 +123,11 @@ class TacticalEffectSnapshotImpl internal constructor(
             TacticalTargetCondition.NONE -> true
             TacticalTargetCondition.CORE_BELOW_50_PERCENT -> target.coreBelowHalf()
             TacticalTargetCondition.CORE_BELOW_30_PERCENT -> target.coreBelowThirtyPercent()
-            TacticalTargetCondition.BOSS -> target.boss()
+            TacticalTargetCondition.BOSS -> target.boss
             TacticalTargetCondition.HIGH_HP -> target.targetHasHighHealth()
             TacticalTargetCondition.LOW_HP -> target.targetHasLowHealth()
-            TacticalTargetCondition.SLOWED -> target.slowed()
-            TacticalTargetCondition.BURNING -> target.burning()
+            TacticalTargetCondition.SLOWED -> target.slowed
+            TacticalTargetCondition.BURNING -> target.burning
         }
 
         @JvmStatic
