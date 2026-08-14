@@ -1,7 +1,7 @@
-package io.github.takenoha.towerdefense.persistence;
+package io.github.takenoha.towerdefense.persistence
 
 /** Result of the atomic global event-lock acquisition and session insert. */
-public enum StartOutcome {
+enum class StartOutcome {
     STARTED,
-    LOCKED
+    LOCKED,
 }
