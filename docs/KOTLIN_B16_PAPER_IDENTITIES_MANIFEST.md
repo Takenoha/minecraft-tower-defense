@@ -9,8 +9,9 @@ created: 2026-08-14
 
 ## Scope
 
-- Base: `feat/kotlin-b15-paper-policies-abo` at `6faabec9584578f3763c1784f7cb6fe59c2a3769`
+- Base: `feat/kotlin-b15-paper-policies-abo` at `e9388db` (includes the corrected package-private `PlayerRecoveryGuard`)
 - Implementation commit: `bf625748079e1cc6cb554615d0f483448fab33ba`
+- Verified code HEAD: `b5d9fd0bb4840e7dcd58a146e3cdff86f424dd84`
 - Migrated boundaries: `CoreItemIdentity`, `RaidSealItemIdentity`, `TowerItemIdentity`, `TowerEntityIdentity`, `ResearchCrystalItemIdentity`, and `ResourceVoucherItemData`
 - Java sources removed from `src/main/java/io/github/takenoha/towerdefense/paper/`
 - Kotlin `@JvmRecord` sources added under `src/main/kotlin/io/github/takenoha/towerdefense/paper/`
@@ -33,7 +34,7 @@ The clean verification build completed successfully at verified code HEAD `bf625
 - failures 0 / errors 0 / skipped 0
 - JVM class major: 69
 - all six Kotlin identity classes present; Java duplicate classes absent
-- packaged JAR SHA-256: `07499FD4D86D951A66960952924C39B4E68CDB04B670EAC3CB1DF73E18DA160A`
+- packaged JAR SHA-256: `09A709D102FA9EA6782825AE6678B960AF158498ABA8B16B34005C4AA7AA0717`
 - packaged `plugin.yml` SHA-256: `F0A932C3FEA5393D48B42858BBD5DCCF92A03E76355BBD0A799C729FFABB043A`
 - embedded Kotlin runtime entries: 1045
 - embedded `kotlin-reflect` artifact entries: 0
