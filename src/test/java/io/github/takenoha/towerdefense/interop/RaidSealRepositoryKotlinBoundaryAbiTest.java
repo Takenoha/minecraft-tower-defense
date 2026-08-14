@@ -106,6 +106,7 @@ class RaidSealRepositoryKotlinBoundaryAbiTest {
             throws Exception {
         Method method = RaidSealRepository.class.getDeclaredMethod(name, parameterTypes);
         assertTrue(Modifier.isStatic(method.getModifiers()), name + " must be static");
+        assertTrue(Modifier.isPublic(method.getModifiers()), name + " must be public");
         assertEquals(returnType, method.getReturnType(), name);
         assertArrayEquals(new Class<?>[] {SQLException.class}, method.getExceptionTypes(), name);
     }
