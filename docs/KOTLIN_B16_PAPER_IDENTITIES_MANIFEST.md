@@ -13,7 +13,7 @@ created: 2026-08-14
 - Implementation commit: `bf625748079e1cc6cb554615d0f483448fab33ba`
 - Verified code HEAD: `b5d9fd0bb4840e7dcd58a146e3cdff86f424dd84`
 - Migrated boundaries: `CoreItemIdentity`, `RaidSealItemIdentity`, `TowerItemIdentity`, `TowerEntityIdentity`, `ResearchCrystalItemIdentity`, and `ResourceVoucherItemData`
-- Java sources removed from `src/main/java/io/github/takenoha/towerdefense/paper/`
+- The six identity Java sources were removed from `src/main/java/io/github/takenoha/towerdefense/paper/`; unrelated `PlayerRecoveryGuard.java` intentionally remains there for its package-private ABI.
 - Kotlin `@JvmRecord` sources added under `src/main/kotlin/io/github/takenoha/towerdefense/paper/`
 - Java ABI test added: `PaperIdentitiesKotlinBoundaryAbiTest.java`
 - Paper taggers/listeners/managers, GUI wiring, schema, and repository code were not changed.
@@ -27,7 +27,7 @@ created: 2026-08-14
 
 ## Build and artifact verification
 
-The clean verification build completed successfully at verified code HEAD `bf625748079e1cc6cb554615d0f483448fab33ba`:
+The clean verification build completed successfully at verified code HEAD `b5d9fd0bb4840e7dcd58a146e3cdff86f424dd84`:
 
 - `BUILD SUCCESSFUL`
 - 85 XML test reports / 307 tests
