@@ -69,7 +69,7 @@ class DefenseRepository(
                     statement.setString(3, TeamRecord.DEFAULT_DISPLAY_NAME);
                     statement.setString(4, createdAt.toString());
                     statement.executeUpdate();
-                
+
 }
                 connection.prepareStatement("""
                         INSERT INTO team_members(team_id, player_id, role, joined_at)
@@ -79,7 +79,7 @@ class DefenseRepository(
                     statement.setString(2, ownerPlayerId.toString());
                     statement.setString(3, createdAt.toString());
                     statement.executeUpdate();
-                
+
 }
                 connection.prepareStatement("""
                         INSERT INTO team_progress(
@@ -89,7 +89,7 @@ class DefenseRepository(
                     statement.setString(1, teamId.toString());
                     statement.setString(2, createdAt.toString());
                     statement.executeUpdate();
-                
+
 }
                 connection.prepareStatement("""
                         INSERT INTO tower_research(team_id, tower_type, research_level, updated_at)
@@ -102,7 +102,7 @@ class DefenseRepository(
                         statement.addBatch();
                     }
                     statement.executeBatch();
-                
+
 }
                 insertEmptyResourceBalances(connection, teamId, createdAt);
                 return@inImmediateTransaction TeamRecord(teamId, ownerPlayerId, setOf(ownerPlayerId), createdAt)
@@ -134,9 +134,9 @@ class DefenseRepository(
                         return@read Optional.empty();
                     }
                     return@read loadTeam(connection, uuid(resultSet.getString("team_id")));
-                
+
 }
-            
+
 }
         });
     }
@@ -180,7 +180,7 @@ class DefenseRepository(
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The team rename affected no rows");
                     }
-                
+
 }
                 insertTeamProfileOperation(
                         connection,
@@ -219,9 +219,9 @@ class DefenseRepository(
                         while (resultSet.next()) {
                             loaded.add(teamInvitationFromRow(resultSet));
                         }
-                    
+
 }
-                
+
 }
                 for (invitation in loaded) {
                     if (invitation.isPendingAt(now)) {
@@ -464,7 +464,7 @@ class DefenseRepository(
         }
         try {
             return database.inImmediateTransaction({ connection ->
-                var existing = 
+                var existing =
                         loadResearchCrystalRedemption(connection, operationId);
                 if (existing.isPresent()) {
                     var redemption = existing.orElseThrow();
@@ -603,7 +603,7 @@ class DefenseRepository(
                             throw PersistenceConflictException(
                                     "The research crystal redemption segment was concurrently resolved");
                         }
-                    
+
 }
                 }
                 var progress = loadTeamProgress(connection, redemption.teamId())
@@ -637,7 +637,7 @@ class DefenseRepository(
                         throw PersistenceConflictException(
                                 "The research crystal batch was concurrently resolved");
                     }
-                
+
 }
                 connection.prepareStatement("""
                         UPDATE team_progress
@@ -650,7 +650,7 @@ class DefenseRepository(
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The research point update affected no rows");
                     }
-                
+
 }
                 connection.prepareStatement("""
                         UPDATE research_crystal_redemptions
@@ -662,7 +662,7 @@ class DefenseRepository(
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The crystal redemption apply affected no rows");
                     }
-                
+
 }
                 var updatedBatch = loadResearchCrystalBatch(
                                 connection, batch.batchId())
@@ -686,7 +686,7 @@ class DefenseRepository(
         Objects.requireNonNull(rolledBackAt, "rolledBackAt");
         try {
             return database.inImmediateTransaction({ connection ->
-                var loaded = 
+                var loaded =
                         loadResearchCrystalRedemption(connection, operationId);
                 if (loaded.isEmpty()
                         || loaded.orElseThrow().state() != ResearchCrystalRedemptionState.PREPARED) {
@@ -702,7 +702,7 @@ class DefenseRepository(
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The crystal redemption rollback affected no rows");
                     }
-                
+
 }
                 var redemption = loaded.orElseThrow();
                 return@inImmediateTransaction Optional.of(ResearchCrystalRedemption(
@@ -773,7 +773,7 @@ class DefenseRepository(
                     statement.setString(2, memberId.toString());
                     statement.setString(3, joinedAt.toString());
                     statement.executeUpdate();
-                
+
 }
                 insertManagementOperation(
                         connection,
@@ -836,7 +836,7 @@ class DefenseRepository(
                     statement.setString(1, teamId.toString());
                     statement.setString(2, memberId.toString());
                     statement.executeUpdate();
-                
+
 }
                 insertManagementOperation(
                         connection,
@@ -893,7 +893,7 @@ class DefenseRepository(
                     statement.setString(1, teamId.toString());
                     statement.setString(2, actorId.toString());
                     statement.executeUpdate();
-                
+
 }
                 connection.prepareStatement("""
                         UPDATE team_members SET role = 'OWNER'
@@ -902,7 +902,7 @@ class DefenseRepository(
                     statement.setString(1, teamId.toString());
                     statement.setString(2, newOwnerId.toString());
                     statement.executeUpdate();
-                
+
 }
                 connection.prepareStatement("""
                         UPDATE teams SET owner_player_id = ? WHERE team_id = ?
@@ -910,7 +910,7 @@ class DefenseRepository(
                     statement.setString(1, newOwnerId.toString());
                     statement.setString(2, teamId.toString());
                     statement.executeUpdate();
-                
+
 }
                 insertManagementOperation(
                         connection,
@@ -967,7 +967,7 @@ class DefenseRepository(
                         statement.setString(1, teamId.toString());
                         statement.setString(2, playerId.toString());
                         statement.executeUpdate();
-                    
+
 }
                 }
                 insertManagementOperation(
@@ -1158,7 +1158,7 @@ statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     cores.add(coreFromRow(resultSet));
                 }
-            
+
 }}
             return@read java.util.List.copyOf(cores);
         });
@@ -1419,7 +1419,7 @@ statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     itemIds.add(uuid(resultSet.getString("item_id")));
                 }
-            
+
 }}
             return@read java.util.List.copyOf(itemIds);
         });
@@ -1442,9 +1442,9 @@ statement.executeQuery().use { resultSet ->
                 statement.setString(1, coreId.toString());
                 statement.executeQuery().use { resultSet ->
                     return@read if (resultSet.next()) Optional.of(corePlacementFromRow(resultSet)) else Optional.empty()
-                
+
 }
-            
+
 }
         });
     }
@@ -1851,7 +1851,7 @@ statement.executeQuery().use { resultSet ->
                         throw PersistenceConflictException(
                                 "The core repair receipt changed concurrently");
                     }
-                
+
 }
                 return@inImmediateTransaction OperationOutcome.APPLIED;
             });
@@ -2037,9 +2037,9 @@ statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         operations.add(coreRepairOperationFromRow(resultSet));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(operations);
         });
@@ -2081,9 +2081,9 @@ statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         operations.add(coreRepairOperationFromRow(resultSet));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(operations);
         });
@@ -2325,7 +2325,7 @@ statement.executeQuery().use { resultSet ->
                     statement.setString(1, snapshot.eventId().toString());
                     statement.setString(2, request.startedAt().toString());
                     statement.executeUpdate();
-                
+
 }
                 if (consumeSeal) {
                     RaidSealRepository.consumeForStart(connection, request);
@@ -2398,9 +2398,9 @@ statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         boosts.add(battleBoostFromRow(resultSet));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(boosts);
         });
@@ -2731,7 +2731,7 @@ statement.executeQuery().use { resultSet ->
                 while (resultSet.next()) {
                     ids.add(uuid(resultSet.getString("event_id")));
                 }
-            
+
 }}
 
             var events = ArrayList<StoredDefenseEvent>(ids.size);
@@ -3031,7 +3031,7 @@ statement.executeQuery().use { resultSet ->
                     statement.setInt(8, enemy.snapshotVersion());
                     statement.setString(9, enemy.updatedAt().toString());
                     statement.executeUpdate();
-                
+
 }
                 return@inImmediateTransaction null;
             });
@@ -3074,7 +3074,7 @@ statement.executeQuery().use { resultSet ->
                         throw PersistenceConflictException(
                                 "Enemy identity does not match an existing ledger row");
                     }
-                
+
 }
                 return@inImmediateTransaction null;
             });
@@ -3108,9 +3108,9 @@ statement.executeQuery().use { resultSet ->
                                 resultSet.getInt("snapshot_version"),
                                 instant(resultSet.getString("updated_at"))));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(entries);
         });
@@ -3141,9 +3141,9 @@ statement.executeQuery().use { resultSet ->
                                 resultSet.getLong("alive_enemies"),
                                 instant(resultSet.getString("occurred_at"))));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(transitions);
         });
@@ -3384,7 +3384,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(2, teamId.toString());
             statement.setString(3, createdAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3397,7 +3397,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, settledAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3407,7 +3407,7 @@ statement.executeQuery().use { resultSet ->
                 """.trimIndent()).use { statement ->
             statement.setString(1, eventId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3427,7 +3427,7 @@ statement.executeQuery().use { resultSet ->
                 throw PersistenceConflictException(
                         "The battle-funds account was concurrently settled");
             }
-        
+
 }
     }
 
@@ -3439,9 +3439,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, eventId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(battleFundsFromRow(resultSet)) else Optional.empty();
-            
+
 }
-        
+
 }
     }
 
@@ -3492,9 +3492,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(3, kind.id());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(battleBoostFromRow(resultSet)) else Optional.empty();
-            
+
 }
-        
+
 }
     }
 
@@ -3522,7 +3522,7 @@ statement.executeQuery().use { resultSet ->
             statement.setDouble(6, boost.multiplier());
             statement.setString(7, boost.updatedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3544,7 +3544,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(9, fingerprint);
             statement.setString(10, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3568,9 +3568,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getLong("cost"),
                         resultSet.getDouble("boost_multiplier"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -3600,9 +3600,9 @@ statement.executeQuery().use { resultSet ->
                                 uuid(resultSet.getString("team_id")),
                                 resultSet.getLong("current_hp"),
                                 resultSet.getLong("max_hp"))) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -3623,7 +3623,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The tower durability update affected no rows");
             }
-        
+
 }
     }
 
@@ -3635,7 +3635,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The destroyed tower delete affected no rows");
             }
-        
+
 }
     }
 
@@ -3657,7 +3657,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(9, operation.payloadFingerprint());
             statement.setString(10, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3681,9 +3681,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getLong("remaining_hp"),
                         resultSet.getInt("destroyed") == 1,
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -3728,7 +3728,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(8, fingerprint);
             statement.setString(9, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3751,9 +3751,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getLong("repaired_hit_points"),
                         resultSet.getLong("cost"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -3781,9 +3781,9 @@ statement.executeQuery().use { resultSet ->
                     throw PersistenceConflictException(
                             "The tower is missing or belongs to another team");
                 }
-            
+
 }
-        
+
 }
     }
 
@@ -3803,7 +3803,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(7, fingerprint);
             statement.setString(8, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3825,9 +3825,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getString("operation_kind"),
                         resultSet.getLong("amount"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -3879,7 +3879,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(6, issuedAt.toString());
             statement.setString(7, issuedAt.toString());
             statement.executeUpdate();
-        
+
 }
         var existing = loadResearchCrystalBatch(connection, batchId)
                 .orElseThrow { SQLException(
@@ -3909,7 +3909,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(7, issuedAt.toString());
             statement.setString(8, issuedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -3932,7 +3932,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The victory progression update affected no rows");
             }
-        
+
 }
     }
 
@@ -3995,7 +3995,7 @@ statement.executeQuery().use { resultSet ->
                         statement.setString(2, inviteeId.toString());
                         statement.setString(3, resolvedAt.toString());
                         statement.executeUpdate();
-                    
+
 }
                 }
                 updateInvitationState(
@@ -4049,7 +4049,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(8, nullableInstantString(invitation.resolvedAt()));
             statement.setString(9, payloadFingerprint);
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4065,7 +4065,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The invitation state update affected no rows");
             }
-        
+
 }
     }
 
@@ -4078,7 +4078,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, resolvedAt.toString());
             statement.setString(2, invitationId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4092,9 +4092,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(2, inviteeId.toString());
             statement.executeQuery().use { resultSet ->
                 return resultSet.next();
-            
+
 }
-        
+
 }
     }
 
@@ -4107,9 +4107,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, invitationId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(teamInvitationFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4144,7 +4144,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4163,9 +4163,9 @@ statement.executeQuery().use { resultSet ->
                         uuid(resultSet.getString("actor_id")),
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -4188,9 +4188,9 @@ statement.executeQuery().use { resultSet ->
                     return Optional.empty();
                 }
                 return loadTeam(connection, uuid(resultSet.getString("team_id")));
-            
+
 }
-        
+
 }
     }
 
@@ -4207,9 +4207,9 @@ statement.executeQuery().use { resultSet ->
                 while (membersResult.next()) {
                     members.add(uuid(membersResult.getString("player_id")));
                 }
-            
+
 }
-        
+
 }
         return TeamRecord(
                 teamId,
@@ -4230,9 +4230,9 @@ statement.executeQuery().use { resultSet ->
                     return Optional.empty();
                 }
                 return Optional.of(teamFromRow(connection, resultSet));
-            
+
 }
-        
+
 }
     }
 
@@ -4248,9 +4248,9 @@ statement.executeQuery().use { resultSet ->
                                 resultSet.getLong("highest_cleared_level"),
                                 resultSet.getLong("unlocked_level"),
                                 resultSet.getLong("research_points"))) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4263,9 +4263,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, batchId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(researchCrystalBatchFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4281,9 +4281,9 @@ statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(ResearchCrystalSegment(
                                 resultSet.getInt("segment_quantity"),
                                 resultSet.getInt("redeemed_quantity"))) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4305,7 +4305,7 @@ statement.executeQuery().use { resultSet ->
                 statement.addBatch();
             }
             statement.executeBatch();
-        
+
 }
     }
 
@@ -4332,9 +4332,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, operationId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(researchCrystalRedemptionFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4379,7 +4379,7 @@ statement.executeQuery().use { resultSet ->
             }
             statement.setString(10, redemption.preparedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4429,9 +4429,9 @@ statement.executeQuery().use { resultSet ->
                     throw PersistenceConflictException(
                             "Player " + playerId + " is not a member of team " + teamId);
                 }
-            
+
 }
-        
+
 }
     }
 
@@ -4453,9 +4453,9 @@ statement.executeQuery().use { resultSet ->
                     throw PersistenceConflictException(
                             "A team with resource wallet points cannot be disbanded");
                 }
-            
+
 }
-        
+
 }
         if (ResourceVoucherRepository.hasLiveVouchers(connection, teamId)) {
             throw PersistenceConflictException(
@@ -4474,9 +4474,9 @@ statement.executeQuery().use { resultSet ->
                     throw PersistenceConflictException(
                             "A team with defense history cannot be deleted");
                 }
-            
+
 }
-        
+
 }
         connection.prepareStatement("""
                 SELECT 1 FROM team_resource_balances
@@ -4489,9 +4489,9 @@ statement.executeQuery().use { resultSet ->
                     throw PersistenceConflictException(
                             "A team with a non-zero resource wallet cannot be deleted");
                 }
-            
+
 }
-        
+
 }
     }
 
@@ -4502,7 +4502,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The team delete affected no rows");
             }
-        
+
 }
     }
 
@@ -4520,7 +4520,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4539,9 +4539,9 @@ statement.executeQuery().use { resultSet ->
                         uuid(resultSet.getString("actor_id")),
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -4578,7 +4578,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(12, operation.payloadFingerprint());
             statement.setString(13, operation.preparedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4594,9 +4594,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, operationId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(coreRepairOperationFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4665,7 +4665,7 @@ statement.executeQuery().use { resultSet ->
                 throw PersistenceConflictException(
                         "The core repair state changed concurrently");
             }
-        
+
 }
     }
 
@@ -4681,7 +4681,7 @@ statement.executeQuery().use { resultSet ->
             statement.setLong(4, receipt.quantity());
             statement.setString(5, receipt.reservedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4704,9 +4704,9 @@ statement.executeQuery().use { resultSet ->
                         CoreRepairReceiptState.valueOf(resultSet.getString("state")),
                         instant(resultSet.getString("reserved_at")),
                         nullableInstant(resultSet.getString("resolved_at"))));
-            
+
 }
-        
+
 }
     }
 
@@ -4728,7 +4728,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(6, state.name);
             statement.setString(7, state.name);
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4759,7 +4759,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(6, paymentMode.name);
             statement.setString(7, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4779,9 +4779,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getString("operation_kind"),
                         resultSet.getString("payload_fingerprint"),
                         PaymentMode.valueOf(resultSet.getString("payment_mode"))));
-            
+
 }
-        
+
 }
     }
 
@@ -4853,7 +4853,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The core health update affected no rows");
             }
-        
+
 }
     }
 
@@ -4872,7 +4872,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The core position update affected no rows");
             }
-        
+
 }
     }
 
@@ -4896,7 +4896,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The core rebuild update affected no rows");
             }
-        
+
 }
     }
 
@@ -4918,7 +4918,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(9, core.createdAt().toString());
             statement.setString(10, core.updatedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -4931,9 +4931,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, coreId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4946,9 +4946,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, teamId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -4971,9 +4971,9 @@ statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         placements.add(corePlacementFromRow(resultSet));
                     }
-                
+
 }
-            
+
 }
             return@read java.util.List.copyOf(placements);
         });
@@ -4991,7 +4991,7 @@ statement.executeQuery().use { resultSet ->
                 statement.addBatch();
             }
             statement.executeBatch();
-        
+
 }
     }
 
@@ -5008,9 +5008,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, operationId.toString());
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(corePlacementFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -5039,7 +5039,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(14, placement.previousBlockData());
             statement.setString(15, placement.preparedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5072,7 +5072,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The core placement state update affected no rows");
             }
-        
+
 }
     }
 
@@ -5156,9 +5156,9 @@ statement.executeQuery().use { resultSet ->
             statement.setDouble(8, minimumCoreDistance * minimumCoreDistance);
             statement.executeQuery().use { resultSet ->
                 return if (resultSet.next()) Optional.of(coreFromRow(resultSet)) else Optional.empty()
-            
+
 }
-        
+
 }
     }
 
@@ -5212,7 +5212,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(23, request.startedAt().toString());
             statement.setString(24, request.startedAt().toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5261,9 +5261,9 @@ statement.executeQuery().use { resultSet ->
                         resultSet.getLong("revision"),
                         if (terminalOperation == null) Optional.empty() else Optional.of(uuid(terminalOperation)),
                         if (terminalAt == null) Optional.empty() else Optional.of(instant(terminalAt))));
-            
+
 }
-        
+
 }
     }
 
@@ -5291,9 +5291,9 @@ statement.executeQuery().use { resultSet ->
                         effective.add(playerId);
                     }
                 }
-            
+
 }
-        
+
 }
         return ParticipantSets(
                 registered as java.util.Set<UUID>,
@@ -5319,7 +5319,7 @@ statement.executeQuery().use { resultSet ->
                 statement.addBatch();
             }
             statement.executeBatch();
-        
+
 }
     }
 
@@ -5349,7 +5349,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 return false;
             }
-        
+
 }
         connection.prepareStatement("""
                 UPDATE cores
@@ -5363,7 +5363,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The event core update affected no rows");
             }
-        
+
 }
         return true;
     }
@@ -5384,7 +5384,7 @@ statement.executeQuery().use { resultSet ->
             statement.setLong(7, snapshot.aliveEnemies());
             statement.setString(8, occurredAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5402,7 +5402,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(5, payloadFingerprint);
             statement.setString(6, appliedAt.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5422,9 +5422,9 @@ statement.executeQuery().use { resultSet ->
                         OperationKind.valueOf(resultSet.getString("operation_kind")),
                         resultSet.getLong("target_revision"),
                         resultSet.getString("payload_fingerprint")));
-            
+
 }
-        
+
 }
     }
 
@@ -5450,7 +5450,7 @@ statement.executeQuery().use { resultSet ->
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The terminal event update affected no rows");
             }
-        
+
 }
     }
 
@@ -5463,7 +5463,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, occurredAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5477,7 +5477,7 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, occurredAt.toString());
             statement.setString(2, eventId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5486,7 +5486,7 @@ statement.executeQuery().use { resultSet ->
                 "DELETE FROM event_lock WHERE singleton = 1 AND event_id = ?").use { statement ->
             statement.setString(1, eventId.toString());
             statement.executeUpdate();
-        
+
 }
     }
 
@@ -5495,7 +5495,7 @@ statement.executeQuery().use { resultSet ->
                 "SELECT event_id FROM event_lock WHERE singleton = 1").use { statement ->
 statement.executeQuery().use { resultSet ->
             return if (resultSet.next()) Optional.of(uuid(resultSet.getString("event_id"))) else Optional.empty()
-        
+
 }}
     }
 
@@ -5505,9 +5505,9 @@ statement.executeQuery().use { resultSet ->
             statement.setString(1, eventId.toString());
             statement.executeQuery().use { resultSet ->
                 return resultSet.next();
-            
+
 }
-        
+
 }
     }
 
