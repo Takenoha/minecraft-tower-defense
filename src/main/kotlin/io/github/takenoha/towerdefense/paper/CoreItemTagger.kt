@@ -81,8 +81,7 @@ class CoreItemTagger(plugin: Plugin) {
             data.get(itemIdKey, PersistentDataType.STRING) == null
     }
 
-    fun hasItemId(item: ItemStack?, itemId: UUID): Boolean {
-        Objects.requireNonNull(itemId, "itemId")
+    fun hasItemId(item: ItemStack?, itemId: UUID?): Boolean {
         return read(item).map { identity -> identity.itemId == itemId }.orElse(false)
     }
 
