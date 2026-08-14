@@ -1,6 +1,8 @@
 package io.github.takenoha.towerdefense.paper
 
 import io.github.takenoha.towerdefense.domain.TowerType
+import java.util.ArrayList
+import java.util.Collections
 import java.util.Objects
 import org.bukkit.NamespacedKey
 import org.bukkit.entity.Player
@@ -20,8 +22,13 @@ class TowerRecipeCatalog private constructor() {
 
         /** Returns every tower recipe key in the same order as [TowerType.values]. */
         @JvmStatic
-        fun keys(plugin: Plugin): List<NamespacedKey> =
-            TowerType.values().map { type -> key(plugin, type) }
+        fun keys(plugin: Plugin): List<NamespacedKey> {
+            val keys = ArrayList<NamespacedKey>()
+            for (type in TowerType.values()) {
+                keys.add(key(plugin, type))
+            }
+            return Collections.unmodifiableList(keys)
+        }
 
         /** Discovers all tower recipes and returns the number newly discovered for this player. */
         @JvmStatic

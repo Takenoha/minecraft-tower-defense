@@ -1,6 +1,7 @@
 package io.github.takenoha.towerdefense.paper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
@@ -10,6 +11,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.List;
 import java.util.OptionalLong;
+import java.lang.reflect.Proxy;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
@@ -49,6 +51,22 @@ class PaperRecipeCatalogsKotlinBoundaryAbiTest {
         assertEquals(OptionalLong.empty(), RaidSealCatalog.stageAtSlot(9));
         assertEquals(16, RaidSealCatalog.slotForStage(9L));
         assertEquals(17, RaidSealCatalog.slotForStage(10L));
+    }
+
+    @Test
+    void returnedCatalogListsRemainUnmodifiable() {
+        Plugin plugin = (Plugin) Proxy.newProxyInstance(
+                Plugin.class.getClassLoader(),
+                new Class<?>[] {Plugin.class},
+                (proxy, method, arguments) -> {
+                    if (method.getName().equals("getName")
+                            || method.getName().equals("namespace")) {
+                        return "minecraft-tower-defense";
+                    }
+                    throw new UnsupportedOperationException(method.toString());
+                });
+        assertThrows(UnsupportedOperationException.class, () -> TowerRecipeCatalog.keys(plugin).clear());
+        assertThrows(UnsupportedOperationException.class, () -> RaidSealCatalog.recipeStages().clear());
     }
 
     private static void assertUtilityClass(Class<?> type) throws Exception {
