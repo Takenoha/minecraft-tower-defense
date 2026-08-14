@@ -9,7 +9,7 @@ created: 2026-08-14
 
 ## Scope
 
-- Base: `feat/kotlin-b16-paper-identities-abo` at `880b8e3`
+- Base: `feat/kotlin-b16-paper-identities-abo` at `eab1035` (includes the corrected B16 manifest)
 - Implementation commit: `552447f4078254a4cc47eec3ff21087800d91844`
 - Migrated boundaries: `CoreMaterialPolicy`, `PaymentSelectionPolicy`, `ReceiptTransferPolicy`, and `VoucherReceiptRecoveryPolicy`
 - Java policy sources removed from `src/main/java/io/github/takenoha/towerdefense/paper/`
