@@ -29,14 +29,14 @@ created: 2026-08-14
 
 ## Build and artifact verification
 
-The clean verification build completed successfully at verified code HEAD `71d7addc4a6839c85ee5ba1c5593d67fa0130d0e`:
+The clean verification build completed successfully at verified code HEAD `69ff21c767a58a9d693321504a14e6d5c32fa924`:
 
 - `BUILD SUCCESSFUL`
 - 84 XML test reports / 305 tests
 - failures 0 / errors 0 / skipped 0
 - Four Kotlin policy classes present; `PlayerRecoveryGuard` remains the single Java implementation
 - JVM class major: 69
-- packaged JAR SHA-256: `A8FF2547FDDF43EC60B690642A1E78E2A801F83670A383ECA24DFE32F5CD7259`
+- packaged JAR SHA-256: `B8AE68FBEB1253E1B4364125D65E19F664E83ED0C89D69C30B3BBF5E8868F62D`
 - packaged `plugin.yml` SHA-256: `F0A932C3FEA5393D48B42858BBD5DCCF92A03E76355BBD0A799C729FFABB043A`
 - embedded Kotlin runtime entries: 1045
 - embedded `kotlin-reflect` artifact entries: 0
