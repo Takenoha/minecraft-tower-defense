@@ -38,7 +38,9 @@ The full verification build completed successfully after the ABI and lifecycle f
 - failures 0 / errors 0 / skipped 0
 - Kotlin production class present; Java duplicate class absent
 - JVM class major 69
-- packaged JAR SHA-256 and `plugin.yml` SHA-256 are recorded from the final clean verification build
-- embedded Kotlin runtime entries are retained; `kotlin-reflect` remains absent
+- packaged JAR SHA-256: `DA4406C27BCF12BE2B56DA694F5158C9BEE0BBE94C96D27A7E9B0CE84AA920A8`
+- packaged `plugin.yml` SHA-256: `F0A932C3FEA5393D48B42858BBD5DCCF92A03E76355BBD0A799C729FFABB043A`
+- embedded Kotlin runtime entries: 1045
+- embedded `kotlin-reflect` artifact entries: 0
 
 Independent fixed-HEAD review and Paper real-server acceptance remain separate gates.
