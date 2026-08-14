@@ -3,6 +3,7 @@ package io.github.takenoha.towerdefense.paper;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.takenoha.towerdefense.paper.ResearchCrystalInventoryPolicy.Candidate;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
