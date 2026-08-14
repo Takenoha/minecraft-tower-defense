@@ -11,7 +11,7 @@ created: 2026-08-14
 
 - Base: `ca29636eab6f74b9cc19fc62207ab19356cc98a8`
 - Event listener implementation commit: `5cd1fb5`
-- Final HEAD: `6309fb50e6acab5d4cf03dd586c0ab481a5d6f3a`
+- Code verification HEAD: `6309fb50e6acab5d4cf03dd586c0ab481a5d6f3a`
 - Target: `EventEnemyListener.java` → `EventEnemyListener.kt`
 - Boundary test: `EventEnemyListenerKotlinBoundaryAbiTest.java`
 - B49 corrected Candidate record bridge is included unchanged; no other caller, tagger, persistence, schema, or plugin wiring changes.
