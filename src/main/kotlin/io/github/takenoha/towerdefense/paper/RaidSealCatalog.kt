@@ -1,6 +1,8 @@
 package io.github.takenoha.towerdefense.paper
 
 import io.github.takenoha.towerdefense.domain.StageWaveSchedule
+import java.util.ArrayList
+import java.util.Collections
 import java.util.OptionalLong
 
 /** Stage-specific vanilla crafting and core-GUI slots for raid seals. */
@@ -23,7 +25,9 @@ class RaidSealCatalog private constructor() {
         )
 
         @JvmStatic
-        fun recipeStages(): List<Long> = (1L..MAX_RECIPE_STAGE_LEVEL).toList()
+        fun recipeStages(): List<Long> = Collections.unmodifiableList(
+            ArrayList((1L..MAX_RECIPE_STAGE_LEVEL).toList()),
+        )
 
         @JvmStatic
         fun ingredientNameFor(stageLevel: Long): String {
