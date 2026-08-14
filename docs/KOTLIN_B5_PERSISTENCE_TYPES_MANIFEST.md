@@ -62,11 +62,11 @@ BUILD SUCCESSFUL
 
 Generated ABI checks:
 
-- All 17 migrated classes are JVM major version `69`.
+- All 18 migrated classes are JVM major version `69`.
 - The nine enums expose the expected Java constants and `values()`/`valueOf(String)` methods.
 - The nine result/rollback records expose the expected record component names/accessors and
   reject null required components from Java.
-- No migrated class was emitted under `build/classes/java/main`; all 17 are emitted under
+- No migrated class was emitted under `build/classes/java/main`; all 18 are emitted under
   `build/classes/kotlin/main`.
 
 Artifact checks:
