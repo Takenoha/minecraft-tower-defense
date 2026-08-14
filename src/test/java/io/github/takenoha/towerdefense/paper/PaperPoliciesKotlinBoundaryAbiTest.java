@@ -60,6 +60,8 @@ class PaperPoliciesKotlinBoundaryAbiTest {
 
         assertEquals("ECHO_SHARD", RaidSealMaterialPolicy.class.getField("CURRENT_MATERIAL").get(null));
         assertEquals("ENDER_EYE", RaidSealMaterialPolicy.class.getField("LEGACY_MATERIAL").get(null));
+        assertTrue(!Modifier.isPublic(PlayerRecoveryGuard.class.getModifiers()));
+        assertTrue(!Modifier.isPublic(PlayerRecoveryGuard.class.getDeclaredConstructor().getModifiers()));
         assertTrue(Modifier.isPrivate(VoucherEntityPolicy.class.getDeclaredConstructor().getModifiers()));
         assertTrue(Modifier.isPrivate(VoucherContainerPolicy.class.getDeclaredConstructor().getModifiers()));
         assertTrue(Modifier.isPrivate(RaidSealMaterialPolicy.class.getDeclaredConstructor().getModifiers()));
@@ -70,9 +72,12 @@ class PaperPoliciesKotlinBoundaryAbiTest {
     void recoveryGuardKeepsPackageBoundaryMethodsAndStateSemantics() throws Exception {
         PlayerRecoveryGuard guard = new PlayerRecoveryGuard();
         UUID playerId = UUID.randomUUID();
-        assertEquals(boolean.class, PlayerRecoveryGuard.class.getMethod("isGuarded", UUID.class).getReturnType());
-        assertEquals(void.class, PlayerRecoveryGuard.class.getMethod("begin", UUID.class).getReturnType());
-        assertEquals(void.class, PlayerRecoveryGuard.class.getMethod("complete", UUID.class).getReturnType());
+        assertEquals(boolean.class, PlayerRecoveryGuard.class.getDeclaredMethod("isGuarded", UUID.class).getReturnType());
+        assertEquals(void.class, PlayerRecoveryGuard.class.getDeclaredMethod("begin", UUID.class).getReturnType());
+        assertEquals(void.class, PlayerRecoveryGuard.class.getDeclaredMethod("complete", UUID.class).getReturnType());
+        assertTrue(!Modifier.isPublic(PlayerRecoveryGuard.class.getDeclaredMethod("isGuarded", UUID.class).getModifiers()));
+        assertTrue(!Modifier.isPublic(PlayerRecoveryGuard.class.getDeclaredMethod("begin", UUID.class).getModifiers()));
+        assertTrue(!Modifier.isPublic(PlayerRecoveryGuard.class.getDeclaredMethod("complete", UUID.class).getModifiers()));
         assertTrue(Modifier.isFinal(PlayerRecoveryGuard.class.getModifiers()));
         assertTrue(!guard.isGuarded(playerId));
         guard.begin(playerId);
