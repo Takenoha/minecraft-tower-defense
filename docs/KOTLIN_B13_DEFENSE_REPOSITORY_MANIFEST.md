@@ -11,6 +11,8 @@ created: 2026-08-14
 
 - Base: `feat/kotlin-b12-tactical-build-repository-abo` at `7f1b86758106bcd9d4a3c56428f46e3055120d56`
 - Implementation commit: `00959b3aac61b9f8c7d2db59917dc88b9611718b`
+- Final verification HEAD: `065632017a74c28a549f13640b9f9e48d19c36a8`
+- Final verification commit removes trailing whitespace introduced during the Java-to-Kotlin source migration.
 - Migrated boundary: `DefenseRepository`
 - Java source removed: `src/main/java/io/github/takenoha/towerdefense/persistence/DefenseRepository.java`
 - Kotlin source added: `src/main/kotlin/io/github/takenoha/towerdefense/persistence/DefenseRepository.kt`
