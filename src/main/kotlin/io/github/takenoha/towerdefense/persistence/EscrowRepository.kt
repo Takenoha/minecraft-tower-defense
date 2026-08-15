@@ -667,7 +667,7 @@ class EscrowRepository(database: Database) {
                 statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         val entry = rewardQueueFromRow(resultSet)
-                        entries[entry.queueId()] = entry
+                        entries[entry.queueId] = entry
                     }
                 }
             }
@@ -691,17 +691,17 @@ class EscrowRepository(database: Database) {
                 statement.executeQuery().use { resultSet ->
                     while (resultSet.next()) {
                         val entry = rewardQueueFromRow(resultSet)
-                        if (entry.teamClaimDeadline().isPresent
-                            && !at.isBefore(entry.teamClaimDeadline().orElseThrow())
+                        if (entry.teamClaimDeadline.isPresent
+                            && !at.isBefore(entry.teamClaimDeadline.orElseThrow())
                         ) {
-                            entries[entry.queueId()] = entry
+                            entries[entry.queueId] = entry
                         }
                     }
                 }
             }
             val ordered = ArrayList(entries.values)
             ordered.sortWith(
-                compareBy<RewardQueueEntry> { it.createdAt() }.thenBy { it.queueId() },
+                compareBy<RewardQueueEntry> { it.createdAt }.thenBy { it.queueId },
             )
             java.util.List.copyOf(ordered)
         }
@@ -732,10 +732,10 @@ class EscrowRepository(database: Database) {
                     PersistenceConflictException("Unknown reward queue row $queueId")
                 }
                 requireAuthorizedRewardRecipient(connection, entry, playerId, preparedAt)
-                if (entry.status() == RewardQueueStatus.DELIVERED) {
+                if (entry.status == RewardQueueStatus.DELIVERED) {
                     return@inImmediateTransaction RewardDeliveryOutcome.ALREADY_DELIVERED
                 }
-                if (entry.status() == RewardQueueStatus.VOIDED) {
+                if (entry.status == RewardQueueStatus.VOIDED) {
                     return@inImmediateTransaction RewardDeliveryOutcome.VOIDED
                 }
 
@@ -783,9 +783,9 @@ class EscrowRepository(database: Database) {
                 ).use { statement ->
                     statement.setString(1, operationId.toString())
                     statement.setString(2, queueId.toString())
-                    statement.setString(3, entry.eventId().toString())
+                    statement.setString(3, entry.eventId.toString())
                     statement.setString(4, playerId.toString())
-                    statement.setInt(5, entry.quantity())
+                    statement.setInt(5, entry.quantity)
                     statement.setString(6, fingerprint)
                     statement.setString(7, preparedAt.toString())
                     statement.executeUpdate()
@@ -820,10 +820,10 @@ class EscrowRepository(database: Database) {
                     PersistenceConflictException("Unknown reward queue row $queueId")
                 }
                 requireAuthorizedRewardRecipient(connection, entry, playerId, deliveredAt)
-                if (entry.status() == RewardQueueStatus.DELIVERED) {
+                if (entry.status == RewardQueueStatus.DELIVERED) {
                     return@inImmediateTransaction OperationOutcome.ALREADY_APPLIED
                 }
-                if (entry.status() == RewardQueueStatus.VOIDED) {
+                if (entry.status == RewardQueueStatus.VOIDED) {
                     throw PersistenceConflictException(
                         "A voided reward queue row cannot be delivered",
                     )
@@ -1285,16 +1285,16 @@ class EscrowRepository(database: Database) {
             playerId: UUID,
             at: Instant,
         ) {
-            if (entry.scope() == RewardQueueScope.PLAYER) {
-                if (!entry.recipientId().equals(playerId)) {
+            if (entry.scope == RewardQueueScope.PLAYER) {
+                if (!entry.recipientId.equals(playerId)) {
                     throw PersistenceConflictException(
                         "Only the personal reward recipient may receive this queue row",
                     )
                 }
                 return
             }
-            if (entry.teamClaimDeadline().isPresent
-                && !at.isBefore(entry.teamClaimDeadline().orElseThrow())
+            if (entry.teamClaimDeadline.isPresent
+                && !at.isBefore(entry.teamClaimDeadline.orElseThrow())
             ) {
                 connection.prepareStatement(
                     """
@@ -1306,8 +1306,8 @@ class EscrowRepository(database: Database) {
                       AND t.owner_player_id = ?
                     """.trimIndent(),
                 ).use { statement ->
-                    statement.setString(1, entry.eventId().toString())
-                    statement.setString(2, entry.recipientId().toString())
+                    statement.setString(1, entry.eventId.toString())
+                    statement.setString(2, entry.recipientId.toString())
                     statement.setString(3, playerId.toString())
                     statement.executeQuery().use { resultSet ->
                         if (resultSet.next()) {
@@ -1332,8 +1332,8 @@ class EscrowRepository(database: Database) {
                 """.trimIndent(),
             ).use { statement ->
                 statement.setString(1, playerId.toString())
-                statement.setString(2, entry.eventId().toString())
-                statement.setString(3, entry.recipientId().toString())
+                statement.setString(2, entry.eventId.toString())
+                statement.setString(3, entry.recipientId.toString())
                 statement.executeQuery().use { resultSet ->
                     if (!resultSet.next()) {
                         throw PersistenceConflictException(
@@ -1355,8 +1355,8 @@ class EscrowRepository(database: Database) {
             entry: RewardQueueEntry,
             playerId: UUID,
         ): String = sha256(
-            entry.queueId().toString() + "|" + entry.eventId() + "|" + playerId + "|"
-                + entry.itemId() + "|" + entry.quantity(),
+            entry.queueId.toString() + "|" + entry.eventId + "|" + playerId + "|"
+                + entry.itemId + "|" + entry.quantity,
         )
 
         private fun loadRewardDeliveryOperation(
@@ -1429,10 +1429,10 @@ class EscrowRepository(database: Database) {
             fingerprint: String,
         ) {
             if (!operation.operationId.equals(operationId)
-                || !operation.queueId.equals(entry.queueId())
-                || !operation.eventId.equals(entry.eventId())
+                || !operation.queueId.equals(entry.queueId)
+                || !operation.eventId.equals(entry.eventId)
                 || !operation.playerId.equals(playerId)
-                || operation.quantity != entry.quantity()
+                || operation.quantity != entry.quantity
                 || !operation.payloadFingerprint.equals(fingerprint)
             ) {
                 throw PersistenceConflictException(

@@ -2275,7 +2275,7 @@ statement.executeQuery().use { resultSet ->
      */
     fun tryStartReserved(request: StartRequest): StartOutcome {
         Objects.requireNonNull(request, "request");
-        if (request.raidSealId().isEmpty()) {
+        if (request.raidSealId.isEmpty) {
             throw IllegalArgumentException("A reserved start requires a raid seal");
         }
         return tryStart(request, false);
@@ -2306,24 +2306,24 @@ statement.executeQuery().use { resultSet ->
                     return@inImmediateTransaction StartOutcome.LOCKED;
                 }
 
-                var snapshot = request.session();
+                var snapshot = request.session;
                 if (eventExists(connection, snapshot.eventId())) {
                     throw PersistenceConflictException(
                             "Event " + snapshot.eventId() + " already exists");
                 }
-                var core = loadCore(connection, request.coreId()).orElseThrow { PersistenceConflictException(
-                                "Core " + request.coreId() + " does not exist") };
+                var core = loadCore(connection, request.coreId).orElseThrow { PersistenceConflictException(
+                                "Core " + request.coreId + " does not exist") };
                 validateStartCore(snapshot, core);
 
                 insertEvent(connection, request, core);
-                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt());
-                replaceParticipants(connection, snapshot, request.startedAt());
+                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt);
+                replaceParticipants(connection, snapshot, request.startedAt);
                 connection.prepareStatement("""
                         INSERT INTO event_lock(singleton, event_id, acquired_at)
                         VALUES (1, ?, ?)
                         """.trimIndent()).use { statement ->
                     statement.setString(1, snapshot.eventId().toString());
-                    statement.setString(2, request.startedAt().toString());
+                    statement.setString(2, request.startedAt.toString());
                     statement.executeUpdate();
 
 }
@@ -5177,7 +5177,7 @@ statement.executeQuery().use { resultSet ->
     }
 
     private fun insertEvent(connection: Connection, request: StartRequest, core: CoreRecord): Unit {
-        var snapshot = request.session();
+        var snapshot = request.session;
         connection.prepareStatement("""
                 INSERT INTO defense_events(
                     event_id, team_id, core_id, state, stage_level, total_waves,
@@ -5207,10 +5207,10 @@ statement.executeQuery().use { resultSet ->
             statement.setInt(18, core.blockX());
             statement.setInt(19, core.blockY());
             statement.setInt(20, core.blockZ());
-            statement.setString(21, request.configSnapshot());
-            statement.setInt(22, request.configVersion());
-            statement.setString(23, request.startedAt().toString());
-            statement.setString(24, request.startedAt().toString());
+            statement.setString(21, request.configSnapshot);
+            statement.setInt(22, request.configVersion);
+            statement.setString(23, request.startedAt.toString());
+            statement.setString(24, request.startedAt.toString());
             statement.executeUpdate();
 
 }

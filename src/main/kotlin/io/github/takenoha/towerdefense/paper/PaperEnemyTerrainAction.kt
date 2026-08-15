@@ -114,8 +114,8 @@ class PaperEnemyTerrainAction(
             "|" + block.getY() +
             "|" + block.getZ() +
             "|" + kind +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
         val changeId = deterministic(taggedEnemy.eventId, "BLOCK_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BLOCK_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BLOCK_APPLY", actionKey)
@@ -242,8 +242,8 @@ class PaperEnemyTerrainAction(
             "|" + block.getX() +
             "|" + block.getY() +
             "|" + block.getZ() +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
         val changeId = deterministic(taggedEnemy.eventId, "DESTROYER_BREAK_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BLOCK_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BLOCK_APPLY", actionKey)
@@ -360,8 +360,8 @@ class PaperEnemyTerrainAction(
             "|" + block.getX() +
             "|" + block.getY() +
             "|" + block.getZ() +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
         val changeId = deterministic(taggedEnemy.eventId, "BRIDGE_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BRIDGE_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BRIDGE_APPLY", actionKey)

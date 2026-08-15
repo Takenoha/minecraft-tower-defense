@@ -67,12 +67,12 @@ class PaperBlockStateCodec private constructor() {
         fun applySnapshot(block: Block, snapshot: BlockStateSnapshot) {
             Objects.requireNonNull(block, "block")
             Objects.requireNonNull(snapshot, "snapshot")
-            block.setBlockData(parseBlockData(snapshot.blockData()), false)
-            if (snapshot.tileNbt().isBlank()) {
+            block.setBlockData(parseBlockData(snapshot.blockData), false)
+            if (snapshot.tileNbt.isBlank()) {
                 return
             }
             val state = block.state
-            PaperTileNbtCodec.apply(state, snapshot.tileNbt())
+            PaperTileNbtCodec.apply(state, snapshot.tileNbt)
             if (!state.update(true, false)) {
                 throw IllegalStateException(
                     "Paper rejected the durable tile-state update at " + block.location,
