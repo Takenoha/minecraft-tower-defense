@@ -49,32 +49,32 @@ class TowerResearchGui private constructor() {
                     Material.ENCHANTING_TABLE,
                     "チーム研究",
                     listOf(
-                        "研究ポイント: ${progress.researchPoints()}",
+                        "研究ポイント: ${progress.researchPoints}",
                         "研究Lvは同種タワーの個体Lv上限です。",
                     ),
                     NamedTextColor.LIGHT_PURPLE,
                 ),
             )
             for (value in research) {
-                val slot = RESEARCH_START_SLOT + value.towerType().ordinal
-                val cost = settings.researchCost(value.researchLevel())
-                val canPurchase = progress.researchPoints() >= cost &&
-                    value.researchLevel() < Int.MAX_VALUE
+                val slot = RESEARCH_START_SLOT + value.towerType.ordinal
+                val cost = settings.researchCost(value.researchLevel)
+                val canPurchase = progress.researchPoints >= cost &&
+                    value.researchLevel < Int.MAX_VALUE
                 inventory.setItem(
                     slot,
                     item(
-                        TowerItemTagger.materialFor(value.towerType()),
-                        "${value.towerType().displayName()}研究Lv${value.researchLevel()}",
+                        TowerItemTagger.materialFor(value.towerType),
+                        "${value.towerType.displayName()}研究Lv${value.researchLevel}",
                         if (canPurchase) {
                             listOf(
-                                "次の研究Lv: ${value.researchLevel() + 1}",
+                                "次の研究Lv: ${value.researchLevel + 1}",
                                 "必要研究ポイント: $cost",
                                 "クリックで研究を購入",
                             )
                         } else {
                             listOf(
                                 "次の研究Lv費用: $cost",
-                                if (progress.researchPoints() < cost) {
+                                if (progress.researchPoints < cost) {
                                     "研究ポイントが不足しています。"
                                 } else {
                                     "これ以上研究できません。"

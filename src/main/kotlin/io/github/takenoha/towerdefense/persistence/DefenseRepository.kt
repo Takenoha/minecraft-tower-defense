@@ -612,15 +612,15 @@ class DefenseRepository(
                 var creditedPoints = 0L
                 try {
                     creditedPoints = Math.addExact(
-                            progress.researchPoints(), redemption.quantity().toLong());
+                            progress.researchPoints, redemption.quantity().toLong());
                 } catch (overflow: ArithmeticException) {
                     throw PersistenceConflictException(
                             "The team's research point balance cannot increase further", overflow);
                 }
                 var updatedProgress = TeamProgress(
-                        progress.teamId(),
-                        progress.highestClearedLevel(),
-                        progress.unlockedLevel(),
+                        progress.teamId,
+                        progress.highestClearedLevel,
+                        progress.unlockedLevel,
                         creditedPoints);
                 var redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
                 var nextStatus = if (redeemedQuantity == batch.issuedQuantity()) ResearchCrystalBatchStatus.EXHAUSTED else ResearchCrystalBatchStatus.ISSUED
@@ -644,9 +644,9 @@ class DefenseRepository(
                         SET research_points = ?, updated_at = ?
                         WHERE team_id = ?
                         """.trimIndent()).use { statement ->
-                    statement.setLong(1, updatedProgress.researchPoints());
+                    statement.setLong(1, updatedProgress.researchPoints);
                     statement.setString(2, appliedAt.toString());
-                    statement.setString(3, updatedProgress.teamId().toString());
+                    statement.setString(3, updatedProgress.teamId.toString());
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The research point update affected no rows");
                     }
@@ -3848,7 +3848,7 @@ statement.executeQuery().use { resultSet ->
                 .orElseThrow { PersistenceConflictException(
                         "Team " + terminalSnapshot.teamId() + " has no progression row") };
         var quantity = rewardSettings.researchCrystalQuantity(
-                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel());
+                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel);
         if (quantity <= 0) {
             return;
         }
@@ -3925,8 +3925,8 @@ statement.executeQuery().use { resultSet ->
                 SET highest_cleared_level = ?, unlocked_level = ?, updated_at = ?
                 WHERE team_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, advanced.highestClearedLevel());
-            statement.setLong(2, advanced.unlockedLevel());
+            statement.setLong(1, advanced.highestClearedLevel);
+            statement.setLong(2, advanced.unlockedLevel);
             statement.setString(3, updatedAt.toString());
             statement.setString(4, teamId.toString());
             if (statement.executeUpdate() != 1) {
