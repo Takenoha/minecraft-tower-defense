@@ -5200,9 +5200,9 @@ statement.executeQuery().use { resultSet ->
             statement.setLong(11, snapshot.aliveEnemies());
             statement.setLong(12, core.currentHitPoints());
             statement.setLong(13, core.maximumHitPoints());
-            statement.setLong(14, snapshot.coreState().currentHitPoints());
-            statement.setLong(15, snapshot.coreState().maximumHitPoints());
-            statement.setInt(16, if (snapshot.coreState().present()) 1 else 0);
+            statement.setLong(14, snapshot.coreState().currentHitPoints);
+            statement.setLong(15, snapshot.coreState().maximumHitPoints);
+            statement.setInt(16, if (snapshot.coreState().present) 1 else 0);
             statement.setString(17, core.worldId().toString());
             statement.setInt(18, core.blockX());
             statement.setInt(19, core.blockY());
@@ -5340,9 +5340,9 @@ statement.executeQuery().use { resultSet ->
             statement.setInt(6, snapshot.currentWave());
             statement.setLong(7, snapshot.pendingEnemies());
             statement.setLong(8, snapshot.aliveEnemies());
-            statement.setLong(9, snapshot.coreState().currentHitPoints());
-            statement.setLong(10, snapshot.coreState().maximumHitPoints());
-            statement.setInt(11, if (snapshot.coreState().present()) 1 else 0);
+            statement.setLong(9, snapshot.coreState().currentHitPoints);
+            statement.setLong(10, snapshot.coreState().maximumHitPoints);
+            statement.setInt(11, if (snapshot.coreState().present) 1 else 0);
             statement.setString(12, updatedAt.toString());
             statement.setString(13, snapshot.eventId().toString());
             statement.setLong(14, expectedRevision);
@@ -5356,8 +5356,8 @@ statement.executeQuery().use { resultSet ->
                 SET current_hp = ?, max_hp = ?, updated_at = ?
                 WHERE core_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, snapshot.coreState().currentHitPoints());
-            statement.setLong(2, snapshot.coreState().maximumHitPoints());
+            statement.setLong(1, snapshot.coreState().currentHitPoints);
+            statement.setLong(2, snapshot.coreState().maximumHitPoints);
             statement.setString(3, updatedAt.toString());
             statement.setString(4, coreId.toString());
             if (statement.executeUpdate() != 1) {
@@ -5536,8 +5536,8 @@ statement.executeQuery().use { resultSet ->
         if (!snapshot.teamId().equals(core.teamId())) {
             throw PersistenceConflictException("The selected core belongs to another team");
         }
-        if (snapshot.coreState().maximumHitPoints() != core.maximumHitPoints()
-                || snapshot.coreState().currentHitPoints() != core.currentHitPoints()) {
+        if (snapshot.coreState().maximumHitPoints != core.maximumHitPoints()
+                || snapshot.coreState().currentHitPoints != core.currentHitPoints()) {
             throw PersistenceConflictException(
                     "The session core snapshot is stale compared with the database");
         }
@@ -5549,8 +5549,8 @@ statement.executeQuery().use { resultSet ->
                 || current.stageLevel() != next.stageLevel()
                 || current.totalWaves() != next.totalWaves()
                 || current.participantLimit() != next.participantLimit()
-                || current.coreState().maximumHitPoints()
-                        != next.coreState().maximumHitPoints()) {
+                || current.coreState().maximumHitPoints
+                        != next.coreState().maximumHitPoints) {
             throw IllegalArgumentException(
                     "A persisted session's immutable identity and configuration cannot change");
         }
@@ -5562,7 +5562,7 @@ statement.executeQuery().use { resultSet ->
                 || !next.effectiveParticipants().containsAll(current.effectiveParticipants())) {
             return false;
         }
-        return next.coreState().currentHitPoints() <= current.coreState().currentHitPoints();
+        return next.coreState().currentHitPoints <= current.coreState().currentHitPoints;
     }
 
     private fun requireDistance(minimumCoreDistance: Double): Unit {
@@ -5622,9 +5622,9 @@ statement.executeQuery().use { resultSet ->
         canonical.append(snapshot.participantsFrozen()).append('|')
         canonical.append(snapshot.pendingEnemies()).append('|')
         canonical.append(snapshot.aliveEnemies()).append('|')
-        canonical.append(snapshot.coreState().maximumHitPoints()).append('|')
-        canonical.append(snapshot.coreState().currentHitPoints()).append('|')
-        canonical.append(snapshot.coreState().present()).append('|')
+        canonical.append(snapshot.coreState().maximumHitPoints).append('|')
+        canonical.append(snapshot.coreState().currentHitPoints).append('|')
+        canonical.append(snapshot.coreState().present).append('|')
         appendSortedUuids(canonical, snapshot.registeredParticipants());
         canonical.append('|');
         appendSortedUuids(canonical, snapshot.effectiveParticipants());
