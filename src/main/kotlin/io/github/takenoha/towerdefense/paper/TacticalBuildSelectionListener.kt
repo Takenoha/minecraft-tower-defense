@@ -74,7 +74,7 @@ class TacticalBuildSelectionListener(
             if (!core.teamId().equals(team.id())) {
                 throw IllegalStateException("このチームのコアではありません")
             }
-            if (defensesValue.loadTeamProgress(team.id()).unlockedLevel() < stage) {
+            if (defensesValue.loadTeamProgress(team.id()).unlockedLevel < stage) {
                 throw IllegalStateException("このステージはまだ解放されていません")
             }
             val existing = tacticalValue.findGeneratedByTeamAndStage(

@@ -100,8 +100,8 @@ class CoreManagementGui private constructor() {
                     listOf(
                         "HP: ${core.currentHitPoints()} / ${core.maximumHitPoints()}",
                         "位置: ${core.blockX()}, ${core.blockY()}, ${core.blockZ()}",
-                        "最高クリアLv: ${progress.highestClearedLevel()}",
-                        "研究ポイント: ${progress.researchPoints()}",
+                        "最高クリアLv: ${progress.highestClearedLevel}",
+                        "研究ポイント: ${progress.researchPoints}",
                     ),
                     NamedTextColor.AQUA,
                 ),
@@ -150,7 +150,7 @@ class CoreManagementGui private constructor() {
                     listOf(
                         "自分のインベントリ内の発行元チームの研究結晶を納品します。",
                         "納品数: 有効な全スタックの合計",
-                        "現在の研究ポイント: ${progress.researchPoints()}",
+                        "現在の研究ポイント: ${progress.researchPoints}",
                         "クリックで納品",
                     ),
                     NamedTextColor.LIGHT_PURPLE,
@@ -162,7 +162,7 @@ class CoreManagementGui private constructor() {
                     Material.ENCHANTING_TABLE,
                     "タワー研究",
                     listOf(
-                        "現在の研究ポイント: ${progress.researchPoints()}",
+                        "現在の研究ポイント: ${progress.researchPoints}",
                         "タワー種別ごとの研究Lvを上げます。",
                         "クリックで研究画面を開きます。",
                     ),
@@ -244,7 +244,7 @@ class CoreManagementGui private constructor() {
             )
 
             for (stageLevel in RaidSealCatalog.recipeStages()) {
-                val unlocked = progress.unlockedLevel() >= stageLevel
+                val unlocked = progress.unlockedLevel >= stageLevel
                 inventory.setItem(
                     RaidSealCatalog.slotForStage(stageLevel),
                     item(
