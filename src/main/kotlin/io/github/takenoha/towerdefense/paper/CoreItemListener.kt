@@ -290,7 +290,7 @@ class CoreItemListener(
             blockY,
             blockZ,
             maximumHitPoints,
-            settingsValue.combat().minimumCoreDistance(),
+            settingsValue.combat().minimumCoreDistance,
             rebuilding,
             relocating,
             previousBlockData,
@@ -661,11 +661,11 @@ class CoreItemListener(
     private data class CombatAreaContext(val value: CombatArea) {
         constructor(settings: PluginSettings) : this(
             CombatArea(
-                settings.combat().radius(),
-                settings.combat().spawnInner(),
-                settings.combat().spawnOuter(),
-                settings.combat().minimumCoreDistance(),
-                settings.combat().coreGap(),
+                settings.combat().radius,
+                settings.combat().spawnInner,
+                settings.combat().spawnOuter,
+                settings.combat().minimumCoreDistance,
+                settings.combat().coreGap,
             ),
         )
     }
