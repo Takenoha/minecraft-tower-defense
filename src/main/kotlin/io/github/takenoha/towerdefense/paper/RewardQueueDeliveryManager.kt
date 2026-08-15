@@ -118,7 +118,7 @@ class RewardQueueDeliveryManager(
         val cleanupQueueIds = LinkedHashSet<UUID>()
         for (queueId in receiptQueueIds) {
             val status = escrowValue.findRewardQueue(queueId)
-                .map { it.status() }
+                .map { it.status }
                 .orElse(RewardQueueStatus.VOIDED)
             if (status != RewardQueueStatus.PENDING) {
                 cleanupQueueIds.add(queueId)
@@ -144,7 +144,7 @@ class RewardQueueDeliveryManager(
             return
         }
         val entry = entries[index]
-        if (entry.status() != RewardQueueStatus.PENDING) {
+        if (entry.status != RewardQueueStatus.PENDING) {
             deliverNext(run, entries, index + 1)
             return
         }
@@ -162,10 +162,10 @@ class RewardQueueDeliveryManager(
         continueDelivery: Runnable,
         stopDelivery: Runnable,
     ) {
-        val operationId = deterministicDeliveryOperation(entry.queueId(), player.uniqueId)
+        val operationId = deterministicDeliveryOperation(entry.queueId, player.uniqueId)
         databaseExecutorValue.submit {
             escrowValue.prepareRewardDelivery(
-                entry.queueId(),
+                entry.queueId,
                 player.uniqueId,
                 operationId,
                 Instant.now(),
@@ -173,7 +173,7 @@ class RewardQueueDeliveryManager(
         }.whenComplete { outcome, failure ->
             runOnMainThread {
                 if (failure != null) {
-                    logFailure("Could not reserve reward queue ${entry.queueId()}", failure)
+                    logFailure("Could not reserve reward queue ${entry.queueId}", failure)
                     stopDelivery.run()
                     return@runOnMainThread
                 }
@@ -186,11 +186,11 @@ class RewardQueueDeliveryManager(
                 if (outcome == RewardDeliveryOutcome.ALREADY_DELIVERED ||
                     outcome == RewardDeliveryOutcome.VOIDED
                 ) {
-                    stripReceipts(player, entry.queueId())
+                    stripReceipts(player, entry.queueId)
                 }
                 if (outcome == RewardDeliveryOutcome.HELD_BY_OTHER) {
                     pluginValue.logger.fine(
-                        "Reward queue ${entry.queueId()} is reserved by another eligible team member",
+                        "Reward queue ${entry.queueId} is reserved by another eligible team member",
                     )
                 }
                 stopDelivery.run()
@@ -204,8 +204,8 @@ class RewardQueueDeliveryManager(
         continueDelivery: Runnable,
         stopDelivery: Runnable,
     ) {
-        val alreadyAccepted = receiptQuantity(player, entry.queueId())
-        val remaining = entry.quantity() - alreadyAccepted
+        val alreadyAccepted = receiptQuantity(player, entry.queueId)
+        val remaining = entry.quantity - alreadyAccepted
         if (remaining <= 0) {
             markDelivered(player, entry, continueDelivery, stopDelivery)
             return
@@ -215,23 +215,23 @@ class RewardQueueDeliveryManager(
             decodePayload(entry)
         } catch (invalidPayload: RuntimeException) {
             logFailure(
-                "Reward queue ${entry.queueId()} has an invalid item payload",
+                "Reward queue ${entry.queueId} has an invalid item payload",
                 invalidPayload,
             )
             stopDelivery.run()
             return
         }
-        val deliveryOperation = deterministicDeliveryOperation(entry.queueId(), player.uniqueId)
+        val deliveryOperation = deterministicDeliveryOperation(entry.queueId, player.uniqueId)
         val stacks = try {
-            val receipt = RewardQueueReceipt(entry.queueId(), deliveryOperation)
-            if (entry.itemId() == "research_crystal") {
+            val receipt = RewardQueueReceipt(entry.queueId, deliveryOperation)
+            if (entry.itemId == "research_crystal") {
                 decodeResearchCrystalStacks(entry, remaining, alreadyAccepted, receipt)
             } else {
                 splitAndTag(payload, remaining, receipt)
             }
         } catch (invalidItem: RuntimeException) {
             logFailure(
-                "Reward queue ${entry.queueId()} cannot create an inventory item",
+                "Reward queue ${entry.queueId} cannot create an inventory item",
                 invalidItem,
             )
             stopDelivery.run()
@@ -241,7 +241,7 @@ class RewardQueueDeliveryManager(
             player.inventory.addItem(*stacks.toTypedArray())
         } catch (inventoryFailure: RuntimeException) {
             logFailure(
-                "Could not add reward queue ${entry.queueId()} to inventory",
+                "Could not add reward queue ${entry.queueId} to inventory",
                 inventoryFailure,
             )
             stopDelivery.run()
@@ -249,7 +249,7 @@ class RewardQueueDeliveryManager(
         }
         if (leftovers.isNotEmpty()) {
             pluginValue.logger.fine(
-                "Reward queue ${entry.queueId()} remains pending because the inventory is full for " +
+                "Reward queue ${entry.queueId} remains pending because the inventory is full for " +
                     player.uniqueId,
             )
             stopDelivery.run()
@@ -259,10 +259,10 @@ class RewardQueueDeliveryManager(
     }
 
     private fun decodePayload(entry: RewardQueueEntry): ItemStack {
-        if (entry.itemId() != "research_crystal") {
-            return PaperItemStackCodec.decode(entry.itemPayload())
+        if (entry.itemId != "research_crystal") {
+            return PaperItemStackCodec.decode(entry.itemPayload)
         }
-        val fields = entry.itemPayload().split(":", ignoreCase = false, limit = Int.MAX_VALUE)
+        val fields = entry.itemPayload.split(":", ignoreCase = false, limit = Int.MAX_VALUE)
         if (fields.size != 5 || fields[0] != "research_crystal" ||
             (fields[1] != "v1" && fields[1] != "v2")
         ) {
@@ -272,7 +272,7 @@ class RewardQueueDeliveryManager(
             val batchId = UUID.fromString(fields[2])
             val teamId = UUID.fromString(fields[3])
             val issuedQuantity = Integer.parseInt(fields[4])
-            if (issuedQuantity != entry.quantity()) {
+            if (issuedQuantity != entry.quantity) {
                 throw IllegalArgumentException(
                     "The research crystal payload quantity does not match the queue",
                 )
@@ -289,7 +289,7 @@ class RewardQueueDeliveryManager(
         offset: Int,
         receipt: RewardQueueReceipt,
     ): List<ItemStack> {
-        val fields = entry.itemPayload().split(":", ignoreCase = false, limit = Int.MAX_VALUE)
+        val fields = entry.itemPayload.split(":", ignoreCase = false, limit = Int.MAX_VALUE)
         if (fields.size != 5 || fields[0] != "research_crystal" || fields[1] != "v2") {
             return splitAndTag(decodePayload(entry), quantity, receipt)
         }
@@ -303,7 +303,7 @@ class RewardQueueDeliveryManager(
         } catch (invalidPayload: IllegalArgumentException) {
             throw IllegalArgumentException("The research crystal payload is invalid", invalidPayload)
         }
-        if (issuedQuantity != entry.quantity() ||
+        if (issuedQuantity != entry.quantity ||
             offset < 0 ||
             quantity < 0 ||
             offset.toLong() + quantity > issuedQuantity
@@ -335,10 +335,10 @@ class RewardQueueDeliveryManager(
         continueDelivery: Runnable,
         stopDelivery: Runnable,
     ) {
-        val operationId = deterministicDeliveryOperation(entry.queueId(), player.uniqueId)
+        val operationId = deterministicDeliveryOperation(entry.queueId, player.uniqueId)
         databaseExecutorValue.submit {
             escrowValue.markRewardDelivered(
-                entry.queueId(),
+                entry.queueId,
                 player.uniqueId,
                 operationId,
                 Instant.now(),
@@ -346,7 +346,7 @@ class RewardQueueDeliveryManager(
         }.whenComplete { outcome, failure ->
             runOnMainThread {
                 if (failure != null) {
-                    logFailure("Could not commit reward queue ${entry.queueId()}", failure)
+                    logFailure("Could not commit reward queue ${entry.queueId}", failure)
                     stopDelivery.run()
                     return@runOnMainThread
                 }
@@ -354,13 +354,13 @@ class RewardQueueDeliveryManager(
                     outcome != OperationOutcome.ALREADY_APPLIED
                 ) {
                     logFailure(
-                        "Reward queue ${entry.queueId()} was not delivered: $outcome",
+                        "Reward queue ${entry.queueId} was not delivered: $outcome",
                         null,
                     )
                     stopDelivery.run()
                     return@runOnMainThread
                 }
-                stripReceipts(player, entry.queueId())
+                stripReceipts(player, entry.queueId)
                 continueDelivery.run()
             }
         }

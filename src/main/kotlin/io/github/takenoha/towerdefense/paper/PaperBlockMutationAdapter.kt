@@ -80,7 +80,7 @@ class PaperBlockMutationAdapter(
         val existing = findChangeIfPresent(eventId, changeId)
         val requested: BlockChange
         if (existing.isPresent) {
-            val durable = existing.orElseThrow().change()
+            val durable = existing.orElseThrow().change
             requested = BlockChange(
                 eventId,
                 changeId,
@@ -93,9 +93,9 @@ class PaperBlockMutationAdapter(
                 durable.beforeBlockData(),
                 durable.beforeBlockState(),
                 durable.beforeTileNbt(),
-                expectedAfter.blockData(),
-                expectedAfter.blockState(),
-                expectedAfter.tileNbt(),
+                expectedAfter.blockData,
+                expectedAfter.blockState,
+                expectedAfter.tileNbt,
             )
         } else {
             val before = PaperBlockStateCodec.captureBefore(block)
@@ -108,26 +108,26 @@ class PaperBlockMutationAdapter(
                 block.z,
                 kind,
                 generation,
-                before.blockData(),
-                before.blockState(),
-                before.tileNbt(),
-                expectedAfter.blockData(),
-                expectedAfter.blockState(),
-                expectedAfter.tileNbt(),
+                before.blockData,
+                before.blockState,
+                before.tileNbt,
+                expectedAfter.blockData,
+                expectedAfter.blockState,
+                expectedAfter.tileNbt,
             )
         }
         ledgerValue.prepare(requested, prepareOperationId, occurredAt)
         val durable = findChange(eventId, changeId)
-        if (durable.status() == BlockChangeStatus.CONFLICT) {
+        if (durable.status == BlockChangeStatus.CONFLICT) {
             throw PersistenceConflictException(
                 "A block change was already recorded as a recovery conflict",
             )
         }
-        if (durable.status() == BlockChangeStatus.ROLLED_BACK) {
+        if (durable.status == BlockChangeStatus.ROLLED_BACK) {
             val durableBeforeState = BlockStateSnapshot(
-                durable.change().beforeBlockData(),
-                durable.change().beforeBlockState(),
-                durable.change().beforeTileNbt(),
+                durable.change.beforeBlockData(),
+                durable.change.beforeBlockState(),
+                durable.change.beforeTileNbt(),
             )
             if (PaperBlockStateCodec.captureComparable(block) != durableBeforeState) {
                 throw PersistenceConflictException(
@@ -139,21 +139,21 @@ class PaperBlockMutationAdapter(
 
         val current = PaperBlockStateCodec.captureComparable(block)
         val expected = BlockStateSnapshot(
-            durable.change().expectedAfterBlockData(),
-            durable.change().expectedAfterBlockState(),
-            durable.change().expectedAfterTileNbt(),
+            durable.change.expectedAfterBlockData(),
+            durable.change.expectedAfterBlockState(),
+            durable.change.expectedAfterTileNbt(),
         )
         val durableBefore = BlockStateSnapshot(
-            durable.change().beforeBlockData(),
-            durable.change().beforeBlockState(),
-            durable.change().beforeTileNbt(),
+            durable.change.beforeBlockData(),
+            durable.change.beforeBlockState(),
+            durable.change.beforeTileNbt(),
         )
         if (current != durableBefore && current != expected) {
             throw PersistenceConflictException(
                 "The live block changed after the event ledger was prepared",
             )
         }
-        if (durable.status() == BlockChangeStatus.APPLIED) {
+        if (durable.status == BlockChangeStatus.APPLIED) {
             if (current != expected) {
                 throw PersistenceConflictException(
                     "An applied block change is missing its expected after-state",
@@ -204,7 +204,7 @@ class PaperBlockMutationAdapter(
             throw IllegalArgumentException("settleEvent requires a normal terminal phase")
         }
         for (change in ledgerValue.loadUnresolvedChanges(eventId)) {
-            if (change.change().kind() == BlockChangeKind.TEMPORARY_BLOCK) {
+            if (change.change.kind() == BlockChangeKind.TEMPORARY_BLOCK) {
                 rollbackOne(eventId, change, settledAt)
             } else {
                 validateEventBlock(change)
@@ -220,7 +220,7 @@ class PaperBlockMutationAdapter(
         val block = loadBlock(change)
         val prepared = ledgerValue.loadPreparedRollback(
             eventId,
-            change.change().changeId(),
+            change.change.changeId(),
         )
         val decision: BlockRollbackDecision
         val operationId: UUID
@@ -230,10 +230,10 @@ class PaperBlockMutationAdapter(
             operationId = value.operationId
         } else {
             decision = plannerValue.decide(change, PaperBlockStateCodec.captureComparable(block))
-            operationId = deterministicRollbackOperation(eventId, change.change().changeId())
+            operationId = deterministicRollbackOperation(eventId, change.change.changeId())
             ledgerValue.prepareRollback(
                 eventId,
-                change.change().changeId(),
+                change.change.changeId(),
                 operationId,
                 decision,
                 recoveredAt,
@@ -243,14 +243,14 @@ class PaperBlockMutationAdapter(
         if (decision == BlockRollbackDecision.RESTORE) {
             val current = PaperBlockStateCodec.captureComparable(block)
             val expected = BlockStateSnapshot(
-                change.change().expectedAfterBlockData(),
-                change.change().expectedAfterBlockState(),
-                change.change().expectedAfterTileNbt(),
+                change.change.expectedAfterBlockData(),
+                change.change.expectedAfterBlockState(),
+                change.change.expectedAfterTileNbt(),
             )
             val before = BlockStateSnapshot(
-                change.change().beforeBlockData(),
-                change.change().beforeBlockState(),
-                change.change().beforeTileNbt(),
+                change.change.beforeBlockData(),
+                change.change.beforeBlockState(),
+                change.change.beforeTileNbt(),
             )
             if (current == expected) {
                 PaperBlockStateCodec.applySnapshot(block, before)
@@ -266,9 +266,9 @@ class PaperBlockMutationAdapter(
             }
         } else if (decision == BlockRollbackDecision.SKIP_ALREADY_BEFORE &&
             PaperBlockStateCodec.captureComparable(block) != BlockStateSnapshot(
-                change.change().beforeBlockData(),
-                change.change().beforeBlockState(),
-                change.change().beforeTileNbt(),
+                change.change.beforeBlockData(),
+                change.change.beforeBlockState(),
+                change.change.beforeTileNbt(),
             )
         ) {
             throw PersistenceConflictException(
@@ -277,7 +277,7 @@ class PaperBlockMutationAdapter(
         }
         ledgerValue.applyRollback(
             eventId,
-            change.change().changeId(),
+            change.change.changeId(),
             operationId,
             decision,
             recoveredAt,
@@ -294,16 +294,16 @@ class PaperBlockMutationAdapter(
         changeId: UUID,
     ): Optional<StoredBlockChange> =
         ledgerValue.loadChanges(eventId).stream()
-            .filter { value -> value.change().changeId() == changeId }
+            .filter { value -> value.change.changeId() == changeId }
             .findFirst()
 
     private companion object {
         @JvmStatic
         private fun validateEventBlock(change: StoredBlockChange) {
-            if (change.status() != BlockChangeStatus.APPLIED) {
+            if (change.status != BlockChangeStatus.APPLIED) {
                 throw PersistenceConflictException(
                     "An event-owned destruction has not reached the applied ledger state: " +
-                        change.change().changeId(),
+                        change.change.changeId(),
                 )
             }
             // The SETTLED row is committed atomically with DefenseRepository.finishEvent. Until
@@ -312,14 +312,14 @@ class PaperBlockMutationAdapter(
 
         @JvmStatic
         private fun loadBlock(change: StoredBlockChange): Block {
-            val world: World = Bukkit.getWorld(change.change().worldId())
+            val world: World = Bukkit.getWorld(change.change.worldId())
                 ?: throw PersistenceConflictException(
-                    "The world for block recovery is not loaded: ${change.change().worldId()}",
+                    "The world for block recovery is not loaded: ${change.change.worldId()}",
                 )
             return world.getBlockAt(
-                change.change().blockX(),
-                change.change().blockY(),
-                change.change().blockZ(),
+                change.change.blockX(),
+                change.change.blockY(),
+                change.change.blockZ(),
             )
         }
 
