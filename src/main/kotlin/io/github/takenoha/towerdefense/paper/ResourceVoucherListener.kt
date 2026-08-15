@@ -584,20 +584,20 @@ class ResourceVoucherListener(
     }
 
     private fun continueDelivery(player: Player, prepared: VoucherDeliveryResult) {
-        val voucher = prepared.voucher()
-        val operation = prepared.operation()
+        val voucher = prepared.voucher
+        val operation = prepared.operation
         if (!player.isOnline) {
             return
         }
         if (voucher.state() == ResourceVoucherState.REDEEMED ||
             voucher.state() == ResourceVoucherState.VOIDED ||
-            prepared.outcome() == VoucherDeliveryOutcome.VOIDED
+            prepared.outcome == VoucherDeliveryOutcome.VOIDED
         ) {
             invalidateVoucherCopies(player, voucher)
             return
         }
         if (operation == null || operation.state() == VoucherDeliveryState.APPLIED ||
-            prepared.outcome() == VoucherDeliveryOutcome.ALREADY_AVAILABLE
+            prepared.outcome == VoucherDeliveryOutcome.ALREADY_AVAILABLE
         ) {
             normalizeDeliveredVoucher(player, voucher, operation?.deliveryOperationId())
             return
@@ -707,8 +707,8 @@ class ResourceVoucherListener(
     }
 
     private fun continueRedeem(player: Player, prepared: VoucherRedeemResult) {
-        val operation = prepared.operation()
-        val voucher = prepared.voucher()
+        val operation = prepared.operation
+        val voucher = prepared.voucher
         if (!player.isOnline) {
             return
         }
@@ -723,7 +723,7 @@ class ResourceVoucherListener(
             return
         }
         if (operation.state() == VoucherRedeemState.APPLIED ||
-            prepared.outcome() == OperationOutcome.ALREADY_APPLIED
+            prepared.outcome == OperationOutcome.ALREADY_APPLIED
         ) {
             clearRedeemHold(player.uniqueId, voucher.voucherId())
             removeVoucherCopies(player, voucher)

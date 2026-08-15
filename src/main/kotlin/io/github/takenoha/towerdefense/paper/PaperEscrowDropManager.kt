@@ -305,8 +305,8 @@ class PaperEscrowDropManager @JvmOverloads constructor(
                 }
                 if (
                     failure == null && result != null &&
-                    (result.outcome() == OperationOutcome.APPLIED ||
-                        result.outcome() == OperationOutcome.ALREADY_APPLIED) &&
+                    (result.outcome == OperationOutcome.APPLIED ||
+                        result.outcome == OperationOutcome.ALREADY_APPLIED) &&
                     taggerValue.read(item).map { drop -> drop == tagged }.orElse(false)
                 ) {
                     item.remove()
@@ -317,8 +317,8 @@ class PaperEscrowDropManager @JvmOverloads constructor(
                             Instant.now(),
                         )
                     }
-                    if (result.outcome() == OperationOutcome.APPLIED) {
-                        result.pickupFeedback().ifPresent { feedback ->
+                    if (result.outcome == OperationOutcome.APPLIED) {
+                        result.pickupFeedback.ifPresent { feedback ->
                             showResourcePickupFeedback(player, tagged.eventId, feedback)
                         }
                     }
@@ -335,9 +335,9 @@ class PaperEscrowDropManager @JvmOverloads constructor(
         if (!player.isOnline) {
             return
         }
-        val message = feedback.resourceType().displayName() + " +" +
-            feedback.claimedQuantity() +
-            "｜この防衛戦の仮確保: " + feedback.eventPlayerTotal() + "P"
+        val message = feedback.resourceType.displayName() + " +" +
+            feedback.claimedQuantity +
+            "｜この防衛戦の仮確保: " + feedback.eventPlayerTotal + "P"
         player.playSound(
             player.location,
             Sound.ENTITY_EXPERIENCE_ORB_PICKUP,

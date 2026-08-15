@@ -209,8 +209,8 @@ class TacticalBuildSelectionListener(
                     return@runOnMainThread
                 }
                 val selected = Objects.requireNonNull(result, "result") as TacticalSelectionResult
-                if (selected.outcome() != OperationOutcome.APPLIED &&
-                    selected.outcome() != OperationOutcome.ALREADY_APPLIED
+                if (selected.outcome != OperationOutcome.APPLIED &&
+                    selected.outcome != OperationOutcome.ALREADY_APPLIED
                 ) {
                     cancelAfterSelectionFailure(
                         holder,
