@@ -2571,11 +2571,11 @@ statement.executeQuery().use { resultSet ->
                 requireActiveBattleFundsEvent(connection, eventId, true);
                 requireTeamMember(connection, teamId, actorId);
                 var current = requireTowerDurability(connection, towerId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower repair belongs to another team");
                 }
-                if (repairedHitPoints > current.maximumHitPoints() - current.currentHitPoints()) {
+                if (repairedHitPoints > current.maximumHitPoints - current.currentHitPoints) {
                     throw PersistenceConflictException(
                             "The tower repair exceeds the missing HP");
                 }
@@ -2591,8 +2591,8 @@ statement.executeQuery().use { resultSet ->
                 var updatedDurability = TowerDurability(
                         towerId,
                         teamId,
-                        current.currentHitPoints() + repairedHitPoints,
-                        current.maximumHitPoints());
+                        current.currentHitPoints + repairedHitPoints,
+                        current.maximumHitPoints);
                 var updatedFunds = BattleFunds(
                         currentFunds.eventId(),
                         currentFunds.teamId(),
@@ -2676,12 +2676,12 @@ statement.executeQuery().use { resultSet ->
 
                 requireActiveTowerDamageEvent(connection, eventId, teamId);
                 var current = requireTowerDurability(connection, towerId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower damage belongs to another team");
                 }
-                var destroyed = current.currentHitPoints() <= damage;
-                var remainingHitPoints = if (destroyed) 0L else current.currentHitPoints() - damage
+                var destroyed = current.currentHitPoints <= damage;
+                var remainingHitPoints = if (destroyed) 0L else current.currentHitPoints - damage
                 if (destroyed) {
                     deleteTower(connection, towerId, teamId);
                 } else {
@@ -2691,7 +2691,7 @@ statement.executeQuery().use { resultSet ->
                                     towerId,
                                     teamId,
                                     remainingHitPoints,
-                                    current.maximumHitPoints()),
+                                    current.maximumHitPoints),
                             appliedAt);
                 }
                 var operation = TowerDamageOperation(
@@ -3617,9 +3617,9 @@ statement.executeQuery().use { resultSet ->
                 SET current_hp = ?, updated_at = ?
                 WHERE tower_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, durability.currentHitPoints());
+            statement.setLong(1, durability.currentHitPoints);
             statement.setString(2, updatedAt.toString());
-            statement.setString(3, durability.towerId().toString());
+            statement.setString(3, durability.towerId.toString());
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The tower durability update affected no rows");
             }
