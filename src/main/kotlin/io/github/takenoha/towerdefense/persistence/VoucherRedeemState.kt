@@ -1,8 +1,8 @@
-package io.github.takenoha.towerdefense.persistence;
+package io.github.takenoha.towerdefense.persistence
 
 /** Durable state of the receipt-protected voucher deposit operation. */
-public enum VoucherRedeemState {
+enum class VoucherRedeemState {
     PREPARED,
     APPLIED,
-    ROLLED_BACK
+    ROLLED_BACK,
 }

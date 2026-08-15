@@ -1,8 +1,8 @@
-package io.github.takenoha.towerdefense.persistence;
+package io.github.takenoha.towerdefense.persistence
 
 /** Safe action selected by comparing the durable expectation with the live world. */
-public enum BlockRollbackDecision {
+enum class BlockRollbackDecision {
     RESTORE,
     SKIP_ALREADY_BEFORE,
-    CONFLICT
+    CONFLICT,
 }

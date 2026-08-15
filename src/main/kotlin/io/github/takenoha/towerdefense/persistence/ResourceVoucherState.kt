@@ -1,10 +1,10 @@
-package io.github.takenoha.towerdefense.persistence;
+package io.github.takenoha.towerdefense.persistence
 
 /** Durable lifecycle of a team-bound point voucher. */
-public enum ResourceVoucherState {
+enum class ResourceVoucherState {
     PENDING_DELIVERY,
     AVAILABLE,
     RESERVED,
     REDEEMED,
-    VOIDED
+    VOIDED,
 }

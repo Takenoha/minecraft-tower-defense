@@ -1,10 +1,10 @@
-package io.github.takenoha.towerdefense.domain;
+package io.github.takenoha.towerdefense.domain
 
 /** Safe next-step choice for the role-aware enemy navigation planner. */
-public enum EnemyPathAction {
+enum class EnemyPathAction {
     ADVANCE,
     BREAK_OBSTACLE,
     BUILD_SUPPORT,
     RECALCULATE_PATH,
-    RECOVER
+    RECOVER,
 }
