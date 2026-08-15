@@ -374,7 +374,7 @@ class TowerManagementGui private constructor() {
             battleFunds: Long,
         ) {
             val boost = boosts[kind]
-            val level = boost?.level() ?: 0
+            val level = boost?.level ?: 0
             val available = canBuyBoost && cost > 0
             val name = when (kind) {
                 BattleBoostKind.POWER -> "戦闘ブースト: 威力"

@@ -2456,29 +2456,29 @@ statement.executeQuery().use { resultSet ->
                 requireTeamMember(connection, teamId, actorId);
                 requireTowerBelongsToTeam(connection, towerId, teamId);
                 var currentFunds = requireBattleFunds(connection, eventId);
-                if (!currentFunds.teamId().equals(teamId)) {
+                if (!currentFunds.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The battle-boost operation belongs to another team");
                 }
-                if (currentFunds.balance() < cost) {
+                if (currentFunds.balance < cost) {
                     throw PersistenceConflictException(
                             "The team does not have enough battle funds for this boost");
                 }
                 var current = loadBattleBoost(
                         connection, eventId, towerId, kind);
-                var nextLevel = if (current.isPresent()) Math.addExact(current.orElseThrow().level(), 1) else 1
-                var previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0);
+                var nextLevel = if (current.isPresent()) Math.addExact(current.orElseThrow().level, 1) else 1
+                var previousMultiplier = current.map { it.multiplier }.orElse(1.0);
                 var nextMultiplier = previousMultiplier * boostMultiplier;
                 if (!java.lang.Double.isFinite(nextMultiplier)) {
                     throw PersistenceConflictException(
                             "The battle boost multiplier is outside the supported range");
                 }
                 var updatedFunds = BattleFunds(
-                        currentFunds.eventId(),
-                        currentFunds.teamId(),
-                        currentFunds.balance() - cost,
-                        currentFunds.totalEarned(),
-                        Math.addExact(currentFunds.totalSpent(), cost),
+                        currentFunds.eventId,
+                        currentFunds.teamId,
+                        currentFunds.balance - cost,
+                        currentFunds.totalEarned,
+                        Math.addExact(currentFunds.totalSpent, cost),
                         BattleFundsState.ACTIVE,
                         appliedAt);
                 var updatedBoost = BattleBoost(
@@ -2580,11 +2580,11 @@ statement.executeQuery().use { resultSet ->
                             "The tower repair exceeds the missing HP");
                 }
                 var currentFunds = requireBattleFunds(connection, eventId);
-                if (!currentFunds.teamId().equals(teamId)) {
+                if (!currentFunds.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower repair belongs to another event team");
                 }
-                if (currentFunds.balance() < cost) {
+                if (currentFunds.balance < cost) {
                     throw PersistenceConflictException(
                             "The team does not have enough battle funds for tower repair");
                 }
@@ -2594,11 +2594,11 @@ statement.executeQuery().use { resultSet ->
                         current.currentHitPoints + repairedHitPoints,
                         current.maximumHitPoints);
                 var updatedFunds = BattleFunds(
-                        currentFunds.eventId(),
-                        currentFunds.teamId(),
-                        currentFunds.balance() - cost,
-                        currentFunds.totalEarned(),
-                        Math.addExact(currentFunds.totalSpent(), cost),
+                        currentFunds.eventId,
+                        currentFunds.teamId,
+                        currentFunds.balance - cost,
+                        currentFunds.totalEarned,
+                        Math.addExact(currentFunds.totalSpent, cost),
                         BattleFundsState.ACTIVE,
                         appliedAt);
                 updateTowerDurability(connection, updatedDurability, appliedAt);
@@ -3285,35 +3285,35 @@ statement.executeQuery().use { resultSet ->
 
                 requireActiveBattleFundsEvent(connection, eventId, spend);
                 var current = requireBattleFunds(connection, eventId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The battle-funds operation belongs to another team");
                 }
                 if (spend) {
                     requireTeamMember(connection, teamId, actorId!!);
-                    if (current.balance() < amount) {
+                    if (current.balance < amount) {
                         throw PersistenceConflictException(
                                 "The team does not have enough battle funds");
                     }
                 }
                 var nextBalance = 0L
-                var nextEarned = current.totalEarned();
-                var nextSpent = current.totalSpent();
+                var nextEarned = current.totalEarned;
+                var nextSpent = current.totalSpent;
                 try {
                     if (spend) {
-                        nextBalance = Math.subtractExact(current.balance(), amount);
-                        nextSpent = Math.addExact(current.totalSpent(), amount);
+                        nextBalance = Math.subtractExact(current.balance, amount);
+                        nextSpent = Math.addExact(current.totalSpent, amount);
                     } else {
-                        nextBalance = Math.addExact(current.balance(), amount);
-                        nextEarned = Math.addExact(current.totalEarned(), amount);
+                        nextBalance = Math.addExact(current.balance, amount);
+                        nextEarned = Math.addExact(current.totalEarned, amount);
                     }
                 } catch (overflow: ArithmeticException) {
                     throw PersistenceConflictException(
                             "The battle-funds account cannot represent this mutation", overflow);
                 }
                 var updated = BattleFunds(
-                        current.eventId(),
-                        current.teamId(),
+                        current.eventId,
+                        current.teamId,
                         nextBalance,
                         nextEarned,
                         nextSpent,
@@ -3417,12 +3417,12 @@ statement.executeQuery().use { resultSet ->
                 SET balance = ?, total_earned = ?, total_spent = ?, state = ?, updated_at = ?
                 WHERE event_id = ? AND state = 'ACTIVE'
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, funds.balance());
-            statement.setLong(2, funds.totalEarned());
-            statement.setLong(3, funds.totalSpent());
-            statement.setString(4, funds.state().name);
-            statement.setString(5, funds.updatedAt().toString());
-            statement.setString(6, funds.eventId().toString());
+            statement.setLong(1, funds.balance);
+            statement.setLong(2, funds.totalEarned);
+            statement.setLong(3, funds.totalSpent);
+            statement.setString(4, funds.state.name);
+            statement.setString(5, funds.updatedAt.toString());
+            statement.setString(6, funds.eventId.toString());
             if (statement.executeUpdate() != 1) {
                 throw PersistenceConflictException(
                         "The battle-funds account was concurrently settled");
@@ -3514,13 +3514,13 @@ statement.executeQuery().use { resultSet ->
                     multiplier = excluded.multiplier,
                     updated_at = excluded.updated_at
                 """.trimIndent()).use { statement ->
-            statement.setString(1, boost.eventId().toString());
-            statement.setString(2, boost.teamId().toString());
-            statement.setString(3, boost.towerId().toString());
-            statement.setString(4, boost.kind().id());
-            statement.setInt(5, boost.level());
-            statement.setDouble(6, boost.multiplier());
-            statement.setString(7, boost.updatedAt().toString());
+            statement.setString(1, boost.eventId.toString());
+            statement.setString(2, boost.teamId.toString());
+            statement.setString(3, boost.towerId.toString());
+            statement.setString(4, boost.kind.id());
+            statement.setInt(5, boost.level);
+            statement.setDouble(6, boost.multiplier);
+            statement.setString(7, boost.updatedAt.toString());
             statement.executeUpdate();
 
 }
