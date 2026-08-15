@@ -150,7 +150,7 @@ class PaperEnemyPathController private constructor() {
             )
             val plan = EnemyBridgePlanner.plan(facts, activeTemporaryBlocks)
             if (plan.isEmpty ||
-                target.material.key.toString() != plan.orElseThrow().targetMaterialKey()
+                target.material.key.toString() != plan.orElseThrow().targetMaterialKey
             ) {
                 return Optional.empty()
             }

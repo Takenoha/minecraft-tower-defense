@@ -328,7 +328,7 @@ class PaperEnemyTerrainAction(
             return false
         }
         val target: BlockData = PaperBlockStateCodec.parseBlockData(value.targetBlockData)
-        if (target.getMaterial().getKey().toString() != value.plan.targetMaterialKey()) {
+        if (target.getMaterial().getKey().toString() != value.plan.targetMaterialKey) {
             return false
         }
         val state: BlockState = block.getState()
