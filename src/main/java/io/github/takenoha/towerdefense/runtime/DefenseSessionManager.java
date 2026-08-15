@@ -60,6 +60,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Husk;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Zombie;
 import org.bukkit.entity.ZombieVillager;
@@ -832,16 +833,28 @@ public final class DefenseSessionManager
                     * settings.enemies().bossHealthMultiplier();
             maximumHealth.setBaseValue(boostedHealth);
             zombie.setHealth(boostedHealth);
-            zombie.customName(Component.text(
-                    finalWave ? "防衛戦最終ボス" : "防衛戦中ボス",
-                    NamedTextColor.DARK_RED));
-            zombie.setCustomNameVisible(true);
-        } else if (role == EnemyRole.DESTROYER) {
-            zombie.customName(Component.text("防衛戦破壊兵", NamedTextColor.DARK_RED));
-            zombie.setCustomNameVisible(true);
-        } else if (role == EnemyRole.BUILDER) {
-            zombie.customName(Component.text("防衛戦建築兵", NamedTextColor.BLUE));
-            zombie.setCustomNameVisible(true);
+        }
+        refreshEnemyHealthBar(zombie, role, finalWave);
+    }
+
+    private void refreshEnemyHealthBar(Entity entity, EnemyRole role, boolean finalWave) {
+        if (!(entity instanceof LivingEntity livingEntity)) {
+            return;
+        }
+        AttributeInstance maximumHealth = livingEntity.getAttribute(Attribute.MAX_HEALTH);
+        if (maximumHealth == null) {
+            return;
+        }
+        Component displayName = EnemyHealthBar.displayName(
+                role,
+                finalWave,
+                livingEntity.getHealth(),
+                maximumHealth.getValue());
+        if (!displayName.equals(livingEntity.customName())) {
+            livingEntity.customName(displayName);
+        }
+        if (!livingEntity.isCustomNameVisible()) {
+            livingEntity.setCustomNameVisible(true);
         }
     }
 
@@ -867,6 +880,10 @@ public final class DefenseSessionManager
             EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
                     logicalId,
                     EnemyRole.NORMAL);
+            refreshEnemyHealthBar(
+                    entity,
+                    role,
+                    defense.session.currentWave() == defense.session.totalWaves());
             if (EventEnemyVisualPolicy.shouldGlow(role)) {
                 entity.setGlowing(true);
             }
