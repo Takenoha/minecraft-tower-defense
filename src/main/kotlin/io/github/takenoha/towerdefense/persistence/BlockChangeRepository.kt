@@ -40,8 +40,8 @@ class BlockChangeRepository(database: Database) {
                 val existing = loadChange(connection, change.changeId())
                 if (existing.isPresent) {
                     val value = existing.orElseThrow()
-                    if (!value.change().equals(change)
-                        || !value.prepareOperationId().equals(prepareOperationId)
+                    if (!value.change.equals(change)
+                        || !value.prepareOperationId.equals(prepareOperationId)
                     ) {
                         throw PersistenceConflictException(
                             "The block change UUID is already assigned to another payload",
@@ -185,7 +185,7 @@ class BlockChangeRepository(database: Database) {
                 } else {
                     requireActiveEvent(connection, eventId)
                     val change = requireChange(connection, changeId)
-                    if (change.status() != BlockChangeStatus.PREPARED) {
+                    if (change.status != BlockChangeStatus.PREPARED) {
                         throw PersistenceConflictException(
                             "A block change is no longer prepared for application",
                         )
@@ -267,8 +267,8 @@ class BlockChangeRepository(database: Database) {
                 } else {
                     requireActiveEvent(connection, eventId)
                     val change = requireChange(connection, changeId)
-                    if (change.status() != BlockChangeStatus.PREPARED
-                        && change.status() != BlockChangeStatus.APPLIED
+                    if (change.status != BlockChangeStatus.PREPARED
+                        && change.status != BlockChangeStatus.APPLIED
                     ) {
                         throw PersistenceConflictException(
                             "A block change has already reached a terminal recovery status",
@@ -317,8 +317,8 @@ class BlockChangeRepository(database: Database) {
     fun loadUnresolvedChanges(eventId: UUID): List<StoredBlockChange> {
         return loadChanges(eventId).stream()
             .filter {
-                it.status() == BlockChangeStatus.PREPARED
-                    || it.status() == BlockChangeStatus.APPLIED
+                it.status == BlockChangeStatus.PREPARED
+                    || it.status == BlockChangeStatus.APPLIED
             }
             .toList()
     }
@@ -411,15 +411,15 @@ class BlockChangeRepository(database: Database) {
             Objects.requireNonNull(settledAt, "settledAt")
             requireActiveEvent(connection, eventId)
             for (change in loadChanges(connection, eventId)) {
-                if (change.status() == BlockChangeStatus.PREPARED) {
+                if (change.status == BlockChangeStatus.PREPARED) {
                     throw PersistenceConflictException(
                         "A block change is still prepared during normal terrain settlement",
                     )
                 }
-                if (change.status() != BlockChangeStatus.APPLIED) {
+                if (change.status != BlockChangeStatus.APPLIED) {
                     continue
                 }
-                if (change.change().kind() != BlockChangeKind.EVENT_BLOCK) {
+                if (change.change.kind() != BlockChangeKind.EVENT_BLOCK) {
                     throw PersistenceConflictException(
                         "A temporary block remained unresolved during normal terrain settlement",
                     )
@@ -427,15 +427,15 @@ class BlockChangeRepository(database: Database) {
                 val operationId = deterministicOperation(
                     terminalOperationId,
                     "BLOCK_SETTLE",
-                    change.change().changeId(),
+                    change.change.changeId(),
                 )
                 ensureResourceOperationApplied(
                     connection,
                     operationId,
                     eventId,
                     "BLOCK_SETTLE",
-                    change.change().changeId(),
-                    settlementFingerprint(change.change()),
+                    change.change.changeId(),
+                    settlementFingerprint(change.change),
                     settledAt,
                 )
                 connection.prepareStatement(
@@ -447,7 +447,7 @@ class BlockChangeRepository(database: Database) {
                 ).use { statement ->
                     statement.setString(1, operationId.toString())
                     statement.setString(2, settledAt.toString())
-                    statement.setString(3, change.change().changeId().toString())
+                    statement.setString(3, change.change.changeId().toString())
                     if (statement.executeUpdate() != 1) {
                         throw PersistenceConflictException(
                             "The event block changed while terminal settlement was running",
@@ -891,12 +891,12 @@ class BlockChangeRepository(database: Database) {
     private fun loadFingerprint(eventId: UUID, changeId: UUID): String =
         read("load a block change fingerprint") { connection ->
             val change = requireChange(connection, changeId)
-            if (change.change().eventId() != eventId) {
+            if (change.change.eventId() != eventId) {
                 throw PersistenceConflictException(
                     "The block change belongs to another defense event",
                 )
             }
-            fingerprint(change.change())
+            fingerprint(change.change)
         }
 
     private fun rollbackFingerprint(

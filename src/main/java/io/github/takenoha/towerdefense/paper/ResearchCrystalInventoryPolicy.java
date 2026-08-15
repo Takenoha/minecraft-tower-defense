@@ -1,16 +1,14 @@
 package io.github.takenoha.towerdefense.paper;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import org.bukkit.inventory.ItemStack;
 
 /**
- * Selects research-crystal stacks from the player's own storage inventory.
+ * Java compatibility facade for the Kotlin research-crystal inventory scan.
  *
- * <p>The caller deliberately supplies only {@code PlayerInventory#getStorageContents()} and the
- * offhand item. Armor, crafting slots, a cursor stack, and an external inventory can therefore
- * never become redemption candidates accidentally.</p>
+ * <p>The nested record remains Java because its compact canonical constructor must clone the
+ * incoming ItemStack before normalizing its amount. The scan implementation itself is Kotlin.</p>
  */
 public final class ResearchCrystalInventoryPolicy {
     private ResearchCrystalInventoryPolicy() {
@@ -21,23 +19,7 @@ public final class ResearchCrystalInventoryPolicy {
             ItemStack[] storageContents,
             ItemStack offHand,
             ResearchCrystalTagger tagger) {
-        Objects.requireNonNull(storageContents, "storageContents");
-        Objects.requireNonNull(tagger, "tagger");
-        List<Candidate> candidates = new ArrayList<>();
-        for (int slot = 0; slot < storageContents.length; slot++) {
-            addCandidate(candidates, storageContents[slot], slot, tagger);
-        }
-        addCandidate(candidates, offHand, Candidate.OFF_HAND_SLOT, tagger);
-        return List.copyOf(candidates);
-    }
-
-    private static void addCandidate(
-            List<Candidate> candidates,
-            ItemStack item,
-            int storageSlot,
-            ResearchCrystalTagger tagger) {
-        tagger.read(item).ifPresent(identity -> candidates.add(
-                new Candidate(storageSlot, identity, item.getAmount(), item)));
+        return ResearchCrystalInventoryPolicyKotlinBridge.scan(storageContents, offHand, tagger);
     }
 
     /** A snapshot of one eligible stack and its PlayerInventory location. */

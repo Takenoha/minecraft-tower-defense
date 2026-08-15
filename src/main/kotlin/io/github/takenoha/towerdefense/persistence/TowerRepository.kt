@@ -97,27 +97,27 @@ class TowerRepository(database: Database) {
                 requireTeamMember(connection, teamId, actorId)
                 val progress = requireTeamProgress(connection, teamId)
                 val current = requireTowerResearch(connection, teamId, towerType)
-                if (progress.researchPoints() < researchPointCost) {
+                if (progress.researchPoints < researchPointCost) {
                     throw PersistenceConflictException(
                         "The team does not have enough research points for this purchase",
                     )
                 }
-                if (current.researchLevel() == Int.MAX_VALUE) {
+                if (current.researchLevel == Int.MAX_VALUE) {
                     throw PersistenceConflictException(
                         "The tower research level has reached its maximum value",
                     )
                 }
 
-                val nextLevel = current.researchLevel() + 1
+                val nextLevel = current.researchLevel + 1
                 val updatedProgress = TeamProgress(
-                    progress.teamId(),
-                    progress.highestClearedLevel(),
-                    progress.unlockedLevel(),
-                    progress.researchPoints() - researchPointCost,
+                    progress.teamId,
+                    progress.highestClearedLevel,
+                    progress.unlockedLevel,
+                    progress.researchPoints - researchPointCost,
                 )
                 val updatedResearch = TowerResearch(
-                    current.teamId(),
-                    current.towerType(),
+                    current.teamId,
+                    current.towerType,
                     nextLevel,
                     appliedAt,
                 )
@@ -1141,7 +1141,7 @@ class TowerRepository(database: Database) {
             PersistenceConflictException("Team $teamId has no progression row")
         }
         val count = countTowers(connection, teamId)
-        if (count >= settings.limitFor(progress.highestClearedLevel())) {
+        if (count >= settings.limitFor(progress.highestClearedLevel)) {
             throw PersistenceConflictException(
                 "The team's tower limit has been reached ($count)",
             )
@@ -1155,9 +1155,9 @@ class TowerRepository(database: Database) {
         individualLevel: Int,
     ) {
         val research = requireTowerResearch(connection, teamId, towerType)
-        if (individualLevel > research.researchLevel()) {
+        if (individualLevel > research.researchLevel) {
             throw PersistenceConflictException(
-                "The team's ${towerType.id()} research only permits tower level ${research.researchLevel()}",
+                "The team's ${towerType.id()} research only permits tower level ${research.researchLevel}",
             )
         }
     }
@@ -1678,9 +1678,9 @@ class TowerRepository(database: Database) {
             WHERE team_id = ?
             """.trimIndent(),
         ).use { statement ->
-            statement.setLong(1, progress.researchPoints())
+            statement.setLong(1, progress.researchPoints)
             statement.setString(2, updatedAt.toString())
-            statement.setString(3, progress.teamId().toString())
+            statement.setString(3, progress.teamId.toString())
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The research point update affected no rows")
             }
@@ -1695,10 +1695,10 @@ class TowerRepository(database: Database) {
             WHERE team_id = ? AND tower_type = ?
             """.trimIndent(),
         ).use { statement ->
-            statement.setInt(1, research.researchLevel())
-            statement.setString(2, research.updatedAt().toString())
-            statement.setString(3, research.teamId().toString())
-            statement.setString(4, research.towerType().id())
+            statement.setInt(1, research.researchLevel)
+            statement.setString(2, research.updatedAt.toString())
+            statement.setString(3, research.teamId.toString())
+            statement.setString(4, research.towerType.id())
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The tower research update affected no rows")
             }

@@ -612,15 +612,15 @@ class DefenseRepository(
                 var creditedPoints = 0L
                 try {
                     creditedPoints = Math.addExact(
-                            progress.researchPoints(), redemption.quantity().toLong());
+                            progress.researchPoints, redemption.quantity().toLong());
                 } catch (overflow: ArithmeticException) {
                     throw PersistenceConflictException(
                             "The team's research point balance cannot increase further", overflow);
                 }
                 var updatedProgress = TeamProgress(
-                        progress.teamId(),
-                        progress.highestClearedLevel(),
-                        progress.unlockedLevel(),
+                        progress.teamId,
+                        progress.highestClearedLevel,
+                        progress.unlockedLevel,
                         creditedPoints);
                 var redeemedQuantity = batch.redeemedQuantity() + redemption.quantity();
                 var nextStatus = if (redeemedQuantity == batch.issuedQuantity()) ResearchCrystalBatchStatus.EXHAUSTED else ResearchCrystalBatchStatus.ISSUED
@@ -644,9 +644,9 @@ class DefenseRepository(
                         SET research_points = ?, updated_at = ?
                         WHERE team_id = ?
                         """.trimIndent()).use { statement ->
-                    statement.setLong(1, updatedProgress.researchPoints());
+                    statement.setLong(1, updatedProgress.researchPoints);
                     statement.setString(2, appliedAt.toString());
-                    statement.setString(3, updatedProgress.teamId().toString());
+                    statement.setString(3, updatedProgress.teamId.toString());
                     if (statement.executeUpdate() != 1) {
                         throw SQLException("The research point update affected no rows");
                     }
@@ -2275,7 +2275,7 @@ statement.executeQuery().use { resultSet ->
      */
     fun tryStartReserved(request: StartRequest): StartOutcome {
         Objects.requireNonNull(request, "request");
-        if (request.raidSealId().isEmpty()) {
+        if (request.raidSealId.isEmpty) {
             throw IllegalArgumentException("A reserved start requires a raid seal");
         }
         return tryStart(request, false);
@@ -2306,24 +2306,24 @@ statement.executeQuery().use { resultSet ->
                     return@inImmediateTransaction StartOutcome.LOCKED;
                 }
 
-                var snapshot = request.session();
+                var snapshot = request.session;
                 if (eventExists(connection, snapshot.eventId())) {
                     throw PersistenceConflictException(
                             "Event " + snapshot.eventId() + " already exists");
                 }
-                var core = loadCore(connection, request.coreId()).orElseThrow { PersistenceConflictException(
-                                "Core " + request.coreId() + " does not exist") };
+                var core = loadCore(connection, request.coreId).orElseThrow { PersistenceConflictException(
+                                "Core " + request.coreId + " does not exist") };
                 validateStartCore(snapshot, core);
 
                 insertEvent(connection, request, core);
-                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt());
-                replaceParticipants(connection, snapshot, request.startedAt());
+                insertBattleFunds(connection, snapshot.eventId(), snapshot.teamId(), request.startedAt);
+                replaceParticipants(connection, snapshot, request.startedAt);
                 connection.prepareStatement("""
                         INSERT INTO event_lock(singleton, event_id, acquired_at)
                         VALUES (1, ?, ?)
                         """.trimIndent()).use { statement ->
                     statement.setString(1, snapshot.eventId().toString());
-                    statement.setString(2, request.startedAt().toString());
+                    statement.setString(2, request.startedAt.toString());
                     statement.executeUpdate();
 
 }
@@ -2456,29 +2456,29 @@ statement.executeQuery().use { resultSet ->
                 requireTeamMember(connection, teamId, actorId);
                 requireTowerBelongsToTeam(connection, towerId, teamId);
                 var currentFunds = requireBattleFunds(connection, eventId);
-                if (!currentFunds.teamId().equals(teamId)) {
+                if (!currentFunds.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The battle-boost operation belongs to another team");
                 }
-                if (currentFunds.balance() < cost) {
+                if (currentFunds.balance < cost) {
                     throw PersistenceConflictException(
                             "The team does not have enough battle funds for this boost");
                 }
                 var current = loadBattleBoost(
                         connection, eventId, towerId, kind);
-                var nextLevel = if (current.isPresent()) Math.addExact(current.orElseThrow().level(), 1) else 1
-                var previousMultiplier = current.map(BattleBoost::multiplier).orElse(1.0);
+                var nextLevel = if (current.isPresent()) Math.addExact(current.orElseThrow().level, 1) else 1
+                var previousMultiplier = current.map { it.multiplier }.orElse(1.0);
                 var nextMultiplier = previousMultiplier * boostMultiplier;
                 if (!java.lang.Double.isFinite(nextMultiplier)) {
                     throw PersistenceConflictException(
                             "The battle boost multiplier is outside the supported range");
                 }
                 var updatedFunds = BattleFunds(
-                        currentFunds.eventId(),
-                        currentFunds.teamId(),
-                        currentFunds.balance() - cost,
-                        currentFunds.totalEarned(),
-                        Math.addExact(currentFunds.totalSpent(), cost),
+                        currentFunds.eventId,
+                        currentFunds.teamId,
+                        currentFunds.balance - cost,
+                        currentFunds.totalEarned,
+                        Math.addExact(currentFunds.totalSpent, cost),
                         BattleFundsState.ACTIVE,
                         appliedAt);
                 var updatedBoost = BattleBoost(
@@ -2571,34 +2571,34 @@ statement.executeQuery().use { resultSet ->
                 requireActiveBattleFundsEvent(connection, eventId, true);
                 requireTeamMember(connection, teamId, actorId);
                 var current = requireTowerDurability(connection, towerId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower repair belongs to another team");
                 }
-                if (repairedHitPoints > current.maximumHitPoints() - current.currentHitPoints()) {
+                if (repairedHitPoints > current.maximumHitPoints - current.currentHitPoints) {
                     throw PersistenceConflictException(
                             "The tower repair exceeds the missing HP");
                 }
                 var currentFunds = requireBattleFunds(connection, eventId);
-                if (!currentFunds.teamId().equals(teamId)) {
+                if (!currentFunds.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower repair belongs to another event team");
                 }
-                if (currentFunds.balance() < cost) {
+                if (currentFunds.balance < cost) {
                     throw PersistenceConflictException(
                             "The team does not have enough battle funds for tower repair");
                 }
                 var updatedDurability = TowerDurability(
                         towerId,
                         teamId,
-                        current.currentHitPoints() + repairedHitPoints,
-                        current.maximumHitPoints());
+                        current.currentHitPoints + repairedHitPoints,
+                        current.maximumHitPoints);
                 var updatedFunds = BattleFunds(
-                        currentFunds.eventId(),
-                        currentFunds.teamId(),
-                        currentFunds.balance() - cost,
-                        currentFunds.totalEarned(),
-                        Math.addExact(currentFunds.totalSpent(), cost),
+                        currentFunds.eventId,
+                        currentFunds.teamId,
+                        currentFunds.balance - cost,
+                        currentFunds.totalEarned,
+                        Math.addExact(currentFunds.totalSpent, cost),
                         BattleFundsState.ACTIVE,
                         appliedAt);
                 updateTowerDurability(connection, updatedDurability, appliedAt);
@@ -2676,12 +2676,12 @@ statement.executeQuery().use { resultSet ->
 
                 requireActiveTowerDamageEvent(connection, eventId, teamId);
                 var current = requireTowerDurability(connection, towerId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The tower damage belongs to another team");
                 }
-                var destroyed = current.currentHitPoints() <= damage;
-                var remainingHitPoints = if (destroyed) 0L else current.currentHitPoints() - damage
+                var destroyed = current.currentHitPoints <= damage;
+                var remainingHitPoints = if (destroyed) 0L else current.currentHitPoints - damage
                 if (destroyed) {
                     deleteTower(connection, towerId, teamId);
                 } else {
@@ -2691,7 +2691,7 @@ statement.executeQuery().use { resultSet ->
                                     towerId,
                                     teamId,
                                     remainingHitPoints,
-                                    current.maximumHitPoints()),
+                                    current.maximumHitPoints),
                             appliedAt);
                 }
                 var operation = TowerDamageOperation(
@@ -3285,35 +3285,35 @@ statement.executeQuery().use { resultSet ->
 
                 requireActiveBattleFundsEvent(connection, eventId, spend);
                 var current = requireBattleFunds(connection, eventId);
-                if (!current.teamId().equals(teamId)) {
+                if (!current.teamId.equals(teamId)) {
                     throw PersistenceConflictException(
                             "The battle-funds operation belongs to another team");
                 }
                 if (spend) {
                     requireTeamMember(connection, teamId, actorId!!);
-                    if (current.balance() < amount) {
+                    if (current.balance < amount) {
                         throw PersistenceConflictException(
                                 "The team does not have enough battle funds");
                     }
                 }
                 var nextBalance = 0L
-                var nextEarned = current.totalEarned();
-                var nextSpent = current.totalSpent();
+                var nextEarned = current.totalEarned;
+                var nextSpent = current.totalSpent;
                 try {
                     if (spend) {
-                        nextBalance = Math.subtractExact(current.balance(), amount);
-                        nextSpent = Math.addExact(current.totalSpent(), amount);
+                        nextBalance = Math.subtractExact(current.balance, amount);
+                        nextSpent = Math.addExact(current.totalSpent, amount);
                     } else {
-                        nextBalance = Math.addExact(current.balance(), amount);
-                        nextEarned = Math.addExact(current.totalEarned(), amount);
+                        nextBalance = Math.addExact(current.balance, amount);
+                        nextEarned = Math.addExact(current.totalEarned, amount);
                     }
                 } catch (overflow: ArithmeticException) {
                     throw PersistenceConflictException(
                             "The battle-funds account cannot represent this mutation", overflow);
                 }
                 var updated = BattleFunds(
-                        current.eventId(),
-                        current.teamId(),
+                        current.eventId,
+                        current.teamId,
                         nextBalance,
                         nextEarned,
                         nextSpent,
@@ -3417,12 +3417,12 @@ statement.executeQuery().use { resultSet ->
                 SET balance = ?, total_earned = ?, total_spent = ?, state = ?, updated_at = ?
                 WHERE event_id = ? AND state = 'ACTIVE'
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, funds.balance());
-            statement.setLong(2, funds.totalEarned());
-            statement.setLong(3, funds.totalSpent());
-            statement.setString(4, funds.state().name);
-            statement.setString(5, funds.updatedAt().toString());
-            statement.setString(6, funds.eventId().toString());
+            statement.setLong(1, funds.balance);
+            statement.setLong(2, funds.totalEarned);
+            statement.setLong(3, funds.totalSpent);
+            statement.setString(4, funds.state.name);
+            statement.setString(5, funds.updatedAt.toString());
+            statement.setString(6, funds.eventId.toString());
             if (statement.executeUpdate() != 1) {
                 throw PersistenceConflictException(
                         "The battle-funds account was concurrently settled");
@@ -3514,13 +3514,13 @@ statement.executeQuery().use { resultSet ->
                     multiplier = excluded.multiplier,
                     updated_at = excluded.updated_at
                 """.trimIndent()).use { statement ->
-            statement.setString(1, boost.eventId().toString());
-            statement.setString(2, boost.teamId().toString());
-            statement.setString(3, boost.towerId().toString());
-            statement.setString(4, boost.kind().id());
-            statement.setInt(5, boost.level());
-            statement.setDouble(6, boost.multiplier());
-            statement.setString(7, boost.updatedAt().toString());
+            statement.setString(1, boost.eventId.toString());
+            statement.setString(2, boost.teamId.toString());
+            statement.setString(3, boost.towerId.toString());
+            statement.setString(4, boost.kind.id());
+            statement.setInt(5, boost.level);
+            statement.setDouble(6, boost.multiplier);
+            statement.setString(7, boost.updatedAt.toString());
             statement.executeUpdate();
 
 }
@@ -3617,9 +3617,9 @@ statement.executeQuery().use { resultSet ->
                 SET current_hp = ?, updated_at = ?
                 WHERE tower_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, durability.currentHitPoints());
+            statement.setLong(1, durability.currentHitPoints);
             statement.setString(2, updatedAt.toString());
-            statement.setString(3, durability.towerId().toString());
+            statement.setString(3, durability.towerId.toString());
             if (statement.executeUpdate() != 1) {
                 throw SQLException("The tower durability update affected no rows");
             }
@@ -3848,7 +3848,7 @@ statement.executeQuery().use { resultSet ->
                 .orElseThrow { PersistenceConflictException(
                         "Team " + terminalSnapshot.teamId() + " has no progression row") };
         var quantity = rewardSettings.researchCrystalQuantity(
-                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel());
+                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel);
         if (quantity <= 0) {
             return;
         }
@@ -3925,8 +3925,8 @@ statement.executeQuery().use { resultSet ->
                 SET highest_cleared_level = ?, unlocked_level = ?, updated_at = ?
                 WHERE team_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, advanced.highestClearedLevel());
-            statement.setLong(2, advanced.unlockedLevel());
+            statement.setLong(1, advanced.highestClearedLevel);
+            statement.setLong(2, advanced.unlockedLevel);
             statement.setString(3, updatedAt.toString());
             statement.setString(4, teamId.toString());
             if (statement.executeUpdate() != 1) {
@@ -5177,7 +5177,7 @@ statement.executeQuery().use { resultSet ->
     }
 
     private fun insertEvent(connection: Connection, request: StartRequest, core: CoreRecord): Unit {
-        var snapshot = request.session();
+        var snapshot = request.session;
         connection.prepareStatement("""
                 INSERT INTO defense_events(
                     event_id, team_id, core_id, state, stage_level, total_waves,
@@ -5200,17 +5200,17 @@ statement.executeQuery().use { resultSet ->
             statement.setLong(11, snapshot.aliveEnemies());
             statement.setLong(12, core.currentHitPoints());
             statement.setLong(13, core.maximumHitPoints());
-            statement.setLong(14, snapshot.coreState().currentHitPoints());
-            statement.setLong(15, snapshot.coreState().maximumHitPoints());
-            statement.setInt(16, if (snapshot.coreState().present()) 1 else 0);
+            statement.setLong(14, snapshot.coreState().currentHitPoints);
+            statement.setLong(15, snapshot.coreState().maximumHitPoints);
+            statement.setInt(16, if (snapshot.coreState().present) 1 else 0);
             statement.setString(17, core.worldId().toString());
             statement.setInt(18, core.blockX());
             statement.setInt(19, core.blockY());
             statement.setInt(20, core.blockZ());
-            statement.setString(21, request.configSnapshot());
-            statement.setInt(22, request.configVersion());
-            statement.setString(23, request.startedAt().toString());
-            statement.setString(24, request.startedAt().toString());
+            statement.setString(21, request.configSnapshot);
+            statement.setInt(22, request.configVersion);
+            statement.setString(23, request.startedAt.toString());
+            statement.setString(24, request.startedAt.toString());
             statement.executeUpdate();
 
 }
@@ -5340,9 +5340,9 @@ statement.executeQuery().use { resultSet ->
             statement.setInt(6, snapshot.currentWave());
             statement.setLong(7, snapshot.pendingEnemies());
             statement.setLong(8, snapshot.aliveEnemies());
-            statement.setLong(9, snapshot.coreState().currentHitPoints());
-            statement.setLong(10, snapshot.coreState().maximumHitPoints());
-            statement.setInt(11, if (snapshot.coreState().present()) 1 else 0);
+            statement.setLong(9, snapshot.coreState().currentHitPoints);
+            statement.setLong(10, snapshot.coreState().maximumHitPoints);
+            statement.setInt(11, if (snapshot.coreState().present) 1 else 0);
             statement.setString(12, updatedAt.toString());
             statement.setString(13, snapshot.eventId().toString());
             statement.setLong(14, expectedRevision);
@@ -5356,8 +5356,8 @@ statement.executeQuery().use { resultSet ->
                 SET current_hp = ?, max_hp = ?, updated_at = ?
                 WHERE core_id = ?
                 """.trimIndent()).use { statement ->
-            statement.setLong(1, snapshot.coreState().currentHitPoints());
-            statement.setLong(2, snapshot.coreState().maximumHitPoints());
+            statement.setLong(1, snapshot.coreState().currentHitPoints);
+            statement.setLong(2, snapshot.coreState().maximumHitPoints);
             statement.setString(3, updatedAt.toString());
             statement.setString(4, coreId.toString());
             if (statement.executeUpdate() != 1) {
@@ -5536,8 +5536,8 @@ statement.executeQuery().use { resultSet ->
         if (!snapshot.teamId().equals(core.teamId())) {
             throw PersistenceConflictException("The selected core belongs to another team");
         }
-        if (snapshot.coreState().maximumHitPoints() != core.maximumHitPoints()
-                || snapshot.coreState().currentHitPoints() != core.currentHitPoints()) {
+        if (snapshot.coreState().maximumHitPoints != core.maximumHitPoints()
+                || snapshot.coreState().currentHitPoints != core.currentHitPoints()) {
             throw PersistenceConflictException(
                     "The session core snapshot is stale compared with the database");
         }
@@ -5549,8 +5549,8 @@ statement.executeQuery().use { resultSet ->
                 || current.stageLevel() != next.stageLevel()
                 || current.totalWaves() != next.totalWaves()
                 || current.participantLimit() != next.participantLimit()
-                || current.coreState().maximumHitPoints()
-                        != next.coreState().maximumHitPoints()) {
+                || current.coreState().maximumHitPoints
+                        != next.coreState().maximumHitPoints) {
             throw IllegalArgumentException(
                     "A persisted session's immutable identity and configuration cannot change");
         }
@@ -5562,7 +5562,7 @@ statement.executeQuery().use { resultSet ->
                 || !next.effectiveParticipants().containsAll(current.effectiveParticipants())) {
             return false;
         }
-        return next.coreState().currentHitPoints() <= current.coreState().currentHitPoints();
+        return next.coreState().currentHitPoints <= current.coreState().currentHitPoints;
     }
 
     private fun requireDistance(minimumCoreDistance: Double): Unit {
@@ -5622,9 +5622,9 @@ statement.executeQuery().use { resultSet ->
         canonical.append(snapshot.participantsFrozen()).append('|')
         canonical.append(snapshot.pendingEnemies()).append('|')
         canonical.append(snapshot.aliveEnemies()).append('|')
-        canonical.append(snapshot.coreState().maximumHitPoints()).append('|')
-        canonical.append(snapshot.coreState().currentHitPoints()).append('|')
-        canonical.append(snapshot.coreState().present()).append('|')
+        canonical.append(snapshot.coreState().maximumHitPoints).append('|')
+        canonical.append(snapshot.coreState().currentHitPoints).append('|')
+        canonical.append(snapshot.coreState().present).append('|')
         appendSortedUuids(canonical, snapshot.registeredParticipants());
         canonical.append('|');
         appendSortedUuids(canonical, snapshot.effectiveParticipants());

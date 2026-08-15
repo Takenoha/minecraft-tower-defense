@@ -87,7 +87,7 @@ class PaperEnemyTerrainAction(
             state is org.bukkit.block.TileState,
             event.getTo().getKey().toString(),
         )
-        if (policy.decide(taggedEnemy.role(), action, false, input) != TerrainMutationDecision.ALLOW) {
+        if (policy.decide(taggedEnemy.role, action, false, input) != TerrainMutationDecision.ALLOW) {
             return false
         }
 
@@ -103,26 +103,26 @@ class PaperEnemyTerrainAction(
             BlockChangeKind.TEMPORARY_BLOCK
         }
         if (kind == BlockChangeKind.TEMPORARY_BLOCK &&
-            blockMutations.countUnresolvedTemporaryBlocks(taggedEnemy.eventId()) >=
+            blockMutations.countUnresolvedTemporaryBlocks(taggedEnemy.eventId) >=
             EnemyBridgePlanner.MAX_ACTIVE_TEMPORARY_BLOCKS
         ) {
             return false
         }
-        val generation = blockMutations.nextGeneration(taggedEnemy.eventId(), block)
+        val generation = blockMutations.nextGeneration(taggedEnemy.eventId, block)
         val actionKey = block.getWorld().getUID().toString() +
             "|" + block.getX() +
             "|" + block.getY() +
             "|" + block.getZ() +
             "|" + kind +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
-        val changeId = deterministic(taggedEnemy.eventId(), "BLOCK_CHANGE", actionKey)
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
+        val changeId = deterministic(taggedEnemy.eventId, "BLOCK_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BLOCK_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BLOCK_APPLY", actionKey)
         event.setCancelled(true)
         val preparedDrops: List<PaperEscrowDropManager.PreparedDrop> = if (kind == BlockChangeKind.EVENT_BLOCK) {
             escrowDrops.prepareBlockDrops(
-                taggedEnemy.eventId(),
+                taggedEnemy.eventId,
                 changeId,
                 block,
                 Instant.now(),
@@ -132,7 +132,7 @@ class PaperEnemyTerrainAction(
         }
         try {
             blockMutations.apply(
-                taggedEnemy.eventId(),
+                taggedEnemy.eventId,
                 generation,
                 kind,
                 block,
@@ -174,7 +174,7 @@ class PaperEnemyTerrainAction(
         Objects.requireNonNull(entity, "entity")
         Objects.requireNonNull(destination, "destination")
         Objects.requireNonNull(taggedEnemy, "taggedEnemy")
-        if (!policy.enabled() || taggedEnemy.role() != EnemyRole.DESTROYER) {
+        if (!policy.enabled() || taggedEnemy.role != EnemyRole.DESTROYER) {
             return false
         }
         if (!accessPolicy.mayRemain(taggedEnemy, entity.getUniqueId())) {
@@ -186,7 +186,7 @@ class PaperEnemyTerrainAction(
             candidate = PaperEnemyPathController.planBreak(
                 entity,
                 destination,
-                taggedEnemy.role(),
+                taggedEnemy.role,
                 cores,
                 accessPolicy,
             )
@@ -222,7 +222,7 @@ class PaperEnemyTerrainAction(
             target.getMaterial().getKey().toString(),
         )
         if (policy.decide(
-                taggedEnemy.role(),
+                taggedEnemy.role,
                 EnemyTerrainActionKind.BREAK,
                 false,
                 input,
@@ -236,26 +236,26 @@ class PaperEnemyTerrainAction(
         if (current.equals(expectedAfter)) {
             return false
         }
-        val generation = blockMutations.nextGeneration(taggedEnemy.eventId(), block)
+        val generation = blockMutations.nextGeneration(taggedEnemy.eventId, block)
         val actionKey = "DESTROYER_BREAK|" +
             block.getWorld().getUID() +
             "|" + block.getX() +
             "|" + block.getY() +
             "|" + block.getZ() +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
-        val changeId = deterministic(taggedEnemy.eventId(), "DESTROYER_BREAK_CHANGE", actionKey)
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
+        val changeId = deterministic(taggedEnemy.eventId, "DESTROYER_BREAK_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BLOCK_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BLOCK_APPLY", actionKey)
         val preparedDrops = escrowDrops.prepareBlockDrops(
-            taggedEnemy.eventId(),
+            taggedEnemy.eventId,
             changeId,
             block,
             Instant.now(),
         )
         try {
             blockMutations.apply(
-                taggedEnemy.eventId(),
+                taggedEnemy.eventId,
                 generation,
                 BlockChangeKind.EVENT_BLOCK,
                 block,
@@ -295,7 +295,7 @@ class PaperEnemyTerrainAction(
         Objects.requireNonNull(entity, "entity")
         Objects.requireNonNull(destination, "destination")
         Objects.requireNonNull(taggedEnemy, "taggedEnemy")
-        if (!policy.enabled() || taggedEnemy.role() != EnemyRole.BUILDER) {
+        if (!policy.enabled() || taggedEnemy.role != EnemyRole.BUILDER) {
             return false
         }
         if (!accessPolicy.mayRemain(taggedEnemy, entity.getUniqueId())) {
@@ -303,12 +303,12 @@ class PaperEnemyTerrainAction(
         }
 
         val activeTemporaryBlocks = blockMutations.countUnresolvedTemporaryBlocks(
-            taggedEnemy.eventId(),
+            taggedEnemy.eventId,
         )
         val candidate = PaperEnemyPathController.planBridge(
             entity,
             destination,
-            taggedEnemy.role(),
+            taggedEnemy.role,
             cores,
             accessPolicy,
             activeTemporaryBlocks,
@@ -328,7 +328,7 @@ class PaperEnemyTerrainAction(
             return false
         }
         val target: BlockData = PaperBlockStateCodec.parseBlockData(value.targetBlockData)
-        if (target.getMaterial().getKey().toString() != value.plan.targetMaterialKey()) {
+        if (target.getMaterial().getKey().toString() != value.plan.targetMaterialKey) {
             return false
         }
         val state: BlockState = block.getState()
@@ -340,7 +340,7 @@ class PaperEnemyTerrainAction(
             target.getMaterial().getKey().toString(),
         )
         if (policy.decide(
-                taggedEnemy.role(),
+                taggedEnemy.role,
                 EnemyTerrainActionKind.BUILD,
                 false,
                 input,
@@ -354,19 +354,19 @@ class PaperEnemyTerrainAction(
         if (current.equals(expectedAfter)) {
             return false
         }
-        val generation = blockMutations.nextGeneration(taggedEnemy.eventId(), block)
+        val generation = blockMutations.nextGeneration(taggedEnemy.eventId, block)
         val actionKey = "BRIDGE|" +
             block.getWorld().getUID() +
             "|" + block.getX() +
             "|" + block.getY() +
             "|" + block.getZ() +
-            "|" + expectedAfter.blockData() +
-            "|" + expectedAfter.blockState()
-        val changeId = deterministic(taggedEnemy.eventId(), "BRIDGE_CHANGE", actionKey)
+            "|" + expectedAfter.blockData +
+            "|" + expectedAfter.blockState
+        val changeId = deterministic(taggedEnemy.eventId, "BRIDGE_CHANGE", actionKey)
         val prepareOperationId = deterministic(changeId, "BRIDGE_PREPARE", actionKey)
         val applyOperationId = deterministic(changeId, "BRIDGE_APPLY", actionKey)
         blockMutations.apply(
-            taggedEnemy.eventId(),
+            taggedEnemy.eventId,
             generation,
             BlockChangeKind.TEMPORARY_BLOCK,
             block,

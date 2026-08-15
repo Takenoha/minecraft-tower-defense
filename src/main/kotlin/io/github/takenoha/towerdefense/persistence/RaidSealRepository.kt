@@ -222,15 +222,15 @@ class RaidSealRepository(database: Database) {
         @JvmStatic
         @Throws(SQLException::class)
         fun consumeForStart(connection: Connection, request: StartRequest) {
-            if (request.raidSealId().isEmpty) {
+            if (request.raidSealId.isEmpty) {
                 return
             }
             reserveForStart(connection, request)
             consumeReservedForStart(
                 connection,
-                request.session().eventId(),
-                request.raidSealId().orElseThrow(),
-                request.startedAt(),
+                request.session.eventId(),
+                request.raidSealId.orElseThrow(),
+                request.startedAt,
             )
         }
 
@@ -238,15 +238,15 @@ class RaidSealRepository(database: Database) {
         @JvmStatic
         @Throws(SQLException::class)
         fun reserveForStart(connection: Connection, request: StartRequest) {
-            if (request.raidSealId().isEmpty) {
+            if (request.raidSealId.isEmpty) {
                 return
             }
-            val sealId = request.raidSealId().orElseThrow()
-            val eventId = request.session().eventId()
-            val teamId = request.session().teamId()
+            val sealId = request.raidSealId.orElseThrow()
+            val eventId = request.session.eventId()
+            val teamId = request.session.teamId()
             val ownerPlayerId = loadTeamOwner(connection, teamId)
             val reservationOperationId = deterministicOperation(eventId, "SEAL_RESERVE")
-            val stageLevel = request.session().stageLevel()
+            val stageLevel = request.session.stageLevel()
             val reserved = reserve(
                 connection,
                 sealId,
@@ -254,7 +254,7 @@ class RaidSealRepository(database: Database) {
                 ownerPlayerId,
                 stageLevel,
                 reservationOperationId,
-                request.startedAt(),
+                request.startedAt,
             )
             if (reserved == OperationOutcome.ALREADY_APPLIED) {
                 val current = load(connection, sealId).orElseThrow()
