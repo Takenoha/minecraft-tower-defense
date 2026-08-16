@@ -24,7 +24,8 @@ class MethodEnumsKotlinBoundaryAbiTest {
         assertEnum(DefensePhase.class,
                 "COUNTDOWN", "PREPARATION", "WAVE_ACTIVE", "INTERMISSION",
                 "VICTORY", "DEFEAT", "ABORTED", "RECOVERY");
-        assertEnum(EnemyRole.class, "NORMAL", "DESTROYER", "BUILDER", "BOSS");
+        assertEnum(EnemyRole.class,
+                "NORMAL", "DESTROYER", "BUILDER", "BOSS", "SPEEDSTER", "RANGED", "HEAVY");
         assertEnum(TowerTargetPriority.class,
                 "CORE_NEAREST", "NEAREST", "HEALTH_HIGH", "HEALTH_LOW", "BOSS");
         assertEnum(TowerType.class,
@@ -58,10 +59,16 @@ class MethodEnumsKotlinBoundaryAbiTest {
         assertEquals("FOUNDATION_DESTROYER", EnemyRole.DESTROYER.ledgerType());
         assertEquals("DESTROYER", EnemyRole.DESTROYER.id());
         assertEquals(11.5, EnemyRole.DESTROYER.navigationSpeed(10.0));
+        assertEquals(15.0, EnemyRole.SPEEDSTER.navigationSpeed(10.0));
+        assertEquals(0.75, EnemyRole.SPEEDSTER.healthMultiplier());
+        assertEquals(1.25, EnemyRole.HEAVY.healthMultiplier());
         assertTrue(EnemyRole.NORMAL.allowsTerrainAction(EnemyTerrainActionKind.BREAK, true));
         assertFalse(EnemyRole.NORMAL.allowsTerrainAction(EnemyTerrainActionKind.BREAK, false));
         assertTrue(EnemyRole.BUILDER.allowsTerrainAction(EnemyTerrainActionKind.BUILD, false));
         assertFalse(EnemyRole.BOSS.allowsTerrainAction(EnemyTerrainActionKind.BREAK, true));
+        assertFalse(EnemyRole.SPEEDSTER.allowsTerrainAction(EnemyTerrainActionKind.BREAK, true));
+        assertFalse(EnemyRole.RANGED.allowsTerrainAction(EnemyTerrainActionKind.BUILD, false));
+        assertFalse(EnemyRole.HEAVY.allowsTerrainAction(EnemyTerrainActionKind.BREAK, false));
 
         assertEquals("arrow", TowerType.ARROW.id());
         assertEquals("アロー", TowerType.ARROW.displayName());
@@ -75,6 +82,7 @@ class MethodEnumsKotlinBoundaryAbiTest {
     @Test
     void preservesParsingAndOptionalBoundaries() {
         assertEquals(EnemyRole.DESTROYER, EnemyRole.fromId("destroyer"));
+        assertEquals(EnemyRole.SPEEDSTER, EnemyRole.fromId("speedster"));
         assertEquals(TowerType.ARROW, TowerType.fromId("ARROW"));
         assertEquals(TowerTargetPriority.BOSS, TowerTargetPriority.fromId("BOSS"));
         assertThrows(IllegalArgumentException.class, () -> EnemyRole.fromId("unknown"));

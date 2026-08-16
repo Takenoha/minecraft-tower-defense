@@ -40,6 +40,9 @@ enemies:
   # Baseline role ratios; bounded stage/wave progression increases these up to 3x.
   destroyer-ratio: 0.15
   builder-ratio: 0.10
+  speedster-ratio: 0.10
+  ranged-ratio: 0.10
+  heavy-ratio: 0.05
   # Destroyers damage nearby installed towers; HP 0 removes the tower without an item drop.
   tower-attack-damage: 8
   tower-attack-interval-ticks: 20

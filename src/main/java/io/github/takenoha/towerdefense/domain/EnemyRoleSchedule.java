@@ -7,21 +7,44 @@ import java.util.List;
 public final class EnemyRoleSchedule {
     private final double destroyerRatio;
     private final double builderRatio;
+    private final double speedsterRatio;
+    private final double rangedRatio;
+    private final double heavyRatio;
 
     public EnemyRoleSchedule(double destroyerRatio, double builderRatio) {
+        this(
+                destroyerRatio,
+                builderRatio,
+                0.0d,
+                0.0d,
+                0.0d);
+    }
+
+    public EnemyRoleSchedule(
+            double destroyerRatio,
+            double builderRatio,
+            double speedsterRatio,
+            double rangedRatio,
+            double heavyRatio) {
         requireRatio("destroyerRatio", destroyerRatio);
         requireRatio("builderRatio", builderRatio);
-        if (destroyerRatio + builderRatio > 1.0d) {
+        requireRatio("speedsterRatio", speedsterRatio);
+        requireRatio("rangedRatio", rangedRatio);
+        requireRatio("heavyRatio", heavyRatio);
+        if (destroyerRatio + builderRatio + speedsterRatio + rangedRatio + heavyRatio > 1.0d) {
             throw new IllegalArgumentException("enemy role ratios must sum to at most 1");
         }
         this.destroyerRatio = destroyerRatio;
         this.builderRatio = builderRatio;
+        this.speedsterRatio = speedsterRatio;
+        this.rangedRatio = rangedRatio;
+        this.heavyRatio = heavyRatio;
     }
 
     /**
-     * Allocates roles for a wave. Special-role ratios grow up to three times their base value as
-     * stage and wave rise, while the total count remains fixed. Every tenth non-final wave has
-     * one intermediate boss; the final wave always has one final boss.
+     * Allocates roles for a wave. Special-role ratios grow with stage and wave while their
+     * combined allocation remains bounded by the regular enemy count. Every tenth non-final wave
+     * has one intermediate boss; the final wave always has one final boss.
      */
     public List<EnemyRole> forWave(
             long stageLevel,
@@ -46,15 +69,35 @@ public final class EnemyRoleSchedule {
         double progression = 1.0d
                 + Math.min(1.0d, ((double) stageLevel - 1.0d) / 10.0d)
                 + Math.min(1.0d, ((double) waveIndex - 1.0d) / 10.0d);
-        int destroyers = roundedCount(regularEnemies, destroyerRatio * progression);
-        int builders = roundedCount(regularEnemies, builderRatio * progression);
-        if (destroyers + builders > regularEnemies) {
-            builders = Math.max(0, regularEnemies - destroyers);
-            if (destroyers + builders > regularEnemies) {
-                destroyers = regularEnemies;
-                builders = 0;
-            }
+        double baseRoleRatioSum = destroyerRatio
+                + builderRatio
+                + speedsterRatio
+                + rangedRatio
+                + heavyRatio;
+        if (baseRoleRatioSum > 0.0d) {
+            progression = Math.min(progression, 1.0d / baseRoleRatioSum);
         }
+        int remaining = regularEnemies;
+        int destroyers = allocate(
+                remaining,
+                roundedCount(regularEnemies, destroyerRatio * progression));
+        remaining -= destroyers;
+        int builders = allocate(
+                remaining,
+                roundedCount(regularEnemies, builderRatio * progression));
+        remaining -= builders;
+        int speedsters = allocate(
+                remaining,
+                roundedCount(regularEnemies, speedsterRatio * progression));
+        remaining -= speedsters;
+        int ranged = allocate(
+                remaining,
+                roundedCount(regularEnemies, rangedRatio * progression));
+        remaining -= ranged;
+        int heavies = allocate(
+                remaining,
+                roundedCount(regularEnemies, heavyRatio * progression));
+        remaining -= heavies;
 
         List<EnemyRole> result = new ArrayList<>(totalEnemies);
         if (bossSlots == 1) {
@@ -62,7 +105,10 @@ public final class EnemyRoleSchedule {
         }
         add(result, EnemyRole.DESTROYER, destroyers);
         add(result, EnemyRole.BUILDER, builders);
-        add(result, EnemyRole.NORMAL, regularEnemies - destroyers - builders);
+        add(result, EnemyRole.SPEEDSTER, speedsters);
+        add(result, EnemyRole.RANGED, ranged);
+        add(result, EnemyRole.HEAVY, heavies);
+        add(result, EnemyRole.NORMAL, remaining);
         return List.copyOf(result);
     }
 
@@ -80,6 +126,10 @@ public final class EnemyRoleSchedule {
         }
         long rounded = Math.round(total * Math.min(1.0d, ratio));
         return (int) Math.min(total, rounded);
+    }
+
+    private static int allocate(int remaining, int requested) {
+        return Math.max(0, Math.min(remaining, requested));
     }
 
     private static void add(List<EnemyRole> roles, EnemyRole role, int count) {

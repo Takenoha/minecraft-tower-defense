@@ -61,7 +61,12 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Husk;
 import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Mob;
+import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Ravager;
+import org.bukkit.entity.Skeleton;
+import org.bukkit.entity.Spider;
 import org.bukkit.entity.Zombie;
 import org.bukkit.entity.ZombieVillager;
 import org.bukkit.event.entity.CreatureSpawnEvent;
@@ -284,7 +289,10 @@ public final class DefenseSessionManager
                 settings.combat().coreGap());
         enemyRoles = new EnemyRoleSchedule(
                 settings.enemies().destroyerRatio(),
-                settings.enemies().builderRatio());
+                settings.enemies().builderRatio(),
+                settings.enemies().speedsterRatio(),
+                settings.enemies().rangedRatio(),
+                settings.enemies().heavyRatio());
         defenseShards = new DefenseShardTagger(plugin);
         enhancementCores = new EnhancementCoreTagger(plugin);
         terrainMutationGate = new TerrainMutationActivationGate(settings.terrainMutation());
@@ -756,12 +764,12 @@ public final class DefenseSessionManager
                 return;
             }
             defense.spawnFailureSinceTick = -1L;
-            Zombie zombie;
+            Monster monster;
             try {
                 Location location = spawnLocation.orElseThrow();
                 boolean finalWave = defense.session.currentWave()
                         == defense.session.totalWaves();
-                zombie = switch (role) {
+                monster = switch (role) {
                     case DESTROYER -> defense.world.spawn(
                             location,
                             Husk.class,
@@ -770,6 +778,21 @@ public final class DefenseSessionManager
                     case BUILDER -> defense.world.spawn(
                             location,
                             ZombieVillager.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case SPEEDSTER -> defense.world.spawn(
+                            location,
+                            Spider.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case RANGED -> defense.world.spawn(
+                            location,
+                            Skeleton.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
+                    case HEAVY -> defense.world.spawn(
+                            location,
+                            Ravager.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
                             entity -> configureEnemy(entity, role, finalWave));
                     case NORMAL, BOSS -> defense.world.spawn(
@@ -785,19 +808,19 @@ public final class DefenseSessionManager
 
             TaggedEnemy taggedEnemy = new TaggedEnemy(
                     defense.session.eventId(), logicalEnemyId, role);
-            tagger.tag(zombie, taggedEnemy);
+            tagger.tag(monster, taggedEnemy);
             defense.pendingLogicalIds.removeFirst();
-            defense.entitiesByLogicalId.put(logicalEnemyId, zombie.getUniqueId());
+            defense.entitiesByLogicalId.put(logicalEnemyId, monster.getUniqueId());
             defense.enemyProgress.put(
                     logicalEnemyId,
                     new EnemyProgress(
-                            zombie.getLocation().distanceSquared(defense.coreTarget),
+                            monster.getLocation().distanceSquared(defense.coreTarget),
                             currentTick));
             defense.session.spawnPendingEnemies(1L);
             EnemyLedgerEntry entry = new EnemyLedgerEntry(
                     defense.session.eventId(),
                     logicalEnemyId,
-                    zombie.getUniqueId(),
+                    monster.getUniqueId(),
                     role.ledgerType(),
                     defense.session.currentWave(),
                     EnemyStatus.SPAWNED,
@@ -813,28 +836,38 @@ public final class DefenseSessionManager
         }
     }
 
-    private void configureEnemy(Zombie zombie, EnemyRole role, boolean finalWave) {
-        zombie.setPersistent(true);
-        zombie.setRemoveWhenFarAway(false);
-        zombie.setCanPickupItems(false);
-        zombie.setCanBreakDoors(false);
-        zombie.setShouldBurnInDay(false);
-        zombie.setLootTable(null);
-        zombie.getPathfinder().setCanOpenDoors(false);
-        zombie.getPathfinder().setCanPassDoors(false);
+    private void configureEnemy(Monster monster, EnemyRole role, boolean finalWave) {
+        monster.setPersistent(true);
+        monster.setRemoveWhenFarAway(false);
+        monster.setCanPickupItems(false);
+        monster.setLootTable(null);
+        monster.getPathfinder().setCanOpenDoors(false);
+        monster.getPathfinder().setCanPassDoors(false);
+        if (monster instanceof Zombie zombie) {
+            zombie.setCanBreakDoors(false);
+            zombie.setShouldBurnInDay(false);
+        }
         if (EventEnemyVisualPolicy.shouldGlow(role)) {
-            zombie.setGlowing(true);
+            monster.setGlowing(true);
         }
-        if (role == EnemyRole.BOSS) {
+        if (role == EnemyRole.BOSS || role.healthMultiplier() != 1.0d) {
             AttributeInstance maximumHealth = Objects.requireNonNull(
-                    zombie.getAttribute(Attribute.MAX_HEALTH),
-                    "zombie max-health attribute");
-            double boostedHealth = maximumHealth.getBaseValue()
-                    * settings.enemies().bossHealthMultiplier();
+                    monster.getAttribute(Attribute.MAX_HEALTH),
+                    "enemy max-health attribute");
+            double boostedHealth = maximumHealth.getBaseValue() * (role == EnemyRole.BOSS
+                    ? settings.enemies().bossHealthMultiplier()
+                    : role.healthMultiplier());
             maximumHealth.setBaseValue(boostedHealth);
-            zombie.setHealth(boostedHealth);
+            monster.setHealth(boostedHealth);
         }
-        refreshEnemyHealthBar(zombie, role, finalWave);
+        if (role == EnemyRole.HEAVY) {
+            AttributeInstance knockbackResistance = monster.getAttribute(
+                    Attribute.KNOCKBACK_RESISTANCE);
+            if (knockbackResistance != null) {
+                knockbackResistance.setBaseValue(1.0d);
+            }
+        }
+        refreshEnemyHealthBar(monster, role, finalWave);
     }
 
     private void refreshEnemyHealthBar(Entity entity, EnemyRole role, boolean finalWave) {
@@ -921,13 +954,13 @@ public final class DefenseSessionManager
                 return;
             }
             if (currentTick - defense.lastPathRefreshTick >= PATH_REFRESH_TICKS
-                    && entity instanceof Zombie zombie) {
-                boolean accepted = zombie.getPathfinder().moveTo(
+                    && entity instanceof Mob mob) {
+                boolean accepted = mob.getPathfinder().moveTo(
                         defense.coreTarget,
                         role.navigationSpeed(settings.enemies().moveSpeed()));
                 progress.recordPathAttempt(accepted);
                 EnemyObstacleFacts obstacleFacts = pathIntegration.inspect(
-                        zombie,
+                        mob,
                         defense.coreTarget,
                         role,
                         defense.pathMetrics);
@@ -946,7 +979,7 @@ public final class DefenseSessionManager
                 }
                 if (pathAction == EnemyPathAction.BREAK_OBSTACLE) {
                     boolean obstacleBroken = terrainAction.tryBreakObstacle(
-                            zombie,
+                            mob,
                             defense.coreTarget,
                             new TaggedEnemy(defense.session.eventId(), logicalId, role));
                     defense.pathMetrics.recordBreakAttempt(obstacleBroken);
@@ -956,7 +989,7 @@ public final class DefenseSessionManager
                 }
                 if (pathAction == EnemyPathAction.BUILD_SUPPORT) {
                     boolean bridgePlaced = terrainAction.tryBuildBridge(
-                            zombie,
+                            mob,
                             defense.coreTarget,
                             new TaggedEnemy(defense.session.eventId(), logicalId, role));
                     defense.pathMetrics.recordBridgeAttempt(bridgePlaced);
@@ -1007,8 +1040,8 @@ public final class DefenseSessionManager
     }
 
     private void holdAtCore(Entity entity) {
-        if (entity instanceof Zombie zombie) {
-            zombie.getPathfinder().stopPathfinding();
+        if (entity instanceof Mob mob) {
+            mob.getPathfinder().stopPathfinding();
         }
     }
 

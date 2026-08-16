@@ -39,6 +39,40 @@ class EnemyRoleScheduleTest {
     }
 
     @Test
+    void allocatesTheNewCombatRolesWithoutChangingTheWaveSize() {
+        EnemyRoleSchedule schedule = new EnemyRoleSchedule(
+                0.10d,
+                0.10d,
+                0.10d,
+                0.10d,
+                0.05d);
+
+        List<EnemyRole> roles = schedule.forWave(1L, 1, 20, false);
+
+        assertEquals(20, roles.size());
+        assertEquals(2L, roles.stream().filter(role -> role == EnemyRole.DESTROYER).count());
+        assertEquals(2L, roles.stream().filter(role -> role == EnemyRole.BUILDER).count());
+        assertEquals(2L, roles.stream().filter(role -> role == EnemyRole.SPEEDSTER).count());
+        assertEquals(2L, roles.stream().filter(role -> role == EnemyRole.RANGED).count());
+        assertEquals(1L, roles.stream().filter(role -> role == EnemyRole.HEAVY).count());
+        assertEquals(11L, roles.stream().filter(role -> role == EnemyRole.NORMAL).count());
+    }
+
+    @Test
+    void keepsEveryConfiguredCombatRoleRepresentedAtHighProgression() {
+        EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.15d, 0.10d, 0.10d, 0.10d, 0.05d);
+
+        List<EnemyRole> roles = schedule.forWave(10L, 10, 21, false);
+
+        assertEquals(1L, roles.stream().filter(role -> role == EnemyRole.BOSS).count());
+        assertEquals(6L, roles.stream().filter(role -> role == EnemyRole.DESTROYER).count());
+        assertEquals(4L, roles.stream().filter(role -> role == EnemyRole.BUILDER).count());
+        assertEquals(4L, roles.stream().filter(role -> role == EnemyRole.SPEEDSTER).count());
+        assertEquals(4L, roles.stream().filter(role -> role == EnemyRole.RANGED).count());
+        assertEquals(2L, roles.stream().filter(role -> role == EnemyRole.HEAVY).count());
+    }
+
+    @Test
     void reservesAnIntermediateBossSlotOnEveryTenthNonFinalWave() {
         EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.10d, 0.10d);
 
@@ -52,6 +86,9 @@ class EnemyRoleScheduleTest {
     void rejectsInvalidRoleScheduleInputs() {
         assertThrows(IllegalArgumentException.class, () -> new EnemyRoleSchedule(-0.1d, 0.1d));
         assertThrows(IllegalArgumentException.class, () -> new EnemyRoleSchedule(0.6d, 0.5d));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new EnemyRoleSchedule(0.4d, 0.2d, 0.2d, 0.1d, 0.2d));
 
         EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.1d, 0.1d);
         assertThrows(IllegalArgumentException.class, () -> schedule.forWave(0L, 1, 1, false));

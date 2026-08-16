@@ -145,6 +145,21 @@ final class PluginSettingsMapReader {
                             "enemies",
                             "builder-ratio",
                             EnemySettings.DEFAULT_BUILDER_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "speedster-ratio",
+                            EnemySettings.DEFAULT_SPEEDSTER_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "ranged-ratio",
+                            EnemySettings.DEFAULT_RANGED_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "heavy-ratio",
+                            EnemySettings.DEFAULT_HEAVY_RATIO),
                     integerOrDefault(
                             values,
                             "enemies",

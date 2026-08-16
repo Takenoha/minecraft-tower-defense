@@ -18,10 +18,12 @@ class ConfigLeafRecordsKotlinBoundaryAbiTest {
     void preservesRecordComponentsAndCompatibilityConstructors() throws Exception {
         assertRecord(EnemySettings.class,
                 new Class<?>[]{int.class, int.class, int.class, int.class,
-                        double.class, double.class, double.class, double.class,
+                        double.class, double.class, double.class, double.class, double.class,
+                        double.class, double.class,
                         int.class, int.class, double.class},
                 "maxAlive", "spawnPerTick", "basePerWave", "addedPerWave",
                 "bossHealthMultiplier", "moveSpeed", "destroyerRatio", "builderRatio",
+                "speedsterRatio", "rangedRatio", "heavyRatio",
                 "towerAttackDamage", "towerAttackIntervalTicks", "towerAttackRange");
         assertRecord(RewardSettings.class,
                 new Class<?>[]{int.class, int.class, int.class, int.class, int.class, int.class,
@@ -53,6 +55,9 @@ class ConfigLeafRecordsKotlinBoundaryAbiTest {
 
         assertField(EnemySettings.class, "DEFAULT_DESTROYER_RATIO", double.class, 0.15d);
         assertField(EnemySettings.class, "DEFAULT_BUILDER_RATIO", double.class, 0.10d);
+        assertField(EnemySettings.class, "DEFAULT_SPEEDSTER_RATIO", double.class, 0.10d);
+        assertField(EnemySettings.class, "DEFAULT_RANGED_RATIO", double.class, 0.10d);
+        assertField(EnemySettings.class, "DEFAULT_HEAVY_RATIO", double.class, 0.05d);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_DAMAGE", int.class, 8);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_INTERVAL_TICKS", int.class, 20);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_RANGE", double.class, 2.5d);
@@ -77,6 +82,7 @@ class ConfigLeafRecordsKotlinBoundaryAbiTest {
         assertEquals(0, defaults.researchCrystalQuantity(1L, 4L));
         assertEquals(5, defaults.battleFundsFor(EnemyRole.NORMAL));
         assertEquals(15, defaults.battleFundsFor(EnemyRole.DESTROYER));
+        assertEquals(15, defaults.battleFundsFor(EnemyRole.RANGED));
         assertEquals(50, defaults.battleFundsFor(EnemyRole.BOSS));
         assertEquals(1, defaults.defenseShardsFor(EnemyRole.NORMAL));
         assertEquals(2, defaults.defenseShardsFor(EnemyRole.BOSS));
