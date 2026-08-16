@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
 
 class PluginSettingsMapReaderTest {
     @Test
@@ -25,6 +26,41 @@ class PluginSettingsMapReaderTest {
         assertEquals(ProtectionSettings.empty(), settings.protection());
         assertEquals(RewardSettings.defaults(), settings.rewards());
         assertEquals(TerrainMutationSettings.disabled(), settings.terrainMutation());
+        assertEquals(WaveMutationSettings.defaults(), settings.waveMutations());
+    }
+
+    @Test
+    void readsWaveMutationProfilesAndValidatesTheirMultipliers() {
+        Map<String, Object> values = validValues();
+        values.put("wave-mutations", Map.of(
+                "enabled", true,
+                "swift", Map.of(
+                        "enemy-speed-multiplier", 1.4d,
+                        "reward-multiplier", 1.2d),
+                "fortified", Map.of("enemy-health-multiplier", 1.5d),
+                "reinforcements", Map.of("enemy-count-multiplier", 1.3d)));
+
+        PluginSettings settings = PluginSettings.from(values);
+
+        assertEquals(1.4d, settings.waveMutations().swift().enemySpeedMultiplier());
+        assertEquals(1.5d, settings.waveMutations().fortified().enemyHealthMultiplier());
+        assertEquals(1.3d, settings.waveMutations().reinforcements().enemyCountMultiplier());
+    }
+
+    @Test
+    void rejectsAnInvalidWaveMutationMultiplier() {
+        Map<String, Object> values = validValues();
+        values.put("wave-mutations", Map.of(
+                "enabled", true,
+                "swift", Map.of("enemy-speed-multiplier", 0.0d)));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                () -> PluginSettings.from(values));
+
+        assertEquals(1, exception.violations().size());
+        assertTrue(exception.violations().getFirst().startsWith(
+                "wave-mutations.swift.enemy-speed-multiplier: must be finite and > 0"));
     }
 
     @Test

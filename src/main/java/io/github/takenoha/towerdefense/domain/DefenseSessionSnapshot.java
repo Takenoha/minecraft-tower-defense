@@ -23,13 +23,47 @@ public record DefenseSessionSnapshot(
         boolean participantsFrozen,
         long pendingEnemies,
         long aliveEnemies,
-        CoreState coreState) {
+        CoreState coreState,
+        WaveMutationSnapshot waveMutation) {
+
+    /** Keeps snapshots created by older callers on the neutral legacy path. */
+    public DefenseSessionSnapshot(
+            UUID eventId,
+            UUID teamId,
+            long stageLevel,
+            int totalWaves,
+            int participantLimit,
+            DefensePhase phase,
+            int currentWave,
+            Set<UUID> registeredParticipants,
+            Set<UUID> effectiveParticipants,
+            boolean participantsFrozen,
+            long pendingEnemies,
+            long aliveEnemies,
+            CoreState coreState) {
+        this(
+                eventId,
+                teamId,
+                stageLevel,
+                totalWaves,
+                participantLimit,
+                phase,
+                currentWave,
+                registeredParticipants,
+                effectiveParticipants,
+                participantsFrozen,
+                pendingEnemies,
+                aliveEnemies,
+                coreState,
+                WaveMutationSnapshot.none());
+    }
 
     public DefenseSessionSnapshot {
         eventId = Objects.requireNonNull(eventId, "eventId");
         teamId = Objects.requireNonNull(teamId, "teamId");
         phase = Objects.requireNonNull(phase, "phase");
         coreState = Objects.requireNonNull(coreState, "coreState");
+        waveMutation = Objects.requireNonNull(waveMutation, "waveMutation");
         registeredParticipants = immutableUuidSet(
                 "registeredParticipants", registeredParticipants);
         effectiveParticipants = immutableUuidSet(

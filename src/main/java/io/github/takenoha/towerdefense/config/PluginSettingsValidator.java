@@ -1,6 +1,8 @@
 package io.github.takenoha.towerdefense.config;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
+import io.github.takenoha.towerdefense.domain.WaveMutationSnapshot;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -39,7 +41,69 @@ public final class PluginSettingsValidator {
         validateRewards(settings.rewards(), unreadablePaths, violations);
         validateTerrainMutation(settings.terrainMutation(), unreadablePaths, violations);
         validateTowers(settings.towers(), unreadablePaths, violations);
+        validateWaveMutations(settings.waveMutations(), unreadablePaths, violations);
         return List.copyOf(violations);
+    }
+
+    private static void validateWaveMutations(
+            WaveMutationSettings settings,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (settings == null) {
+            if (!unreadablePaths.contains("wave-mutations")) {
+                violations.add("wave-mutations: section is required");
+            }
+            return;
+        }
+        validateWaveMutationProfile(
+                "wave-mutations.swift", settings.swift(), WaveMutation.SWIFT,
+                unreadablePaths, violations);
+        validateWaveMutationProfile(
+                "wave-mutations.fortified", settings.fortified(), WaveMutation.FORTIFIED,
+                unreadablePaths, violations);
+        validateWaveMutationProfile(
+                "wave-mutations.reinforcements",
+                settings.reinforcements(),
+                WaveMutation.REINFORCEMENTS,
+                unreadablePaths,
+                violations);
+    }
+
+    private static void validateWaveMutationProfile(
+            String path,
+            WaveMutationSnapshot profile,
+            WaveMutation expectedMutation,
+            Set<String> unreadablePaths,
+            List<String> violations) {
+        if (profile == null) {
+            if (!unreadablePaths.contains(path)) {
+                violations.add(path + ": profile is required");
+            }
+            return;
+        }
+        if (profile.mutation() != expectedMutation) {
+            violations.add(path + ".mutation: must be " + expectedMutation);
+        }
+        requirePositiveFinite(
+                path + ".enemy-speed-multiplier",
+                profile.enemySpeedMultiplier(),
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                path + ".enemy-health-multiplier",
+                profile.enemyHealthMultiplier(),
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                path + ".enemy-count-multiplier",
+                profile.enemyCountMultiplier(),
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                path + ".reward-multiplier",
+                profile.rewardMultiplier(),
+                unreadablePaths,
+                violations);
     }
 
     private static void validateTowers(

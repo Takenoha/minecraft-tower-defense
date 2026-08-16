@@ -64,7 +64,7 @@ class KotlinInteropProbeTest {
 
         assertTrue(encoded.startsWith("{\"format\":\"tdb2\""))
         assertEquals(branched, TacticalDefinitionCodec.decode(encoded))
-        assertEquals(39, SchemaMigrator.CURRENT_VERSION)
+        assertEquals(40, SchemaMigrator.CURRENT_VERSION)
         assertFalse(branched.branchIds().isEmpty())
     }
 }

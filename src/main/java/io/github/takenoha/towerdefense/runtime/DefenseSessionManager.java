@@ -10,6 +10,7 @@ import io.github.takenoha.towerdefense.domain.EnemyObstacleFacts;
 import io.github.takenoha.towerdefense.domain.EnemyPathAction;
 import io.github.takenoha.towerdefense.domain.EnemyRole;
 import io.github.takenoha.towerdefense.domain.EnemyRoleSchedule;
+import io.github.takenoha.towerdefense.domain.WaveMutationSnapshot;
 import io.github.takenoha.towerdefense.paper.EventEnemyTagger;
 import io.github.takenoha.towerdefense.paper.DefenseShardTagger;
 import io.github.takenoha.towerdefense.paper.EnhancementCoreTagger;
@@ -408,6 +409,7 @@ public final class DefenseSessionManager
                 session.phase(),
                 session.currentWave(),
                 session.totalWaves(),
+                session.waveMutation(),
                 session.pendingEnemies(),
                 session.aliveEnemies(),
                 session.coreState().currentHitPoints(),
@@ -589,7 +591,8 @@ public final class DefenseSessionManager
         if (active.session.phase() != DefensePhase.WAVE_ACTIVE) {
             return;
         }
-        int shardQuantity = settings.rewards().defenseShardsFor(taggedEnemy.role());
+        int shardQuantity = active.session.waveMutation().scaleReward(
+                settings.rewards().defenseShardsFor(taggedEnemy.role()));
         if (shardQuantity > 0) {
             escrowDrops.issueEnemyDrop(
                     taggedEnemy.eventId(),
@@ -604,10 +607,11 @@ public final class DefenseSessionManager
                             shardQuantity),
                     Instant.now());
         }
+        int enhancementCoreDropPercent = active.session.waveMutation().scalePercent(
+                settings.rewards().enhancementCoreDropPercent());
         if (taggedEnemy.role() != EnemyRole.NORMAL
-                && settings.rewards().enhancementCoreDropPercent() > 0
-                && ThreadLocalRandom.current().nextInt(100)
-                        < settings.rewards().enhancementCoreDropPercent()) {
+                && enhancementCoreDropPercent > 0
+                && ThreadLocalRandom.current().nextInt(100) < enhancementCoreDropPercent) {
             escrowDrops.issueEnemyDrop(
                     taggedEnemy.eventId(),
                     taggedEnemy.logicalEnemyId(),
@@ -621,7 +625,8 @@ public final class DefenseSessionManager
                             1),
                     Instant.now());
         }
-        int funds = settings.rewards().battleFundsFor(taggedEnemy.role());
+        int funds = active.session.waveMutation().scaleReward(
+                settings.rewards().battleFundsFor(taggedEnemy.role()));
         if (funds > 0) {
             observe(
                     active,
@@ -782,37 +787,44 @@ public final class DefenseSessionManager
                             location,
                             Husk.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case BUILDER -> defense.world.spawn(
                             location,
                             ZombieVillager.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case SPEEDSTER -> defense.world.spawn(
                             location,
                             Spider.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case RANGED -> defense.world.spawn(
                             location,
                             Skeleton.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case HEAVY -> defense.world.spawn(
                             location,
                             Ravager.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case SUPPORT -> defense.world.spawn(
                             location,
                             Witch.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                     case NORMAL, BOSS -> defense.world.spawn(
                             location,
                             Zombie.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
-                            entity -> configureEnemy(entity, role, finalWave));
+                            entity -> configureEnemy(
+                                    entity, role, finalWave, defense.session.waveMutation()));
                 };
             } catch (IllegalArgumentException spawnFailure) {
                 plugin.getLogger().warning("Could not spawn event enemy: " + spawnFailure.getMessage());
@@ -849,7 +861,11 @@ public final class DefenseSessionManager
         }
     }
 
-    private void configureEnemy(Monster monster, EnemyRole role, boolean finalWave) {
+    private void configureEnemy(
+            Monster monster,
+            EnemyRole role,
+            boolean finalWave,
+            WaveMutationSnapshot waveMutation) {
         monster.setPersistent(true);
         monster.setRemoveWhenFarAway(false);
         monster.setCanPickupItems(false);
@@ -868,13 +884,15 @@ public final class DefenseSessionManager
         if (EventEnemyVisualPolicy.shouldGlow(role)) {
             monster.setGlowing(true);
         }
-        if (role == EnemyRole.BOSS || role.healthMultiplier() != 1.0d) {
+        if (role == EnemyRole.BOSS
+                || role.healthMultiplier() != 1.0d
+                || waveMutation.enemyHealthMultiplier() != 1.0d) {
             AttributeInstance maximumHealth = Objects.requireNonNull(
                     monster.getAttribute(Attribute.MAX_HEALTH),
                     "enemy max-health attribute");
             double boostedHealth = maximumHealth.getBaseValue() * (role == EnemyRole.BOSS
                     ? settings.enemies().bossHealthMultiplier()
-                    : role.healthMultiplier());
+                    : role.healthMultiplier()) * waveMutation.enemyHealthMultiplier();
             maximumHealth.setBaseValue(boostedHealth);
             monster.setHealth(boostedHealth);
         }
@@ -978,7 +996,8 @@ public final class DefenseSessionManager
                     && entity instanceof Mob mob) {
                 boolean accepted = mob.getPathfinder().moveTo(
                         defense.coreTarget,
-                        navigationSpeed(defense, logicalId, role));
+                        navigationSpeed(defense, logicalId, role)
+                                * defense.session.waveMutation().enemySpeedMultiplier());
                 progress.recordPathAttempt(accepted);
                 EnemyObstacleFacts obstacleFacts = pathIntegration.inspect(
                         mob,
@@ -1216,7 +1235,8 @@ public final class DefenseSessionManager
     }
 
     private void onWaveCleared(ActiveDefense defense) {
-        int waveFunds = settings.rewards().battleFundsPerWave();
+        int waveFunds = defense.session.waveMutation().scaleReward(
+                settings.rewards().battleFundsPerWave());
         if (waveFunds > 0 && defense.session.currentWave() > 0) {
             observe(
                     defense,
@@ -1413,6 +1433,7 @@ public final class DefenseSessionManager
         long nextWave = session.currentWave() + 1L;
         long perParticipant = enemyCountPerParticipant(nextWave);
         long total = Math.multiplyExact(perParticipant, session.effectiveParticipants().size());
+        total = session.waveMutation().scaleEnemyCount(total);
         if (total <= 0L || total > MAX_FOUNDATION_WAVE_ENEMIES) {
             throw new IllegalStateException(
                     "calculated wave enemy count is outside the foundation safety cap: " + total);
@@ -1672,7 +1693,8 @@ public final class DefenseSessionManager
         }
 
         long additionalEnemies = phase == DefensePhase.WAVE_ACTIVE
-                ? enemyCountPerParticipant(defense.session.currentWave())
+                ? defense.session.waveMutation().scaleEnemyCount(
+                        enemyCountPerParticipant(defense.session.currentWave()))
                 : 0L;
         if (additionalEnemies > 0L) {
             long remaining = defense.session.remainingLogicalEnemies();
@@ -1771,6 +1793,7 @@ public final class DefenseSessionManager
         defense.bossBar.name(Component.text(
                 "防衛戦 " + session.phase()
                         + " | Wave " + session.currentWave() + "/" + session.totalWaves()
+                        + " | 変異 " + session.waveMutation().mutation().displayName()
                         + " | 敵 " + session.remainingLogicalEnemies()
                         + " | Core " + session.coreState().currentHitPoints()
                         + "/" + session.coreState().maximumHitPoints()));

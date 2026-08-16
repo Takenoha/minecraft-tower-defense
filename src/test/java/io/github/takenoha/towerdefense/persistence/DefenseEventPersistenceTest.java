@@ -11,6 +11,8 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
+import io.github.takenoha.towerdefense.domain.WaveMutationSnapshot;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -140,6 +142,50 @@ final class DefenseEventPersistenceTest {
         DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
         assertEquals(stored, reopened.findEvent(eventId).orElseThrow());
         assertTrue(reopened.activeEventId().isEmpty());
+    }
+
+    @Test
+    void persistsWaveMutationSelectionThroughReloadAndTechnicalRecovery() {
+        Path databaseFile = temporaryDirectory.resolve("wave-mutation.sqlite");
+        DefenseRepository repository = new DefenseRepository(new Database(databaseFile));
+        Fixture fixture = createFixture(repository, UUID.randomUUID(), 0);
+        WaveMutationSnapshot selected = new WaveMutationSnapshot(
+                WaveMutation.FORTIFIED,
+                1.0d,
+                1.35d,
+                1.0d,
+                1.35d);
+        DefenseSession session = new DefenseSession(
+                UUID.randomUUID(),
+                fixture.teamId(),
+                1L,
+                8,
+                new CoreState(
+                        fixture.core().maximumHitPoints(),
+                        fixture.core().currentHitPoints(),
+                        true),
+                selected);
+        StartRequest request = new StartRequest(
+                session.snapshot(),
+                fixture.core().id(),
+                "wave-mutations-snapshot",
+                1,
+                STARTED_AT);
+
+        assertEquals(StartOutcome.STARTED, repository.tryStart(request));
+        StoredDefenseEvent stored = repository.findEvent(session.eventId()).orElseThrow();
+        assertEquals(selected, stored.session().waveMutation());
+        assertEquals("wave-mutations-snapshot", stored.configSnapshot());
+
+        DefenseRepository reopened = new DefenseRepository(new Database(databaseFile));
+        assertEquals(selected, reopened.findEvent(session.eventId()).orElseThrow()
+                .session().waveMutation());
+        assertEquals(
+                OperationOutcome.APPLIED,
+                reopened.recoverUnfinishedEvent(
+                        session.eventId(), UUID.randomUUID(), STARTED_AT.plusSeconds(1L)));
+        assertEquals(selected, reopened.findEvent(session.eventId()).orElseThrow()
+                .session().waveMutation());
     }
 
     @Test

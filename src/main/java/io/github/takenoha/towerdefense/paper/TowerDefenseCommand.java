@@ -5,6 +5,7 @@ import io.github.takenoha.towerdefense.domain.CombatArea;
 import io.github.takenoha.towerdefense.domain.CoreState;
 import io.github.takenoha.towerdefense.domain.DefenseSession;
 import io.github.takenoha.towerdefense.domain.StageWaveSchedule;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
 import io.github.takenoha.towerdefense.persistence.CoreRecord;
 import io.github.takenoha.towerdefense.persistence.DefenseRepository;
 import io.github.takenoha.towerdefense.persistence.OperationOutcome;
@@ -527,6 +528,16 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return true;
         }
         long stage = parseStage(arguments);
+        WaveMutation waveMutation;
+        try {
+            waveMutation = parseWaveMutation(arguments);
+            settings.waveMutations().snapshotFor(waveMutation);
+        } catch (IllegalArgumentException invalidMutation) {
+            sender.sendMessage(Component.text(
+                    "指定したウェーブ変異は利用できません: " + invalidMutation.getMessage(),
+                    NamedTextColor.RED));
+            return true;
+        }
         try {
             StageWaveSchedule.requireValidStageLevel(stage);
         } catch (IllegalArgumentException invalidStage) {
@@ -557,14 +568,30 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 player.sendMessage(Component.text("防衛戦の開始を取り消しました。", NamedTextColor.YELLOW));
                 return;
             }
-            beginStartTransaction(player, startData, stage, Optional.empty(), Optional.empty());
+            beginStartTransaction(
+                    player,
+                    startData,
+                    stage,
+                    waveMutation,
+                    Optional.empty(),
+                    Optional.empty());
         }));
         return true;
     }
 
     /** Starts a player-facing event using one database-backed physical raid seal. */
     void startWithSeal(Player player, UUID coreId, long stage, UUID sealId) {
-        startWithSeal(player, coreId, stage, sealId, Optional.empty());
+        startWithSeal(player, coreId, stage, sealId, WaveMutation.NONE, Optional.empty());
+    }
+
+    /** Starts a player-facing event with an explicit wave-mutation selection. */
+    void startWithSeal(
+            Player player,
+            UUID coreId,
+            long stage,
+            UUID sealId,
+            WaveMutation waveMutation) {
+        startWithSeal(player, coreId, stage, sealId, waveMutation, Optional.empty());
     }
 
     /** Starts a player-facing event after binding a selected tactical build. */
@@ -575,7 +602,31 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             UUID sealId,
             UUID tacticalSessionId) {
         Objects.requireNonNull(tacticalSessionId, "tacticalSessionId");
-        startWithSeal(player, coreId, stage, sealId, Optional.of(tacticalSessionId));
+        startWithSeal(
+                player,
+                coreId,
+                stage,
+                sealId,
+                WaveMutation.NONE,
+                Optional.of(tacticalSessionId));
+    }
+
+    /** Starts a player-facing event with both a wave mutation and tactical build selection. */
+    void startWithSeal(
+            Player player,
+            UUID coreId,
+            long stage,
+            UUID sealId,
+            WaveMutation waveMutation,
+            UUID tacticalSessionId) {
+        Objects.requireNonNull(tacticalSessionId, "tacticalSessionId");
+        startWithSeal(
+                player,
+                coreId,
+                stage,
+                sealId,
+                waveMutation,
+                Optional.of(tacticalSessionId));
     }
 
     private void startWithSeal(
@@ -583,10 +634,12 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             UUID coreId,
             long stage,
             UUID sealId,
+            WaveMutation waveMutation,
             Optional<UUID> tacticalSessionId) {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(coreId, "coreId");
         Objects.requireNonNull(sealId, "sealId");
+        Objects.requireNonNull(waveMutation, "waveMutation");
         if (sessions.hasActiveSession() || startInFlight) {
             cancelUnboundTacticalSession(player, tacticalSessionId);
             player.sendMessage(Component.text("すでに防衛戦が進行中です。", NamedTextColor.RED));
@@ -640,6 +693,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                     player,
                     startData,
                     stage,
+                    waveMutation,
                     Optional.of(sealId),
                     tacticalSessionId);
         }));
@@ -649,12 +703,23 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             Player player,
             StartData startData,
             long stage,
+            WaveMutation waveMutation,
             Optional<UUID> sealId,
             Optional<UUID> tacticalSessionId) {
         if (sessions.hasActiveSession()) {
             cancelUnboundTacticalSession(player, tacticalSessionId);
             completeStartOperation();
             player.sendMessage(Component.text("すでに防衛戦が進行中です。", NamedTextColor.RED));
+            return;
+        }
+        try {
+            settings.waveMutations().snapshotFor(waveMutation);
+        } catch (IllegalArgumentException invalidMutation) {
+            cancelUnboundTacticalSession(player, tacticalSessionId);
+            completeStartOperation();
+            player.sendMessage(Component.text(
+                    "ウェーブ変異を選択できません: " + invalidMutation.getMessage(),
+                    NamedTextColor.RED));
             return;
         }
         if (sealId.isPresent() && !containsSealInInventory(player, sealId.orElseThrow())) {
@@ -714,7 +779,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 new CoreState(
                         core.maximumHitPoints(),
                         core.currentHitPoints(),
-                        true));
+                        true),
+                settings.waveMutations().snapshotFor(waveMutation));
         Instant startedAt = Instant.now();
         StartRequest startRequest = new StartRequest(
                 session.snapshot(),
@@ -1018,6 +1084,7 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
                 "event=" + value.eventId()
                         + " phase=" + value.phase()
                         + " wave=" + value.currentWave() + "/" + value.totalWaves()
+                        + " mutation=" + value.waveMutation().mutation().id()
                         + " enemies=" + value.aliveEnemies() + "+" + value.pendingEnemies()
                         + " core=" + value.coreHitPoints() + "/" + value.coreMaximumHitPoints()
                         + (value.ending() ? " ending" : "")
@@ -1075,6 +1142,13 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
         }
     }
 
+    private static WaveMutation parseWaveMutation(String[] arguments) {
+        if (arguments.length < 4) {
+            return WaveMutation.NONE;
+        }
+        return WaveMutation.fromId(arguments[3]);
+    }
+
     private static UUID soloTeamId(UUID ownerId) {
         return UUID.nameUUIDFromBytes(
                 ("minecraft-tower-defense:solo:" + ownerId)
@@ -1102,7 +1176,8 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
 
     private static void sendUsage(CommandSender sender) {
         sender.sendMessage(Component.text(
-                "/td admin <core|simulate [stage]|status|abort> または /td team <invite|invites|accept|decline|rename|chat>",
+                "/td admin <core|simulate [stage] [swift|fortified|reinforcements]|status|abort>"
+                        + " または /td team <invite|invites|accept|decline|rename|chat>",
                 NamedTextColor.YELLOW));
     }
 
@@ -1152,6 +1227,11 @@ public final class TowerDefenseCommand implements CommandExecutor, TabCompleter 
             return matching(
                     arguments[2],
                     RaidSealCatalog.recipeStages().stream().map(String::valueOf).toList());
+        }
+        if (arguments.length == 4 && arguments[1].equalsIgnoreCase("simulate")) {
+            return matching(
+                    arguments[3],
+                    List.of("swift", "fortified", "reinforcements"));
         }
         return List.of();
     }

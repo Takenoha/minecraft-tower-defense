@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 39;
+    public static final int CURRENT_VERSION = 40;
 
     private SchemaMigrator() {
     }
@@ -179,6 +179,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 39) {
                     applyVersionThirtyNine(connection);
                     recordMigration(connection, 39);
+                }
+                if (installedVersion < 40) {
+                    applyVersionForty(connection);
+                    recordMigration(connection, 40);
                 }
                 return null;
             });
@@ -2310,6 +2314,37 @@ public final class SchemaMigrator {
             statement.executeUpdate("""
                     CREATE INDEX tactical_build_node_unlocks_session_idx
                     ON tactical_build_node_unlocks(tactical_session_id, unlocked_at)
+                    """);
+        }
+    }
+
+    /** Persists the immutable wave-mutation selection and its start-time coefficients. */
+    private static void applyVersionForty(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    ALTER TABLE defense_events
+                    ADD COLUMN wave_mutation TEXT NOT NULL DEFAULT 'NONE'
+                    CHECK (wave_mutation IN ('NONE', 'SWIFT', 'FORTIFIED', 'REINFORCEMENTS'))
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE defense_events
+                    ADD COLUMN wave_mutation_speed_multiplier REAL NOT NULL DEFAULT 1.0
+                    CHECK (wave_mutation_speed_multiplier > 0)
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE defense_events
+                    ADD COLUMN wave_mutation_health_multiplier REAL NOT NULL DEFAULT 1.0
+                    CHECK (wave_mutation_health_multiplier > 0)
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE defense_events
+                    ADD COLUMN wave_mutation_enemy_count_multiplier REAL NOT NULL DEFAULT 1.0
+                    CHECK (wave_mutation_enemy_count_multiplier > 0)
+                    """);
+            statement.executeUpdate("""
+                    ALTER TABLE defense_events
+                    ADD COLUMN wave_mutation_reward_multiplier REAL NOT NULL DEFAULT 1.0
+                    CHECK (wave_mutation_reward_multiplier > 0)
                     """);
         }
     }
