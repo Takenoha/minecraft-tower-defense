@@ -492,31 +492,64 @@ public final class PluginSettingsValidator {
         String speedsterPath = "enemies.speedster-ratio";
         String rangedPath = "enemies.ranged-ratio";
         String heavyPath = "enemies.heavy-ratio";
+        String supportPath = "enemies.support-ratio";
         validateRoleRatio(destroyerPath, enemies.destroyerRatio(), unreadablePaths, violations);
         validateRoleRatio(builderPath, enemies.builderRatio(), unreadablePaths, violations);
         validateRoleRatio(speedsterPath, enemies.speedsterRatio(), unreadablePaths, violations);
         validateRoleRatio(rangedPath, enemies.rangedRatio(), unreadablePaths, violations);
         validateRoleRatio(heavyPath, enemies.heavyRatio(), unreadablePaths, violations);
+        validateRoleRatio(supportPath, enemies.supportRatio(), unreadablePaths, violations);
+        requirePositiveFinite(
+                "enemies.support-radius",
+                enemies.supportRadius(),
+                unreadablePaths,
+                violations);
+        requirePositiveFinite(
+                "enemies.support-heal-amount",
+                enemies.supportHealAmount(),
+                unreadablePaths,
+                violations);
+        requirePositive(
+                "enemies.support-cooldown-ticks",
+                enemies.supportCooldownTicks(),
+                unreadablePaths,
+                violations);
+        if (isReadable("enemies.support-speed-multiplier", unreadablePaths)
+                && (!Double.isFinite(enemies.supportSpeedMultiplier())
+                        || enemies.supportSpeedMultiplier() < 1.0d)) {
+            violations.add(
+                    "enemies.support-speed-multiplier: must be finite and >= 1"
+                            + " (was " + enemies.supportSpeedMultiplier() + ")");
+        }
+        requirePositive(
+                "enemies.support-speed-duration-ticks",
+                enemies.supportSpeedDurationTicks(),
+                unreadablePaths,
+                violations);
         double totalRoleRatio = enemies.destroyerRatio()
                 + enemies.builderRatio()
                 + enemies.speedsterRatio()
                 + enemies.rangedRatio()
-                + enemies.heavyRatio();
+                + enemies.heavyRatio()
+                + enemies.supportRatio();
         if (isReadable(destroyerPath, unreadablePaths)
                 && isReadable(builderPath, unreadablePaths)
                 && isReadable(speedsterPath, unreadablePaths)
                 && isReadable(rangedPath, unreadablePaths)
                 && isReadable(heavyPath, unreadablePaths)
+                && isReadable(supportPath, unreadablePaths)
                 && Double.isFinite(enemies.destroyerRatio())
                 && Double.isFinite(enemies.builderRatio())
                 && Double.isFinite(enemies.speedsterRatio())
                 && Double.isFinite(enemies.rangedRatio())
                 && Double.isFinite(enemies.heavyRatio())
+                && Double.isFinite(enemies.supportRatio())
                 && enemies.destroyerRatio() >= 0.0d
                 && enemies.builderRatio() >= 0.0d
                 && enemies.speedsterRatio() >= 0.0d
                 && enemies.rangedRatio() >= 0.0d
                 && enemies.heavyRatio() >= 0.0d
+                && enemies.supportRatio() >= 0.0d
                 && totalRoleRatio > 1.0d) {
             violations.add(
                     "enemies: all enemy role ratios must sum to <= 1"
@@ -524,7 +557,8 @@ public final class PluginSettingsValidator {
                             + " + " + enemies.builderRatio()
                             + " + " + enemies.speedsterRatio()
                             + " + " + enemies.rangedRatio()
-                            + " + " + enemies.heavyRatio() + ")");
+                            + " + " + enemies.heavyRatio()
+                            + " + " + enemies.supportRatio() + ")");
         }
     }
 

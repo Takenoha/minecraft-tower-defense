@@ -160,6 +160,36 @@ final class PluginSettingsMapReader {
                             "enemies",
                             "heavy-ratio",
                             EnemySettings.DEFAULT_HEAVY_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "support-ratio",
+                            EnemySettings.DEFAULT_SUPPORT_RATIO),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "support-radius",
+                            EnemySettings.DEFAULT_SUPPORT_RADIUS),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "support-heal-amount",
+                            EnemySettings.DEFAULT_SUPPORT_HEAL_AMOUNT),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "support-cooldown-ticks",
+                            EnemySettings.DEFAULT_SUPPORT_COOLDOWN_TICKS),
+                    decimalOrDefault(
+                            values,
+                            "enemies",
+                            "support-speed-multiplier",
+                            EnemySettings.DEFAULT_SUPPORT_SPEED_MULTIPLIER),
+                    integerOrDefault(
+                            values,
+                            "enemies",
+                            "support-speed-duration-ticks",
+                            EnemySettings.DEFAULT_SUPPORT_SPEED_DURATION_TICKS),
                     integerOrDefault(
                             values,
                             "enemies",

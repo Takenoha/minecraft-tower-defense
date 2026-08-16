@@ -15,6 +15,7 @@ enum class EnemyRole(
     SPEEDSTER("FOUNDATION_SPEEDSTER", 1.5, 0.75),
     RANGED("FOUNDATION_RANGED", 0.8, 0.9),
     HEAVY("FOUNDATION_HEAVY", 0.55, 1.25),
+    SUPPORT("FOUNDATION_SUPPORT", 0.8, 1.0),
     ;
 
     fun ledgerType(): String = ledgerTypeValue
@@ -42,7 +43,7 @@ enum class EnemyRole(
         NORMAL -> action == EnemyTerrainActionKind.BREAK && fallbackEligible
         DESTROYER -> action == EnemyTerrainActionKind.BREAK
         BUILDER -> action == EnemyTerrainActionKind.BUILD
-        BOSS, SPEEDSTER, RANGED, HEAVY -> false
+        BOSS, SPEEDSTER, RANGED, HEAVY, SUPPORT -> false
     }
 
     companion object {
