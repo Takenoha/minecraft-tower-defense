@@ -43,6 +43,12 @@ enemies:
   speedster-ratio: 0.10
   ranged-ratio: 0.10
   heavy-ratio: 0.05
+  support-ratio: 0.05
+  support-radius: 8.0
+  support-heal-amount: 4.0
+  support-cooldown-ticks: 100
+  support-speed-multiplier: 1.15
+  support-speed-duration-ticks: 60
   # Destroyers damage nearby installed towers; HP 0 removes the tower without an item drop.
   tower-attack-damage: 8
   tower-attack-interval-ticks: 20

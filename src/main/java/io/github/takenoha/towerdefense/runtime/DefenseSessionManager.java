@@ -69,6 +69,7 @@ import org.bukkit.entity.Skeleton;
 import org.bukkit.entity.Spider;
 import org.bukkit.entity.Zombie;
 import org.bukkit.entity.ZombieVillager;
+import org.bukkit.entity.Witch;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -292,7 +293,8 @@ public final class DefenseSessionManager
                 settings.enemies().builderRatio(),
                 settings.enemies().speedsterRatio(),
                 settings.enemies().rangedRatio(),
-                settings.enemies().heavyRatio());
+                settings.enemies().heavyRatio(),
+                settings.enemies().supportRatio());
         defenseShards = new DefenseShardTagger(plugin);
         enhancementCores = new EnhancementCoreTagger(plugin);
         terrainMutationGate = new TerrainMutationActivationGate(settings.terrainMutation());
@@ -575,6 +577,8 @@ public final class DefenseSessionManager
         active.enemyProgress.remove(taggedEnemy.logicalEnemyId());
         active.enemyRolesByLogicalId.remove(taggedEnemy.logicalEnemyId());
         active.coreAttackSchedules.remove(taggedEnemy.logicalEnemyId());
+        active.supportNextActionTick.remove(taggedEnemy.logicalEnemyId());
+        active.supportSpeedUntilTick.remove(taggedEnemy.logicalEnemyId());
         observe(
                 active,
                 persistence.recordEnemyStatus(
@@ -740,6 +744,10 @@ public final class DefenseSessionManager
         if (defense.ending || defense.session.phase() != DefensePhase.WAVE_ACTIVE) {
             return;
         }
+        applySupportEffects(defense);
+        if (defense.ending || defense.session.phase() != DefensePhase.WAVE_ACTIVE) {
+            return;
+        }
         spawnPendingEnemies(defense);
     }
 
@@ -795,6 +803,11 @@ public final class DefenseSessionManager
                             Ravager.class,
                             CreatureSpawnEvent.SpawnReason.CUSTOM,
                             entity -> configureEnemy(entity, role, finalWave));
+                    case SUPPORT -> defense.world.spawn(
+                            location,
+                            Witch.class,
+                            CreatureSpawnEvent.SpawnReason.CUSTOM,
+                            entity -> configureEnemy(entity, role, finalWave));
                     case NORMAL, BOSS -> defense.world.spawn(
                             location,
                             Zombie.class,
@@ -846,6 +859,11 @@ public final class DefenseSessionManager
         if (monster instanceof Zombie zombie) {
             zombie.setCanBreakDoors(false);
             zombie.setShouldBurnInDay(false);
+        }
+        if (monster instanceof Witch witch) {
+            // Support enemies never use the vanilla hostile-potion behavior. Their only
+            // offensive/beneficial action is the event-scoped support pass below.
+            witch.setTarget(null);
         }
         if (EventEnemyVisualPolicy.shouldGlow(role)) {
             monster.setGlowing(true);
@@ -913,6 +931,9 @@ public final class DefenseSessionManager
             EnemyRole role = defense.enemyRolesByLogicalId.getOrDefault(
                     logicalId,
                     EnemyRole.NORMAL);
+            if (role == EnemyRole.SUPPORT && entity instanceof Mob mob) {
+                mob.setTarget(null);
+            }
             refreshEnemyHealthBar(
                     entity,
                     role,
@@ -957,7 +978,7 @@ public final class DefenseSessionManager
                     && entity instanceof Mob mob) {
                 boolean accepted = mob.getPathfinder().moveTo(
                         defense.coreTarget,
-                        role.navigationSpeed(settings.enemies().moveSpeed()));
+                        navigationSpeed(defense, logicalId, role));
                 progress.recordPathAttempt(accepted);
                 EnemyObstacleFacts obstacleFacts = pathIntegration.inspect(
                         mob,
@@ -1011,6 +1032,8 @@ public final class DefenseSessionManager
         if (defense.entitiesByLogicalId.remove(logicalId, entityId)) {
             defense.enemyProgress.remove(logicalId);
             defense.coreAttackSchedules.remove(logicalId);
+            defense.supportNextActionTick.remove(logicalId);
+            defense.supportSpeedUntilTick.remove(logicalId);
             defense.pendingLogicalIds.addLast(logicalId);
             defense.session.returnAliveEnemiesToPending(1L);
             observe(
@@ -1022,6 +1045,111 @@ public final class DefenseSessionManager
                             EnemyStatus.DESPAWNED));
             persistTransition(defense);
         }
+    }
+
+    /**
+     * Applies the custom support role's bounded, event-local effect. This deliberately uses the
+     * logical enemy map instead of a world-wide entity scan, so a Witch can never heal a player,
+     * natural mob, or enemy owned by another defense event.
+     */
+    private void applySupportEffects(ActiveDefense defense) {
+        double radiusSquared = Math.pow(settings.enemies().supportRadius(), 2.0d);
+        List<UUID> supportIds = defense.enemyRolesByLogicalId.entrySet().stream()
+                .filter(entry -> entry.getValue() == EnemyRole.SUPPORT)
+                .map(Map.Entry::getKey)
+                .toList();
+        for (UUID supportId : supportIds) {
+            long nextAction = defense.supportNextActionTick.getOrDefault(supportId, 0L);
+            if (currentTick < nextAction) {
+                continue;
+            }
+            UUID supportEntityId = defense.entitiesByLogicalId.get(supportId);
+            Entity supportEntity = supportEntityId == null
+                    ? null
+                    : Bukkit.getEntity(supportEntityId);
+            if (!(supportEntity instanceof LivingEntity support)
+                    || support.isDead()
+                    || !support.isValid()) {
+                continue;
+            }
+            Optional<SupportTarget> target = findSupportTarget(
+                    defense,
+                    supportId,
+                    support.getLocation(),
+                    radiusSquared);
+            if (target.isEmpty()) {
+                // Recheck soon if an ally enters range, without scanning every tick.
+                defense.supportNextActionTick.put(supportId, currentTick + 5L);
+                continue;
+            }
+
+            SupportTarget selected = target.orElseThrow();
+            LivingEntity ally = selected.entity();
+            AttributeInstance maximumHealth = ally.getAttribute(Attribute.MAX_HEALTH);
+            if (maximumHealth != null) {
+                double healedHealth = Math.min(
+                        maximumHealth.getValue(),
+                        ally.getHealth() + settings.enemies().supportHealAmount());
+                if (healedHealth > ally.getHealth()) {
+                    ally.setHealth(healedHealth);
+                    refreshEnemyHealthBar(
+                            ally,
+                            selected.role(),
+                            defense.session.currentWave() == defense.session.totalWaves());
+                }
+            }
+            defense.supportSpeedUntilTick.put(
+                    selected.logicalId(),
+                    currentTick + settings.enemies().supportSpeedDurationTicks());
+            defense.supportNextActionTick.put(
+                    supportId,
+                    currentTick + settings.enemies().supportCooldownTicks());
+        }
+    }
+
+    private Optional<SupportTarget> findSupportTarget(
+            ActiveDefense defense,
+            UUID supportId,
+            Location supportLocation,
+            double radiusSquared) {
+        return defense.entitiesByLogicalId.entrySet().stream()
+                .filter(entry -> !entry.getKey().equals(supportId))
+                .filter(entry -> defense.enemyRolesByLogicalId.get(entry.getKey()) != EnemyRole.SUPPORT)
+                .map(entry -> {
+                    Entity entity = Bukkit.getEntity(entry.getValue());
+                    EnemyRole role = defense.enemyRolesByLogicalId.get(entry.getKey());
+                    if (!(entity instanceof LivingEntity living)
+                            || role == null
+                            || living.isDead()
+                            || !living.isValid()
+                            || !living.getWorld().equals(defense.world)
+                            || living.getLocation().distanceSquared(supportLocation) > radiusSquared) {
+                        return null;
+                    }
+                    AttributeInstance maximumHealth = living.getAttribute(Attribute.MAX_HEALTH);
+                    double healthRatio = maximumHealth == null || maximumHealth.getValue() <= 0.0d
+                            ? 1.0d
+                            : living.getHealth() / maximumHealth.getValue();
+                    return new SupportTarget(entry.getKey(), role, living, healthRatio);
+                })
+                .filter(Objects::nonNull)
+                .sorted(Comparator
+                        .comparingDouble(SupportTarget::healthRatio)
+                        .thenComparing(value -> value.logicalId().toString()))
+                .findFirst();
+    }
+
+    private double navigationSpeed(
+            ActiveDefense defense,
+            UUID logicalId,
+            EnemyRole role) {
+        long speedUntil = defense.supportSpeedUntilTick.getOrDefault(logicalId, 0L);
+        if (speedUntil <= currentTick) {
+            defense.supportSpeedUntilTick.remove(logicalId);
+            return role.navigationSpeed(settings.enemies().moveSpeed());
+        }
+        return role.navigationSpeed(
+                settings.enemies().moveSpeed() * settings.enemies().supportSpeedMultiplier());
     }
 
     private void beginCoreAttack(
@@ -1265,6 +1393,8 @@ public final class DefenseSessionManager
         defense.entitiesByLogicalId.clear();
         defense.enemyRolesByLogicalId.clear();
         defense.coreAttackSchedules.clear();
+        defense.supportNextActionTick.clear();
+        defense.supportSpeedUntilTick.clear();
         int enemyCountInt = Math.toIntExact(enemyCount);
         List<EnemyRole> roles = enemyRoles.forWave(
                 defense.session.stageLevel(),
@@ -1761,6 +1891,8 @@ public final class DefenseSessionManager
         private final Map<UUID, EnemyProgress> enemyProgress = new HashMap<>();
         private final Map<UUID, EnemyRole> enemyRolesByLogicalId = new HashMap<>();
         private final Map<UUID, CoreAttackSchedule> coreAttackSchedules = new HashMap<>();
+        private final Map<UUID, Long> supportNextActionTick = new HashMap<>();
+        private final Map<UUID, Long> supportSpeedUntilTick = new HashMap<>();
         private final Set<Long> chunkTickets = new HashSet<>();
         private final Set<UUID> bossBarViewers = new HashSet<>();
         private final EnemyPathMetrics pathMetrics = new EnemyPathMetrics();
@@ -1798,6 +1930,13 @@ public final class DefenseSessionManager
             this.bossBar = bossBar;
             this.coreWarningSoundGate = coreWarningSoundGate;
         }
+    }
+
+    private record SupportTarget(
+            UUID logicalId,
+            EnemyRole role,
+            LivingEntity entity,
+            double healthRatio) {
     }
 
     private static final class EnemyProgress {

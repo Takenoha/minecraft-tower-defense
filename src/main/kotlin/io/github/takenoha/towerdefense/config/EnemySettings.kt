@@ -17,6 +17,12 @@ data class EnemySettings(
     val speedsterRatio: Double,
     val rangedRatio: Double,
     val heavyRatio: Double,
+    val supportRatio: Double,
+    val supportRadius: Double,
+    val supportHealAmount: Double,
+    val supportCooldownTicks: Int,
+    val supportSpeedMultiplier: Double,
+    val supportSpeedDurationTicks: Int,
     val towerAttackDamage: Int,
     val towerAttackIntervalTicks: Int,
     val towerAttackRange: Double,
@@ -46,6 +52,12 @@ data class EnemySettings(
         DEFAULT_SPEEDSTER_RATIO,
         DEFAULT_RANGED_RATIO,
         DEFAULT_HEAVY_RATIO,
+        DEFAULT_SUPPORT_RATIO,
+        DEFAULT_SUPPORT_RADIUS,
+        DEFAULT_SUPPORT_HEAL_AMOUNT,
+        DEFAULT_SUPPORT_COOLDOWN_TICKS,
+        DEFAULT_SUPPORT_SPEED_MULTIPLIER,
+        DEFAULT_SUPPORT_SPEED_DURATION_TICKS,
         towerAttackDamage,
         towerAttackIntervalTicks,
         towerAttackRange,
@@ -73,6 +85,12 @@ data class EnemySettings(
         DEFAULT_SPEEDSTER_RATIO,
         DEFAULT_RANGED_RATIO,
         DEFAULT_HEAVY_RATIO,
+        DEFAULT_SUPPORT_RATIO,
+        DEFAULT_SUPPORT_RADIUS,
+        DEFAULT_SUPPORT_HEAL_AMOUNT,
+        DEFAULT_SUPPORT_COOLDOWN_TICKS,
+        DEFAULT_SUPPORT_SPEED_MULTIPLIER,
+        DEFAULT_SUPPORT_SPEED_DURATION_TICKS,
         DEFAULT_TOWER_ATTACK_DAMAGE,
         DEFAULT_TOWER_ATTACK_INTERVAL_TICKS,
         DEFAULT_TOWER_ATTACK_RANGE,
@@ -98,6 +116,12 @@ data class EnemySettings(
         DEFAULT_SPEEDSTER_RATIO,
         DEFAULT_RANGED_RATIO,
         DEFAULT_HEAVY_RATIO,
+        DEFAULT_SUPPORT_RATIO,
+        DEFAULT_SUPPORT_RADIUS,
+        DEFAULT_SUPPORT_HEAL_AMOUNT,
+        DEFAULT_SUPPORT_COOLDOWN_TICKS,
+        DEFAULT_SUPPORT_SPEED_MULTIPLIER,
+        DEFAULT_SUPPORT_SPEED_DURATION_TICKS,
         DEFAULT_TOWER_ATTACK_DAMAGE,
         DEFAULT_TOWER_ATTACK_INTERVAL_TICKS,
         DEFAULT_TOWER_ATTACK_RANGE,
@@ -118,6 +142,24 @@ data class EnemySettings(
 
         @JvmField
         val DEFAULT_HEAVY_RATIO: Double = 0.05
+
+        @JvmField
+        val DEFAULT_SUPPORT_RATIO: Double = 0.05
+
+        @JvmField
+        val DEFAULT_SUPPORT_RADIUS: Double = 8.0
+
+        @JvmField
+        val DEFAULT_SUPPORT_HEAL_AMOUNT: Double = 4.0
+
+        @JvmField
+        val DEFAULT_SUPPORT_COOLDOWN_TICKS: Int = 100
+
+        @JvmField
+        val DEFAULT_SUPPORT_SPEED_MULTIPLIER: Double = 1.15
+
+        @JvmField
+        val DEFAULT_SUPPORT_SPEED_DURATION_TICKS: Int = 60
 
         @JvmField
         val DEFAULT_TOWER_ATTACK_DAMAGE: Int = 8

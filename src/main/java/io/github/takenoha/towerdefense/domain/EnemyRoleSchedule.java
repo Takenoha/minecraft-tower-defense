@@ -10,11 +10,13 @@ public final class EnemyRoleSchedule {
     private final double speedsterRatio;
     private final double rangedRatio;
     private final double heavyRatio;
+    private final double supportRatio;
 
     public EnemyRoleSchedule(double destroyerRatio, double builderRatio) {
         this(
                 destroyerRatio,
                 builderRatio,
+                0.0d,
                 0.0d,
                 0.0d,
                 0.0d);
@@ -26,12 +28,34 @@ public final class EnemyRoleSchedule {
             double speedsterRatio,
             double rangedRatio,
             double heavyRatio) {
+        this(
+                destroyerRatio,
+                builderRatio,
+                speedsterRatio,
+                rangedRatio,
+                heavyRatio,
+                0.0d);
+    }
+
+    public EnemyRoleSchedule(
+            double destroyerRatio,
+            double builderRatio,
+            double speedsterRatio,
+            double rangedRatio,
+            double heavyRatio,
+            double supportRatio) {
         requireRatio("destroyerRatio", destroyerRatio);
         requireRatio("builderRatio", builderRatio);
         requireRatio("speedsterRatio", speedsterRatio);
         requireRatio("rangedRatio", rangedRatio);
         requireRatio("heavyRatio", heavyRatio);
-        if (destroyerRatio + builderRatio + speedsterRatio + rangedRatio + heavyRatio > 1.0d) {
+        requireRatio("supportRatio", supportRatio);
+        if (destroyerRatio
+                + builderRatio
+                + speedsterRatio
+                + rangedRatio
+                + heavyRatio
+                + supportRatio > 1.0d) {
             throw new IllegalArgumentException("enemy role ratios must sum to at most 1");
         }
         this.destroyerRatio = destroyerRatio;
@@ -39,6 +63,7 @@ public final class EnemyRoleSchedule {
         this.speedsterRatio = speedsterRatio;
         this.rangedRatio = rangedRatio;
         this.heavyRatio = heavyRatio;
+        this.supportRatio = supportRatio;
     }
 
     /**
@@ -73,7 +98,8 @@ public final class EnemyRoleSchedule {
                 + builderRatio
                 + speedsterRatio
                 + rangedRatio
-                + heavyRatio;
+                + heavyRatio
+                + supportRatio;
         if (baseRoleRatioSum > 0.0d) {
             progression = Math.min(progression, 1.0d / baseRoleRatioSum);
         }
@@ -98,6 +124,10 @@ public final class EnemyRoleSchedule {
                 remaining,
                 roundedCount(regularEnemies, heavyRatio * progression));
         remaining -= heavies;
+        int supports = allocate(
+                remaining,
+                roundedCount(regularEnemies, supportRatio * progression));
+        remaining -= supports;
 
         List<EnemyRole> result = new ArrayList<>(totalEnemies);
         if (bossSlots == 1) {
@@ -108,6 +138,7 @@ public final class EnemyRoleSchedule {
         add(result, EnemyRole.SPEEDSTER, speedsters);
         add(result, EnemyRole.RANGED, ranged);
         add(result, EnemyRole.HEAVY, heavies);
+        add(result, EnemyRole.SUPPORT, supports);
         add(result, EnemyRole.NORMAL, remaining);
         return List.copyOf(result);
     }

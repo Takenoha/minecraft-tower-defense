@@ -59,6 +59,23 @@ class EnemyRoleScheduleTest {
     }
 
     @Test
+    void allocatesSupportEnemiesWithoutChangingTheWaveSize() {
+        EnemyRoleSchedule schedule = new EnemyRoleSchedule(
+                0.10d,
+                0.10d,
+                0.10d,
+                0.10d,
+                0.05d,
+                0.05d);
+
+        List<EnemyRole> roles = schedule.forWave(1L, 1, 20, false);
+
+        assertEquals(20, roles.size());
+        assertEquals(1L, roles.stream().filter(role -> role == EnemyRole.SUPPORT).count());
+        assertEquals(10L, roles.stream().filter(role -> role == EnemyRole.NORMAL).count());
+    }
+
+    @Test
     void keepsEveryConfiguredCombatRoleRepresentedAtHighProgression() {
         EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.15d, 0.10d, 0.10d, 0.10d, 0.05d);
 
@@ -89,6 +106,9 @@ class EnemyRoleScheduleTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new EnemyRoleSchedule(0.4d, 0.2d, 0.2d, 0.1d, 0.2d));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new EnemyRoleSchedule(0.4d, 0.2d, 0.1d, 0.1d, 0.1d, 0.2d));
 
         EnemyRoleSchedule schedule = new EnemyRoleSchedule(0.1d, 0.1d);
         assertThrows(IllegalArgumentException.class, () -> schedule.forWave(0L, 1, 1, false));
