@@ -1,6 +1,8 @@
 package io.github.takenoha.towerdefense.config;
 
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
+import io.github.takenoha.towerdefense.domain.WaveMutationSnapshot;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -21,7 +23,8 @@ final class PluginSettingsMapReader {
                 reader.protection(),
                 reader.rewards(),
                 reader.terrainMutation(),
-                reader.towers());
+                reader.towers(),
+                reader.waveMutations());
 
         List<String> violations = new ArrayList<>(reader.problems());
         violations.addAll(PluginSettingsValidator.violations(settings, reader.unreadablePaths()));
@@ -280,6 +283,83 @@ final class PluginSettingsMapReader {
                             "terrain-mutation",
                             "recovery-verified",
                             false));
+        }
+
+        private WaveMutationSettings waveMutations() {
+            Object raw = root.get("wave-mutations");
+            if (raw == null) {
+                return WaveMutationSettings.defaults();
+            }
+            if (!(raw instanceof Map<?, ?> values)) {
+                addProblem("wave-mutations", "must be a map");
+                return WaveMutationSettings.defaults();
+            }
+            WaveMutationSettings defaults = WaveMutationSettings.defaults();
+            Map<?, ?> swift = nestedSection(values, "wave-mutations", "swift");
+            Map<?, ?> fortified = nestedSection(values, "wave-mutations", "fortified");
+            Map<?, ?> reinforcements = nestedSection(
+                    values, "wave-mutations", "reinforcements");
+            return new WaveMutationSettings(
+                    booleanOrDefault(values, "wave-mutations", "enabled", true),
+                    mutationProfile(
+                            swift, "wave-mutations.swift", defaults.swift(), WaveMutation.SWIFT),
+                    mutationProfile(
+                            fortified,
+                            "wave-mutations.fortified",
+                            defaults.fortified(),
+                            WaveMutation.FORTIFIED),
+                    mutationProfile(
+                            reinforcements,
+                            "wave-mutations.reinforcements",
+                            defaults.reinforcements(),
+                            WaveMutation.REINFORCEMENTS));
+        }
+
+        private WaveMutationSnapshot mutationProfile(
+                Map<?, ?> values,
+                String path,
+                WaveMutationSnapshot defaults,
+                WaveMutation mutation) {
+            if (values == null) {
+                return defaults;
+            }
+            return new WaveMutationSnapshot(
+                    mutation,
+                    positiveMultiplier(
+                            values,
+                            path,
+                            "enemy-speed-multiplier",
+                            defaults.enemySpeedMultiplier()),
+                    positiveMultiplier(
+                            values,
+                            path,
+                            "enemy-health-multiplier",
+                            defaults.enemyHealthMultiplier()),
+                    positiveMultiplier(
+                            values,
+                            path,
+                            "enemy-count-multiplier",
+                            defaults.enemyCountMultiplier()),
+                    positiveMultiplier(
+                            values,
+                            path,
+                            "reward-multiplier",
+                            defaults.rewardMultiplier()));
+        }
+
+        private double positiveMultiplier(
+                Map<?, ?> values,
+                String path,
+                String key,
+                double defaultValue) {
+            double value = decimalOrDefault(values, path, key, defaultValue);
+            if (!Double.isFinite(value) || value <= 0.0d) {
+                addProblem(
+                        path + "." + key,
+                        "must be finite and > 0 (was " + value + ")");
+                return defaultValue;
+            }
+            return value;
         }
 
         private TowerSettings towers() {

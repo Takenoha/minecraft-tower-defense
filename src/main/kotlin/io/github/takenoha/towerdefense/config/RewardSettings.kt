@@ -144,6 +144,26 @@ data class RewardSettings(
         ).toInt()
     }
 
+    /** Applies an immutable event-start reward multiplier to the stage-clear award. */
+    fun researchCrystalQuantity(
+        stageLevel: Long,
+        highestClearedLevel: Long,
+        rewardMultiplier: Double,
+    ): Int {
+        require(rewardMultiplier.isFinite() && rewardMultiplier > 0.0) {
+            "rewardMultiplier must be finite and > 0"
+        }
+        val baseQuantity = researchCrystalQuantity(stageLevel, highestClearedLevel)
+        if (baseQuantity == 0 || rewardMultiplier == 1.0) {
+            return baseQuantity
+        }
+        val scaled = Math.ceil(baseQuantity.toDouble() * rewardMultiplier)
+        if (!scaled.isFinite()) {
+            throw IllegalArgumentException("scaled research crystal quantity overflows")
+        }
+        return minOf(Int.MAX_VALUE.toDouble(), scaled).toInt()
+    }
+
     /** Returns the configured event currency award for one defeated enemy role. */
     fun battleFundsFor(role: EnemyRole): Int = when (Objects.requireNonNull(role, "role")) {
         EnemyRole.NORMAL -> battleFundsNormalEnemy

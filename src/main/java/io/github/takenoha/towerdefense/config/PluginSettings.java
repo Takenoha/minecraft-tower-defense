@@ -10,7 +10,28 @@ public record PluginSettings(
         ProtectionSettings protection,
         RewardSettings rewards,
         TerrainMutationSettings terrainMutation,
-        TowerSettings towers) {
+        TowerSettings towers,
+        WaveMutationSettings waveMutations) {
+
+    /** Keeps direct settings construction source-compatible with the tower slice. */
+    public PluginSettings(
+            CombatSettings combat,
+            CoreSettings core,
+            EnemySettings enemies,
+            ProtectionSettings protection,
+            RewardSettings rewards,
+            TerrainMutationSettings terrainMutation,
+            TowerSettings towers) {
+        this(
+                combat,
+                core,
+                enemies,
+                protection,
+                rewards,
+                terrainMutation,
+                towers,
+                WaveMutationSettings.defaults());
+    }
 
     /** Keeps five-field construction source-compatible while the activation gate is opt-in. */
     public PluginSettings(
@@ -26,7 +47,8 @@ public record PluginSettings(
                 protection,
                 rewards,
                 TerrainMutationSettings.disabled(),
-                TowerSettings.defaults());
+                TowerSettings.defaults(),
+                WaveMutationSettings.defaults());
     }
 
     /** Keeps direct settings construction source-compatible with the terrain gate boundary. */
@@ -44,7 +66,8 @@ public record PluginSettings(
                 protection,
                 rewards,
                 terrainMutation,
-                TowerSettings.defaults());
+                TowerSettings.defaults(),
+                WaveMutationSettings.defaults());
     }
 
     /** Keeps direct settings construction source-compatible with the pre-boundary model. */

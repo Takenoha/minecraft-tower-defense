@@ -20,12 +20,13 @@ class RuntimeStatusKotlinBoundaryAbiTest {
         assertTrue(Modifier.isFinal(DefenseRuntimeStatus.class.getModifiers()));
         assertTrue(List.of(
                 "eventId", "teamId", "stageLevel", "phase", "currentWave", "totalWaves",
-                "pendingEnemies", "aliveEnemies", "coreHitPoints", "coreMaximumHitPoints",
+                "waveMutation", "pendingEnemies", "aliveEnemies", "coreHitPoints", "coreMaximumHitPoints",
                 "coreAttackers", "coreAttackCount", "ending", "persistenceFailure", "pathMetrics"
         ).equals(Arrays.stream(DefenseRuntimeStatus.class.getRecordComponents())
                 .map(java.lang.reflect.RecordComponent::getName).toList()));
         assertNotNull(DefenseRuntimeStatus.class.getConstructor(
                 UUID.class, UUID.class, long.class, DefensePhase.class, int.class, int.class,
+                io.github.takenoha.towerdefense.domain.WaveMutationSnapshot.class,
                 long.class, long.class, long.class, long.class, int.class, long.class,
                 boolean.class, String.class, EnemyPathMetrics.Snapshot.class));
         assertNotNull(DefenseRuntimeStatus.class.getConstructor(

@@ -17,6 +17,7 @@ class PaperSettingsLoader private constructor() {
                 "protection" to sectionValues(configuration, "protection"),
                 "rewards" to sectionValues(configuration, "rewards"),
                 "terrain-mutation" to sectionValues(configuration, "terrain-mutation"),
+                "wave-mutations" to sectionValues(configuration, "wave-mutations"),
             )
             return PluginSettings.from(values)
         }

@@ -5,6 +5,8 @@ import io.github.takenoha.towerdefense.domain.DefensePhase;
 import io.github.takenoha.towerdefense.domain.DefenseSessionSnapshot;
 import io.github.takenoha.towerdefense.domain.TeamProgress;
 import io.github.takenoha.towerdefense.domain.TowerType;
+import io.github.takenoha.towerdefense.domain.WaveMutation;
+import io.github.takenoha.towerdefense.domain.WaveMutationSnapshot;
 import io.github.takenoha.towerdefense.config.RewardSettings;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -3848,7 +3850,9 @@ statement.executeQuery().use { resultSet ->
                 .orElseThrow { PersistenceConflictException(
                         "Team " + terminalSnapshot.teamId() + " has no progression row") };
         var quantity = rewardSettings.researchCrystalQuantity(
-                terminalSnapshot.stageLevel(), beforeVictory.highestClearedLevel);
+                terminalSnapshot.stageLevel(),
+                beforeVictory.highestClearedLevel,
+                terminalSnapshot.waveMutation().rewardMultiplier());
         if (quantity <= 0) {
             return;
         }
@@ -5184,8 +5188,11 @@ statement.executeQuery().use { resultSet ->
                     participant_limit, participants_frozen, wave_index, pending_enemies,
                     alive_enemies, start_core_hp, start_core_max_hp, core_hp, core_max_hp,
                     core_present, core_world_id, core_block_x, core_block_y, core_block_z,
+                    wave_mutation, wave_mutation_speed_multiplier,
+                    wave_mutation_health_multiplier, wave_mutation_enemy_count_multiplier,
+                    wave_mutation_reward_multiplier,
                     config_snapshot, config_version, started_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent()).use { statement ->
             statement.setString(1, snapshot.eventId().toString());
             statement.setString(2, snapshot.teamId().toString());
@@ -5207,10 +5214,15 @@ statement.executeQuery().use { resultSet ->
             statement.setInt(18, core.blockX());
             statement.setInt(19, core.blockY());
             statement.setInt(20, core.blockZ());
-            statement.setString(21, request.configSnapshot);
-            statement.setInt(22, request.configVersion);
-            statement.setString(23, request.startedAt.toString());
-            statement.setString(24, request.startedAt.toString());
+            statement.setString(21, snapshot.waveMutation().mutation().name);
+            statement.setDouble(22, snapshot.waveMutation().enemySpeedMultiplier());
+            statement.setDouble(23, snapshot.waveMutation().enemyHealthMultiplier());
+            statement.setDouble(24, snapshot.waveMutation().enemyCountMultiplier());
+            statement.setDouble(25, snapshot.waveMutation().rewardMultiplier());
+            statement.setString(26, request.configSnapshot);
+            statement.setInt(27, request.configVersion);
+            statement.setString(28, request.startedAt.toString());
+            statement.setString(29, request.startedAt.toString());
             statement.executeUpdate();
 
 }
@@ -5242,7 +5254,8 @@ statement.executeQuery().use { resultSet ->
                         CoreState(
                                 resultSet.getLong("core_max_hp"),
                                 resultSet.getLong("core_hp"),
-                                resultSet.getInt("core_present") != 0));
+                                resultSet.getInt("core_present") != 0),
+                        waveMutationFromRow(resultSet));
                 var terminalOperation = resultSet.getString("terminal_operation_id");
                 var terminalAt = resultSet.getString("terminal_at");
                 return Optional.of(StoredDefenseEvent(
@@ -5269,6 +5282,15 @@ statement.executeQuery().use { resultSet ->
 
     private fun requireEvent(connection: Connection, eventId: UUID): StoredDefenseEvent {
         return loadEvent(connection, eventId).orElseThrow { IllegalArgumentException("Unknown defense event " + eventId) };
+    }
+
+    private fun waveMutationFromRow(resultSet: ResultSet): WaveMutationSnapshot {
+        return WaveMutationSnapshot(
+                WaveMutation.valueOf(resultSet.getString("wave_mutation")),
+                resultSet.getDouble("wave_mutation_speed_multiplier"),
+                resultSet.getDouble("wave_mutation_health_multiplier"),
+                resultSet.getDouble("wave_mutation_enemy_count_multiplier"),
+                resultSet.getDouble("wave_mutation_reward_multiplier"));
     }
 
     private fun loadParticipants(connection: Connection, eventId: UUID): ParticipantSets {
@@ -5529,7 +5551,8 @@ statement.executeQuery().use { resultSet ->
                 CoreState(
                         event.startCoreMaximumHitPoints(),
                         event.startCoreHitPoints(),
-                        true));
+                        true),
+                current.waveMutation());
     }
 
     private fun validateStartCore(snapshot: DefenseSessionSnapshot, core: CoreRecord): Unit {
@@ -5549,6 +5572,7 @@ statement.executeQuery().use { resultSet ->
                 || current.stageLevel() != next.stageLevel()
                 || current.totalWaves() != next.totalWaves()
                 || current.participantLimit() != next.participantLimit()
+                || !current.waveMutation().equals(next.waveMutation())
                 || current.coreState().maximumHitPoints
                         != next.coreState().maximumHitPoints) {
             throw IllegalArgumentException(
@@ -5625,6 +5649,11 @@ statement.executeQuery().use { resultSet ->
         canonical.append(snapshot.coreState().maximumHitPoints).append('|')
         canonical.append(snapshot.coreState().currentHitPoints).append('|')
         canonical.append(snapshot.coreState().present).append('|')
+        canonical.append(snapshot.waveMutation().mutation().name).append('|')
+        canonical.append(snapshot.waveMutation().enemySpeedMultiplier()).append('|')
+        canonical.append(snapshot.waveMutation().enemyHealthMultiplier()).append('|')
+        canonical.append(snapshot.waveMutation().enemyCountMultiplier()).append('|')
+        canonical.append(snapshot.waveMutation().rewardMultiplier()).append('|')
         appendSortedUuids(canonical, snapshot.registeredParticipants());
         canonical.append('|');
         appendSortedUuids(canonical, snapshot.effectiveParticipants());

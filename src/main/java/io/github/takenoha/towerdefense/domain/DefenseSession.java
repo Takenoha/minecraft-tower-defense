@@ -17,6 +17,7 @@ public final class DefenseSession {
     private final long stageLevel;
     private final int totalWaves;
     private final int participantLimit;
+    private final WaveMutationSnapshot waveMutation;
     private final LinkedHashSet<UUID> registeredParticipants;
     private final LinkedHashSet<UUID> effectiveParticipants;
 
@@ -34,6 +35,23 @@ public final class DefenseSession {
             long stageLevel,
             int participantLimit,
             CoreState coreState) {
+        this(
+                eventId,
+                teamId,
+                stageLevel,
+                participantLimit,
+                coreState,
+                WaveMutationSnapshot.none());
+    }
+
+    /** Creates a session with an immutable start-time wave-mutation snapshot. */
+    public DefenseSession(
+            UUID eventId,
+            UUID teamId,
+            long stageLevel,
+            int participantLimit,
+            CoreState coreState,
+            WaveMutationSnapshot waveMutation) {
         this.eventId = Objects.requireNonNull(eventId, "eventId");
         this.teamId = Objects.requireNonNull(teamId, "teamId");
         this.stageLevel = StageWaveSchedule.requireValidStageLevel(stageLevel);
@@ -42,6 +60,7 @@ public final class DefenseSession {
         }
         this.participantLimit = participantLimit;
         this.coreState = Objects.requireNonNull(coreState, "coreState");
+        this.waveMutation = Objects.requireNonNull(waveMutation, "waveMutation");
         if (coreState.isDestroyed()) {
             throw new IllegalArgumentException("a defense session requires a present core");
         }
@@ -57,6 +76,7 @@ public final class DefenseSession {
         stageLevel = snapshot.stageLevel();
         totalWaves = snapshot.totalWaves();
         participantLimit = snapshot.participantLimit();
+        waveMutation = snapshot.waveMutation();
         phase = snapshot.phase();
         currentWave = snapshot.currentWave();
         registeredParticipants = new LinkedHashSet<>(snapshot.registeredParticipants());
@@ -90,6 +110,10 @@ public final class DefenseSession {
 
     public int participantLimit() {
         return participantLimit;
+    }
+
+    public WaveMutationSnapshot waveMutation() {
+        return waveMutation;
     }
 
     public DefensePhase phase() {
@@ -363,7 +387,8 @@ public final class DefenseSession {
                 participantsFrozen,
                 pendingEnemies,
                 aliveEnemies,
-                coreState);
+                coreState,
+                waveMutation);
     }
 
     private boolean terminate(DefensePhase terminalPhase) {

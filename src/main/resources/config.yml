@@ -74,6 +74,26 @@ rewards:
   # Keep physical-material payments available while old queued assets migrate safely.
   legacy-resource-payments-enabled: true
 
+wave-mutations:
+  # The three choices are snapshotted when an event starts; changing this section does not
+  # change an event that is already running.
+  enabled: true
+  swift:
+    enemy-speed-multiplier: 1.25
+    enemy-health-multiplier: 1.0
+    enemy-count-multiplier: 1.0
+    reward-multiplier: 1.20
+  fortified:
+    enemy-speed-multiplier: 1.0
+    enemy-health-multiplier: 1.35
+    enemy-count-multiplier: 1.0
+    reward-multiplier: 1.35
+  reinforcements:
+    enemy-speed-multiplier: 1.0
+    enemy-health-multiplier: 1.0
+    enemy-count-multiplier: 1.30
+    reward-multiplier: 1.25
+
 towers:
   # The cap is base + increment * highest-cleared-level, bounded by hard-cap.
   base-limit: 8
