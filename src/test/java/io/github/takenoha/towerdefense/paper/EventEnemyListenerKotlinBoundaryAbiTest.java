@@ -22,6 +22,7 @@ import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -71,6 +72,7 @@ class EventEnemyListenerKotlinBoundaryAbiTest {
         assertHandler(type, "onPickupItem", EntityPickupItemEvent.class, true);
         assertHandler(type, "onPortal", EntityPortalEvent.class, true);
         assertHandler(type, "onTransform", EntityTransformEvent.class, true);
+        assertHandler(type, "onCombust", EntityCombustEvent.class, true);
 
         Method piston = type.getDeclaredMethod(
                 "pistonTouchesCombatArea", Block.class, List.class, BlockFace.class);

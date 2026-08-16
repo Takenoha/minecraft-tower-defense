@@ -489,19 +489,42 @@ public final class PluginSettingsValidator {
 
         String destroyerPath = "enemies.destroyer-ratio";
         String builderPath = "enemies.builder-ratio";
+        String speedsterPath = "enemies.speedster-ratio";
+        String rangedPath = "enemies.ranged-ratio";
+        String heavyPath = "enemies.heavy-ratio";
         validateRoleRatio(destroyerPath, enemies.destroyerRatio(), unreadablePaths, violations);
         validateRoleRatio(builderPath, enemies.builderRatio(), unreadablePaths, violations);
+        validateRoleRatio(speedsterPath, enemies.speedsterRatio(), unreadablePaths, violations);
+        validateRoleRatio(rangedPath, enemies.rangedRatio(), unreadablePaths, violations);
+        validateRoleRatio(heavyPath, enemies.heavyRatio(), unreadablePaths, violations);
+        double totalRoleRatio = enemies.destroyerRatio()
+                + enemies.builderRatio()
+                + enemies.speedsterRatio()
+                + enemies.rangedRatio()
+                + enemies.heavyRatio();
         if (isReadable(destroyerPath, unreadablePaths)
                 && isReadable(builderPath, unreadablePaths)
+                && isReadable(speedsterPath, unreadablePaths)
+                && isReadable(rangedPath, unreadablePaths)
+                && isReadable(heavyPath, unreadablePaths)
                 && Double.isFinite(enemies.destroyerRatio())
                 && Double.isFinite(enemies.builderRatio())
+                && Double.isFinite(enemies.speedsterRatio())
+                && Double.isFinite(enemies.rangedRatio())
+                && Double.isFinite(enemies.heavyRatio())
                 && enemies.destroyerRatio() >= 0.0d
                 && enemies.builderRatio() >= 0.0d
-                && enemies.destroyerRatio() + enemies.builderRatio() > 1.0d) {
+                && enemies.speedsterRatio() >= 0.0d
+                && enemies.rangedRatio() >= 0.0d
+                && enemies.heavyRatio() >= 0.0d
+                && totalRoleRatio > 1.0d) {
             violations.add(
-                    "enemies: destroyer-ratio + builder-ratio must be <= 1"
+                    "enemies: all enemy role ratios must sum to <= 1"
                             + " (was " + enemies.destroyerRatio()
-                            + " + " + enemies.builderRatio() + ")");
+                            + " + " + enemies.builderRatio()
+                            + " + " + enemies.speedsterRatio()
+                            + " + " + enemies.rangedRatio()
+                            + " + " + enemies.heavyRatio() + ")");
         }
     }
 

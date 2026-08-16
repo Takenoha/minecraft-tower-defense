@@ -110,11 +110,17 @@ class PluginSettingsMapReaderTest {
         Map<String, Object> enemies = mutableSection(values, "enemies");
         enemies.put("destroyer-ratio", 0.2d);
         enemies.put("builder-ratio", 0.3d);
+        enemies.put("speedster-ratio", 0.1d);
+        enemies.put("ranged-ratio", 0.1d);
+        enemies.put("heavy-ratio", 0.05d);
 
         PluginSettings settings = PluginSettings.from(values);
 
         assertEquals(0.2d, settings.enemies().destroyerRatio());
         assertEquals(0.3d, settings.enemies().builderRatio());
+        assertEquals(0.1d, settings.enemies().speedsterRatio());
+        assertEquals(0.1d, settings.enemies().rangedRatio());
+        assertEquals(0.05d, settings.enemies().heavyRatio());
         assertEquals(
                 new EnemySettings(120, 8, 4, 2, 4.0, 1.0),
                 PluginSettings.from(validValues()).enemies());

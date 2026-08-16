@@ -44,9 +44,10 @@ No bridge placement, destroyer block operation, or activation is included. See
 ## Deliberate boundary
 
 The production plugin still constructs `TerrainMutationPolicy(false)`. Actual builder bridge
-placement, destroyer block/tower attacks, custom Mob types, and enabling terrain mutation remain
-later Paper integration work. The role schedule, PDC metadata, and read-only path controller
-are therefore safe to ship independently of world mutation.
+placement, destroyer block/tower attacks, and enabling terrain mutation remain later Paper
+integration work. Combat MOB variants are now covered by the separate
+`docs/ENEMY_COMBAT_MOB_TYPES_SCOPE.md` increment; the role schedule, PDC metadata, and
+read-only path controller remain safe to ship independently of world mutation.
 
 ## Verification
 

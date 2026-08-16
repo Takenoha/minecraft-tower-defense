@@ -58,6 +58,9 @@ public final class EnemyHealthBar {
             case DESTROYER -> "防衛戦破壊兵";
             case BUILDER -> "防衛戦建築兵";
             case BOSS -> finalWave ? "防衛戦最終ボス" : "防衛戦中ボス";
+            case SPEEDSTER -> "防衛戦高速兵";
+            case RANGED -> "防衛戦遠距離兵";
+            case HEAVY -> "防衛戦重装兵";
         };
     }
 
@@ -66,6 +69,9 @@ public final class EnemyHealthBar {
             case NORMAL -> NamedTextColor.WHITE;
             case DESTROYER, BOSS -> NamedTextColor.DARK_RED;
             case BUILDER -> NamedTextColor.BLUE;
+            case SPEEDSTER -> NamedTextColor.AQUA;
+            case RANGED -> NamedTextColor.GOLD;
+            case HEAVY -> NamedTextColor.DARK_GRAY;
         };
     }
 

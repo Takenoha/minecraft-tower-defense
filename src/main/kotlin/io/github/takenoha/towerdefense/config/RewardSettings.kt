@@ -147,13 +147,22 @@ data class RewardSettings(
     /** Returns the configured event currency award for one defeated enemy role. */
     fun battleFundsFor(role: EnemyRole): Int = when (Objects.requireNonNull(role, "role")) {
         EnemyRole.NORMAL -> battleFundsNormalEnemy
-        EnemyRole.DESTROYER, EnemyRole.BUILDER -> battleFundsSpecialEnemy
+        EnemyRole.DESTROYER,
+        EnemyRole.BUILDER,
+        EnemyRole.SPEEDSTER,
+        EnemyRole.RANGED,
+        EnemyRole.HEAVY -> battleFundsSpecialEnemy
         EnemyRole.BOSS -> battleFundsBossEnemy
     }
 
     /** Returns the configured shard quantity for one defeated enemy role. */
     fun defenseShardsFor(role: EnemyRole): Int = when (Objects.requireNonNull(role, "role")) {
         EnemyRole.NORMAL -> defenseShardsNormalEnemy
-        EnemyRole.DESTROYER, EnemyRole.BUILDER, EnemyRole.BOSS -> defenseShardsSpecialEnemy
+        EnemyRole.DESTROYER,
+        EnemyRole.BUILDER,
+        EnemyRole.SPEEDSTER,
+        EnemyRole.RANGED,
+        EnemyRole.HEAVY,
+        EnemyRole.BOSS -> defenseShardsSpecialEnemy
     }
 }

@@ -108,7 +108,7 @@ class PluginSettingsValidatorTest {
                 overlapping::validated);
         assertEquals(1, overlappingException.violations().size());
         assertTrue(overlappingException.violations().get(0).startsWith(
-                "enemies: destroyer-ratio + builder-ratio must be <= 1"));
+                "enemies: all enemy role ratios must sum to <= 1"));
     }
 
     @Test
