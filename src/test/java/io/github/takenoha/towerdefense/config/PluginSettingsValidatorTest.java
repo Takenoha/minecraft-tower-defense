@@ -140,6 +140,29 @@ class PluginSettingsValidatorTest {
     }
 
     @Test
+    void rejectsInvalidSupportEnemySettings() {
+        PluginSettings settings = new PluginSettings(
+                new CombatSettings(80.0, 0.0, 80.0, 192.0, 32.0, 1, 1, 1, 1, 1),
+                new CoreSettings(1, 1),
+                new EnemySettings(
+                        1, 1, 1, 0, 1.0, 1.0,
+                        0.15, 0.10, 0.10, 0.10, 0.05,
+                        0.05, 0.0, 0.0, 0, 0.5, 0,
+                        8, 20, 2.5));
+
+        InvalidPluginSettingsException exception = assertThrows(
+                InvalidPluginSettingsException.class,
+                settings::validated);
+
+        assertContains(exception.violations(),
+                "enemies.support-radius: must be finite and > 0",
+                "enemies.support-heal-amount: must be finite and > 0",
+                "enemies.support-cooldown-ticks: must be > 0",
+                "enemies.support-speed-multiplier: must be finite and >= 1",
+                "enemies.support-speed-duration-ticks: must be > 0");
+    }
+
+    @Test
     void reportsAllMissingRecordSections() {
         PluginSettings settings = new PluginSettings(null, null, null);
 

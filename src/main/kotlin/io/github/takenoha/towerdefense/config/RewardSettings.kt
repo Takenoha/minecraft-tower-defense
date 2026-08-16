@@ -171,7 +171,8 @@ data class RewardSettings(
         EnemyRole.BUILDER,
         EnemyRole.SPEEDSTER,
         EnemyRole.RANGED,
-        EnemyRole.HEAVY -> battleFundsSpecialEnemy
+        EnemyRole.HEAVY,
+        EnemyRole.SUPPORT -> battleFundsSpecialEnemy
         EnemyRole.BOSS -> battleFundsBossEnemy
     }
 
@@ -183,6 +184,7 @@ data class RewardSettings(
         EnemyRole.SPEEDSTER,
         EnemyRole.RANGED,
         EnemyRole.HEAVY,
+        EnemyRole.SUPPORT,
         EnemyRole.BOSS -> defenseShardsSpecialEnemy
     }
 }

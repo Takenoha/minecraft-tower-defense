@@ -1,11 +1,13 @@
 package io.github.takenoha.towerdefense.paper
 
+import io.github.takenoha.towerdefense.domain.EnemyRole
 import io.github.takenoha.towerdefense.runtime.EnemyAccessPolicy
 import io.github.takenoha.towerdefense.runtime.EnemyLifecycleSink
 import java.util.Objects
 import org.bukkit.Location
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
 import org.bukkit.event.EventHandler
@@ -28,6 +30,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.EntityPortalEvent
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent
 import org.bukkit.event.entity.EntityTransformEvent
+import org.bukkit.event.entity.ProjectileLaunchEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketFillEvent
 import org.bukkit.event.world.EntitiesLoadEvent
@@ -84,10 +87,21 @@ class EventEnemyListener(
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     fun onTarget(event: EntityTargetLivingEntityEvent) {
         taggerValue.read(event.entity).ifPresent { taggedEnemy ->
-            if (!accessPolicyValue.mayRemain(taggedEnemy, event.entity.uniqueId) ||
+            if (taggedEnemy.role == EnemyRole.SUPPORT ||
+                !accessPolicyValue.mayRemain(taggedEnemy, event.entity.uniqueId) ||
                 event.target !is Player ||
                 !accessPolicyValue.mayAffect(taggedEnemy, (event.target as Player).uniqueId)
             ) {
+                event.isCancelled = true
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    fun onProjectileLaunch(event: ProjectileLaunchEvent) {
+        val shooter = event.entity.shooter as? Entity ?: return
+        taggerValue.read(shooter).ifPresent { taggedEnemy ->
+            if (taggedEnemy.role == EnemyRole.SUPPORT) {
                 event.isCancelled = true
             }
         }

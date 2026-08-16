@@ -61,6 +61,7 @@ public final class EnemyHealthBar {
             case SPEEDSTER -> "防衛戦高速兵";
             case RANGED -> "防衛戦遠距離兵";
             case HEAVY -> "防衛戦重装兵";
+            case SUPPORT -> "防衛戦支援兵";
         };
     }
 
@@ -72,6 +73,7 @@ public final class EnemyHealthBar {
             case SPEEDSTER -> NamedTextColor.AQUA;
             case RANGED -> NamedTextColor.GOLD;
             case HEAVY -> NamedTextColor.DARK_GRAY;
+            case SUPPORT -> NamedTextColor.LIGHT_PURPLE;
         };
     }
 

@@ -20,10 +20,13 @@ class ConfigLeafRecordsKotlinBoundaryAbiTest {
                 new Class<?>[]{int.class, int.class, int.class, int.class,
                         double.class, double.class, double.class, double.class, double.class,
                         double.class, double.class,
+                        double.class, double.class, double.class, int.class, double.class, int.class,
                         int.class, int.class, double.class},
                 "maxAlive", "spawnPerTick", "basePerWave", "addedPerWave",
                 "bossHealthMultiplier", "moveSpeed", "destroyerRatio", "builderRatio",
                 "speedsterRatio", "rangedRatio", "heavyRatio",
+                "supportRatio", "supportRadius", "supportHealAmount", "supportCooldownTicks",
+                "supportSpeedMultiplier", "supportSpeedDurationTicks",
                 "towerAttackDamage", "towerAttackIntervalTicks", "towerAttackRange");
         assertRecord(RewardSettings.class,
                 new Class<?>[]{int.class, int.class, int.class, int.class, int.class, int.class,
@@ -58,6 +61,12 @@ class ConfigLeafRecordsKotlinBoundaryAbiTest {
         assertField(EnemySettings.class, "DEFAULT_SPEEDSTER_RATIO", double.class, 0.10d);
         assertField(EnemySettings.class, "DEFAULT_RANGED_RATIO", double.class, 0.10d);
         assertField(EnemySettings.class, "DEFAULT_HEAVY_RATIO", double.class, 0.05d);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_RATIO", double.class, 0.05d);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_RADIUS", double.class, 8.0d);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_HEAL_AMOUNT", double.class, 4.0d);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_COOLDOWN_TICKS", int.class, 100);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_SPEED_MULTIPLIER", double.class, 1.15d);
+        assertField(EnemySettings.class, "DEFAULT_SUPPORT_SPEED_DURATION_TICKS", int.class, 60);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_DAMAGE", int.class, 8);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_INTERVAL_TICKS", int.class, 20);
         assertField(EnemySettings.class, "DEFAULT_TOWER_ATTACK_RANGE", double.class, 2.5d);

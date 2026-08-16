@@ -12,7 +12,7 @@ public final class EventEnemyVisualPolicy {
     public static boolean shouldGlow(EnemyRole role) {
         Objects.requireNonNull(role, "role");
         return switch (role) {
-            case NORMAL, DESTROYER, BUILDER, BOSS, SPEEDSTER, RANGED, HEAVY -> true;
+            case NORMAL, DESTROYER, BUILDER, BOSS, SPEEDSTER, RANGED, HEAVY, SUPPORT -> true;
         };
     }
 }

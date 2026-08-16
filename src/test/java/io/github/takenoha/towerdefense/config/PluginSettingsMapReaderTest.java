@@ -163,6 +163,27 @@ class PluginSettingsMapReaderTest {
     }
 
     @Test
+    void readsSupportEnemySettings() {
+        Map<String, Object> values = validValues();
+        mutableSection(values, "enemies").putAll(Map.of(
+                "support-ratio", 0.08d,
+                "support-radius", 9.5d,
+                "support-heal-amount", 6.0d,
+                "support-cooldown-ticks", 80,
+                "support-speed-multiplier", 1.2d,
+                "support-speed-duration-ticks", 50));
+
+        EnemySettings enemies = PluginSettings.from(values).enemies();
+
+        assertEquals(0.08d, enemies.supportRatio());
+        assertEquals(9.5d, enemies.supportRadius());
+        assertEquals(6.0d, enemies.supportHealAmount());
+        assertEquals(80, enemies.supportCooldownTicks());
+        assertEquals(1.2d, enemies.supportSpeedMultiplier());
+        assertEquals(50, enemies.supportSpeedDurationTicks());
+    }
+
+    @Test
     void readsConfiguredDestroyerTowerAttackValues() {
         Map<String, Object> values = validValues();
         mutableSection(values, "enemies").putAll(Map.of(
