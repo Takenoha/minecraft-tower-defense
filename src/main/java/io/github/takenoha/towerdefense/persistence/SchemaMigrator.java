@@ -9,7 +9,7 @@ import java.time.Instant;
 
 /** Applies ordered, in-process SQLite schema migrations. */
 public final class SchemaMigrator {
-    public static final int CURRENT_VERSION = 40;
+    public static final int CURRENT_VERSION = 41;
 
     private SchemaMigrator() {
     }
@@ -183,6 +183,10 @@ public final class SchemaMigrator {
                 if (installedVersion < 40) {
                     applyVersionForty(connection);
                     recordMigration(connection, 40);
+                }
+                if (installedVersion < 41) {
+                    applyVersionFortyOne(connection);
+                    recordMigration(connection, 41);
                 }
                 return null;
             });
@@ -2345,6 +2349,127 @@ public final class SchemaMigrator {
                     ALTER TABLE defense_events
                     ADD COLUMN wave_mutation_reward_multiplier REAL NOT NULL DEFAULT 1.0
                     CHECK (wave_mutation_reward_multiplier > 0)
+            """);
+        }
+    }
+
+    /** Allows a removed tower identity to be placed again while preserving operation history. */
+    private static void applyVersionFortyOne(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_placement_operations_state_idx");
+            statement.executeUpdate(
+                    "DROP INDEX IF EXISTS tower_placement_operations_prepared_tower_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_placement_operations_reuse_new (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE RESTRICT,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        target_priority TEXT NOT NULL DEFAULT 'core_nearest'
+                            CHECK (target_priority IN (
+                                'core_nearest', 'nearest', 'health_high', 'health_low', 'boss'
+                            )),
+                        entity_id TEXT UNIQUE,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL AND entity_id IS NOT NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL AND entity_id IS NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_placement_operations_reuse_new(
+                        operation_id, tower_id, actor_id, team_id, world_id,
+                        block_x, block_y, block_z, tower_type, individual_level,
+                        target_priority, entity_id, state, prepared_at, applied_at, rolled_back_at)
+                    SELECT operation_id, tower_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, tower_type, individual_level,
+                           target_priority, entity_id, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_placement_operations
+                    """);
+            statement.executeUpdate("DROP TABLE tower_placement_operations");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_placement_operations_reuse_new "
+                            + "RENAME TO tower_placement_operations");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_placement_operations_state_idx
+                    ON tower_placement_operations(state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX tower_placement_operations_prepared_tower_idx
+                    ON tower_placement_operations(tower_id)
+                    WHERE state = 'PREPARED'
+                    """);
+
+            statement.executeUpdate("DROP INDEX IF EXISTS tower_removal_operations_state_idx");
+            statement.executeUpdate(
+                    "DROP INDEX IF EXISTS tower_removal_operations_prepared_tower_idx");
+            statement.executeUpdate("""
+                    CREATE TABLE tower_removal_operations_reuse_new (
+                        operation_id TEXT PRIMARY KEY,
+                        tower_id TEXT NOT NULL,
+                        actor_id TEXT NOT NULL,
+                        team_id TEXT NOT NULL,
+                        world_id TEXT NOT NULL,
+                        block_x INTEGER NOT NULL,
+                        block_y INTEGER NOT NULL,
+                        block_z INTEGER NOT NULL,
+                        tower_type TEXT NOT NULL CHECK (tower_type IN (
+                            'arrow', 'cannon', 'frost', 'lightning', 'support', 'sniper', 'flame'
+                        )),
+                        individual_level INTEGER NOT NULL CHECK (individual_level > 0),
+                        entity_id TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (
+                            state IN ('PREPARED', 'APPLIED', 'ROLLED_BACK')
+                        ),
+                        prepared_at TEXT NOT NULL,
+                        applied_at TEXT,
+                        rolled_back_at TEXT,
+                        CHECK ((state = 'PREPARED' AND applied_at IS NULL
+                                AND rolled_back_at IS NULL)
+                               OR (state = 'APPLIED' AND applied_at IS NOT NULL
+                                   AND rolled_back_at IS NULL)
+                               OR (state = 'ROLLED_BACK' AND applied_at IS NULL
+                                   AND rolled_back_at IS NOT NULL))
+                    )
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO tower_removal_operations_reuse_new(
+                        operation_id, tower_id, actor_id, team_id, world_id,
+                        block_x, block_y, block_z, tower_type, individual_level,
+                        entity_id, state, prepared_at, applied_at, rolled_back_at)
+                    SELECT operation_id, tower_id, actor_id, team_id, world_id,
+                           block_x, block_y, block_z, tower_type, individual_level,
+                           entity_id, state, prepared_at, applied_at, rolled_back_at
+                    FROM tower_removal_operations
+                    """);
+            statement.executeUpdate("DROP TABLE tower_removal_operations");
+            statement.executeUpdate(
+                    "ALTER TABLE tower_removal_operations_reuse_new "
+                            + "RENAME TO tower_removal_operations");
+            statement.executeUpdate("""
+                    CREATE INDEX tower_removal_operations_state_idx
+                    ON tower_removal_operations(state, prepared_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX tower_removal_operations_prepared_tower_idx
+                    ON tower_removal_operations(tower_id)
+                    WHERE state = 'PREPARED'
                     """);
         }
     }

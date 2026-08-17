@@ -106,6 +106,51 @@ final class TowerPersistenceTest {
     }
 
     @Test
+    void removedTowerCanBeReinstalledWithTheSameIdentity() {
+        Database database = new Database(temporaryDirectory.resolve("tower-reinstall.sqlite"));
+        DefenseRepository teams = new DefenseRepository(database);
+        TowerRepository towers = new TowerRepository(database);
+        UUID teamId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        UUID towerId = UUID.randomUUID();
+        teams.createSoloTeam(teamId, ownerId, NOW);
+
+        TowerPlacement initialPlacement = TowerPlacement.prepared(
+                UUID.randomUUID(), towerId, ownerId, teamId, UUID.randomUUID(),
+                10, 65, -4, TowerType.ARROW, 1, NOW);
+        towers.prepareTowerPlacement(initialPlacement, TowerSettings.defaults());
+        TowerRecord installed = towers.applyTowerPlacement(
+                initialPlacement.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                NOW.plusSeconds(1L));
+
+        TowerRemoval removal = TowerRemoval.prepared(
+                UUID.randomUUID(), installed, ownerId, NOW.plusSeconds(2L));
+        towers.prepareTowerRemoval(removal);
+        towers.applyTowerRemoval(removal.operationId(), NOW.plusSeconds(3L));
+
+        TowerPlacement reinstallation = TowerPlacement.prepared(
+                UUID.randomUUID(), towerId, ownerId, teamId, UUID.randomUUID(),
+                12, 65, -4, TowerType.ARROW, 1, NOW.plusSeconds(4L));
+        towers.prepareTowerPlacement(reinstallation, TowerSettings.defaults());
+        TowerRecord reinstalled = towers.applyTowerPlacement(
+                reinstallation.operationId(),
+                UUID.randomUUID(),
+                TowerSettings.defaults(),
+                NOW.plusSeconds(5L));
+
+        assertEquals(towerId, reinstalled.id());
+        assertEquals(reinstalled, towers.findTower(towerId).orElseThrow());
+
+        TowerRemoval secondRemoval = TowerRemoval.prepared(
+                UUID.randomUUID(), reinstalled, ownerId, NOW.plusSeconds(6L));
+        towers.prepareTowerRemoval(secondRemoval);
+        towers.applyTowerRemoval(secondRemoval.operationId(), NOW.plusSeconds(7L));
+        assertTrue(towers.findTower(towerId).isEmpty());
+    }
+
+    @Test
     void rolledBackRemovalKeepsInstalledTower() {
         Database database = new Database(temporaryDirectory.resolve("removal-rollback.sqlite"));
         DefenseRepository teams = new DefenseRepository(database);
